@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"sova/internal/services/compiler"
-	"syscall"
 	"time"
 )
 
@@ -77,7 +76,7 @@ func maybeStartBackend(cfg BuildConfig, enabled bool) (string, func(), error) {
 		"SOVA_WEB_DIR="+filepath.Join(tmpDir, "web"),
 		"SOVA_TEST_BYPASS_AUTH=1",
 	)
-	runCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcessGroup(runCmd)
 	if err := runCmd.Start(); err != nil {
 		cleanupTmp()
 		return "", nil, fmt.Errorf("start backend: %w", err)
@@ -85,17 +84,13 @@ func maybeStartBackend(cfg BuildConfig, enabled bool) (string, func(), error) {
 
 	stop := func() {
 		if runCmd.Process != nil {
-			pgid, perr := syscall.Getpgid(runCmd.Process.Pid)
-			if perr != nil {
-				pgid = runCmd.Process.Pid
-			}
-			_ = syscall.Kill(-pgid, syscall.SIGTERM)
+			terminateProcess(runCmd.Process)
 			done := make(chan struct{})
 			go func() { _ = runCmd.Wait(); close(done) }()
 			select {
 			case <-done:
 			case <-time.After(2 * time.Second):
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
+				killProcess(runCmd.Process)
 				<-done
 			}
 		}

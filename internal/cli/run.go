@@ -46,7 +46,7 @@ func runOnce(cfg BuildConfig) error {
 		"WIRE_HOST="+cfg.ServeHost,
 		"SOVA_WEB_DIR="+cfg.ServeWebDir,
 	)
-	runCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcessGroup(runCmd)
 	if err := runCmd.Start(); err != nil {
 		return fmt.Errorf("start backend: %w", err)
 	}
@@ -63,15 +63,11 @@ func runOnce(cfg BuildConfig) error {
 	select {
 	case <-ctx.Done():
 		if runCmd.Process != nil {
-			pgid, perr := syscall.Getpgid(runCmd.Process.Pid)
-			if perr != nil {
-				pgid = runCmd.Process.Pid
-			}
-			_ = syscall.Kill(-pgid, syscall.SIGTERM)
+			terminateProcess(runCmd.Process)
 			select {
 			case <-waitErr:
 			case <-time.After(2 * time.Second):
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
+				killProcess(runCmd.Process)
 				<-waitErr
 			}
 		}

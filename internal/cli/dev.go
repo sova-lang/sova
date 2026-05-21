@@ -357,7 +357,7 @@ func (d *devProcess) start() error {
 		"SOVA_WEB_DIR="+d.webDir,
 		devOriginEnv+"=http://"+displayHost(d.host)+":"+strconv.Itoa(d.port),
 	)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -373,11 +373,7 @@ func (d *devProcess) stop() {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	pgid, err := syscall.Getpgid(cmd.Process.Pid)
-	if err != nil {
-		pgid = cmd.Process.Pid
-	}
-	_ = syscall.Kill(-pgid, syscall.SIGTERM)
+	terminateProcess(cmd.Process)
 	done := make(chan struct{})
 	go func() {
 		_ = cmd.Wait()
@@ -386,7 +382,7 @@ func (d *devProcess) stop() {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		killProcess(cmd.Process)
 		<-done
 	}
 }
