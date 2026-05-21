@@ -65,33 +65,33 @@ if test "$requested_version" = "latest"
     _log "resolving latest release from github.com/$repo"
     set -l api_url "https://api.github.com/repos/$repo/releases/latest"
     if type -q curl
-        set -l payload (curl -fsSL -H "Accept: application/vnd.github+json" $api_url)
-        set -g version (echo $payload | string match -r '"tag_name"\s*:\s*"([^"]+)"' | sed -n '2p')
+        set -l payload (curl -fsSL -H "Accept: application/vnd.github+json" $api_url | string collect)
+        set -g sova_version (printf '%s' $payload | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
     else if type -q wget
-        set -l payload (wget -qO- --header="Accept: application/vnd.github+json" $api_url)
-        set -g version (echo $payload | string match -r '"tag_name"\s*:\s*"([^"]+)"' | sed -n '2p')
+        set -l payload (wget -qO- --header="Accept: application/vnd.github+json" $api_url | string collect)
+        set -g sova_version (printf '%s' $payload | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
     else
         _die "need curl or wget to query the GitHub API"
     end
-    if test -z "$version"
+    if test -z "$sova_version"
         _die "could not parse latest release tag from GitHub response"
     end
 else
-    set -g version $requested_version
+    set -g sova_version $requested_version
 end
 
-_log "target: $os_alias/$arch_alias @ $version"
+_log "target: $os_alias/$arch_alias @ $sova_version"
 
 set -l asset "sova-$os_alias-$arch_alias.tar.gz"
-set -l url "https://github.com/$repo/releases/download/$version/$asset"
+set -l url "https://github.com/$repo/releases/download/$sova_version/$asset"
 set -l tmp_dir (mktemp -d)
 set -l archive "$tmp_dir/$asset"
 
-function _cleanup --on-event fish_exit
+function _cleanup --on-event fish_exit --inherit-variable tmp_dir
     rm -rf $tmp_dir 2>/dev/null
 end
 
-_log "downloading $asset ($version)"
+_log "downloading $asset ($sova_version)"
 if type -q curl
     curl -fSL --progress-bar -o $archive $url; or _die "download failed"
 else
@@ -131,7 +131,7 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"
 end
 
 if test -x "$install_dir/sova"
-    set -l installed_version ("$install_dir/sova" version --short 2>/dev/null; or echo $version)
+    set -l installed_version ("$install_dir/sova" version --short 2>/dev/null; or echo $sova_version)
     _log "installed: $installed_version"
     _log "location:  $install_dir/sova"
 else
@@ -140,5 +140,5 @@ end
 
 set_color green
 echo ""
-echo "Sova $version installed. Run 'sova --help' to get started."
+echo "Sova $sova_version installed. Run 'sova --help' to get started."
 set_color normal
