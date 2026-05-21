@@ -1,0 +1,35 @@
+package std/errors on shared
+
+extern {
+    /// Wraps `err` with an extra context message, preserving the original
+    /// message after a `: ` separator. If `err` is none the result is a
+    /// fresh error carrying just `msg`.
+    ///
+    /// @param err the cause to wrap
+    /// @param msg the context to prepend
+    /// @returns the new wrapped error
+    func wrap(err: error, msg: string): error = {
+        frontend: "(err, msg) => err == null ? new Error(msg) : new Error(msg + ': ' + (err.message || String(err)))",
+        backend: "func(err *sovaError, msg string) *sovaError { if err == nil { return &sovaError{Message: msg} }; return &sovaError{Message: msg + \": \" + err.Message} }"
+    }
+
+    /// Returns the human-readable message stored on `err`, or `""` if the
+    /// option is none.
+    ///
+    /// @param err the optional error
+    /// @returns its message, or empty
+    func message(err: option<error>): string = {
+        frontend: "(err) => err == null ? '' : (err.message != null ? err.message : String(err))",
+        backend: "func(err **sovaError) string { if err == nil || *err == nil { return \"\" }; return (*err).Message }"
+    }
+
+    /// Reports whether `err` is none - i.e., no error occurred. Equivalent
+    /// to `err == none`.
+    ///
+    /// @param err the optional error
+    /// @returns true if no error is present
+    func isNone(err: option<error>): bool = {
+        frontend: "(err) => err == null",
+        backend: "func(err **sovaError) bool { return err == nil || *err == nil }"
+    }
+}

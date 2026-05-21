@@ -1,0 +1,25 @@
+package std/concurrent on shared
+
+extern {
+    /// Schedules `fn` to run once after `ms` milliseconds. Returns a cancel
+    /// handle: calling the returned function clears the pending timer.
+    ///
+    /// @param ms the delay in milliseconds
+    /// @param fn the callback to fire
+    /// @returns a function that cancels the scheduled callback
+    func after(ms: int, fn: func()): func() = {
+        frontend: "(ms, fn) => { const id = setTimeout(fn, ms); return () => clearTimeout(id); }",
+        backend("time"): "func(ms int64, fn func()) func() { t := time.AfterFunc(time.Duration(ms)*time.Millisecond, fn); return func() { t.Stop() } }"
+    }
+
+    /// Schedules `fn` to run every `ms` milliseconds. Returns a cancel
+    /// handle that stops the recurring callback.
+    ///
+    /// @param ms the interval in milliseconds
+    /// @param fn the callback to fire on each tick
+    /// @returns a function that stops the recurring callback
+    func every(ms: int, fn: func()): func() = {
+        frontend: "(ms, fn) => { const id = setInterval(fn, ms); return () => clearInterval(id); }",
+        backend("time"): "func(ms int64, fn func()) func() { t := time.NewTicker(time.Duration(ms)*time.Millisecond); stop := make(chan struct{}); go func() { for { select { case <-t.C: fn(); case <-stop: t.Stop(); return } } }(); return func() { close(stop) } }"
+    }
+}

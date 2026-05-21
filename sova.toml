@@ -1,0 +1,9 @@
+[package]
+name = "strix-smoke"
+version = "0.0.0"
+
+[project]
+entry = "src/main.sova"
+
+[dependencies]
+strix = { path = "/home/dasdarki/Development/DasDarki/Sova-Go/strix/core" }

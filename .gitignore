@@ -1,0 +1,11 @@
+.idea/
+.vs/
+
+.bin/
+.output/
+.sova/
+
+test/
+
+sova
+sova.lock

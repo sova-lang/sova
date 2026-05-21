@@ -1,0 +1,151 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build (must already exist as a git tag, e.g. v1.2.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.os_alias }}-${{ matrix.arch_alias }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            os_alias: linux
+            arch_alias: x64
+            ext: tar.gz
+          - goos: linux
+            goarch: arm64
+            os_alias: linux
+            arch_alias: arm64
+            ext: tar.gz
+          - goos: darwin
+            goarch: amd64
+            os_alias: osx
+            arch_alias: x64
+            ext: tar.gz
+          - goos: darwin
+            goarch: arm64
+            os_alias: osx
+            arch_alias: arm64
+            ext: tar.gz
+          - goos: windows
+            goarch: amd64
+            os_alias: win
+            arch_alias: x64
+            ext: zip
+          - goos: windows
+            goarch: arm64
+            os_alias: win
+            arch_alias: arm64
+            ext: zip
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version metadata
+        id: meta
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "date=${DATE}" >> "$GITHUB_OUTPUT"
+          echo "asset=sova-${{ matrix.os_alias }}-${{ matrix.arch_alias }}.${{ matrix.ext }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          BIN_NAME=sova
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BIN_NAME=sova.exe
+          fi
+          mkdir -p stage
+          go build \
+            -trimpath \
+            -ldflags "-s -w \
+              -X 'sova/internal/cli.Version=${{ steps.meta.outputs.tag }}' \
+              -X 'sova/internal/cli.Commit=${{ github.sha }}' \
+              -X 'sova/internal/cli.BuildDate=${{ steps.meta.outputs.date }}'" \
+            -o "stage/${BIN_NAME}" \
+            .
+          cp -R std stage/std
+
+      - name: Create archive
+        run: |
+          set -euo pipefail
+          cd stage
+          if [ "${{ matrix.ext }}" = "zip" ]; then
+            zip -r "../${{ steps.meta.outputs.asset }}" .
+          else
+            tar -czf "../${{ steps.meta.outputs.asset }}" .
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.asset }}
+          path: ${{ steps.meta.outputs.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve tag
+        id: meta
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum sova-* | tee SHA256SUMS
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.tag }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/sova-*.tar.gz
+            dist/sova-*.zip
+            dist/SHA256SUMS

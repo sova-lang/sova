@@ -1,0 +1,693 @@
+package javascript
+
+import (
+	"fmt"
+	"sova/internal/codegen"
+	"sova/internal/codegen/javascript/jsgen"
+	"sova/internal/ir"
+	"strings"
+)
+
+// escapeJSTemplateText escapes a literal segment for safe embedding inside a JavaScript backtick template literal.
+func escapeJSTemplateText(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			b.WriteString("\\\\")
+		case '`':
+			b.WriteString("\\`")
+		case '$':
+			if i+1 < len(s) && s[i+1] == '{' {
+				b.WriteString("\\${")
+				i++
+				continue
+			}
+			b.WriteByte('$')
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
+// buildExpr builds an expression and returns a jsgen Statement
+func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, expr ir.Expr) *jsgen.Statement {
+	switch x := expr.(type) {
+	case *ir.WhenExpr:
+		// When expression is like a ternary chain or switch
+		// For now, we'll convert to nested ternaries
+		return e.buildWhenExpr(ctx, pkg, f, x)
+
+	case *ir.UnaryExpr:
+		return jsgen.Unary(string(x.Op), e.buildExpr(ctx, pkg, f, x.Expr))
+
+	case *ir.PrefixUnaryExpr:
+		return jsgen.Unary(string(x.Op), e.buildExpr(ctx, pkg, f, x.Expr))
+
+	case *ir.PostfixUnaryExpr:
+		return e.buildExpr(ctx, pkg, f, x.Expr).Op(string(x.Op))
+
+	case *ir.BinaryExpr:
+		if leftTy, ok := ctx.Types.GetByID(x.Left.GetType()); ok && leftTy.Kind == ir.TK_Struct {
+			if methodName, isOp := jsOpOverloadName(x.Op); isOp {
+				for _, m := range leftTy.StructMethods {
+					if m.Name == methodName && m.Sym != 0 {
+						left := e.buildExpr(ctx, pkg, f, x.Left)
+						right := e.buildExpr(ctx, pkg, f, x.Right)
+						return left.Dot(symName(ctx, m.Sym)).Call(right)
+					}
+				}
+			}
+		}
+		if x.Op == ir.OpAdd {
+			if leftTy, ok := ctx.Types.GetByID(x.Left.GetType()); ok && leftTy.Kind == ir.TK_Slice {
+				if rightTy, rok := ctx.Types.GetByID(x.Right.GetType()); rok && rightTy.Kind == ir.TK_Slice {
+					left := e.buildExpr(ctx, pkg, f, x.Left)
+					right := e.buildExpr(ctx, pkg, f, x.Right)
+					return left.Dot("concat").Call(right)
+				}
+			}
+		}
+		left := e.buildExpr(ctx, pkg, f, x.Left)
+		right := e.buildExpr(ctx, pkg, f, x.Right)
+		return left.Op(string(x.Op)).Add(right)
+
+	case *ir.CoalesceExpr:
+		// Generate: (opt !== null ? opt : default)
+		leftExprCond := e.buildExpr(ctx, pkg, f, x.Left)
+		leftExprThen := e.buildExpr(ctx, pkg, f, x.Left)
+		defaultExpr := e.buildExpr(ctx, pkg, f, x.Default)
+		cond := leftExprCond.Op("!==").Add(jsgen.Null())
+		return cond.Op("?").Add(leftExprThen).Op(":").Add(defaultExpr).Parens()
+
+	case *ir.TenaryExpr:
+		cond := e.buildExpr(ctx, pkg, f, x.Cond)
+		thenExpr := e.buildExpr(ctx, pkg, f, x.Then)
+		elseExpr := e.buildExpr(ctx, pkg, f, x.Else)
+		return cond.Op("?").Add(thenExpr).Op(":").Add(elseExpr)
+
+	case *ir.GroupedExpr:
+		return e.buildExpr(ctx, pkg, f, x.Expr).Parens()
+
+	case *ir.OptionUnwrapExpr:
+		return e.buildExpr(ctx, pkg, f, x.Expr)
+
+	case *ir.AsExpr:
+		return e.buildAsExpr(ctx, pkg, f, x)
+
+	case *ir.AssignmentExpr:
+		left := jsgen.Id(symNameWithUnused(ctx, pkg, x.Left.Sym))
+		right := e.buildExpr(ctx, pkg, f, x.Right)
+		return left.Op(string(x.Op)).Add(right)
+
+	case *ir.IndexExpr:
+		base := e.buildExpr(ctx, pkg, f, x.Expr)
+		index := e.buildExpr(ctx, pkg, f, x.Index)
+		return base.Index(index)
+
+	case *ir.FieldAccessExpr:
+		if x.ResolvedSym != 0 {
+			return jsgen.Id(symName(ctx, x.ResolvedSym))
+		}
+		base := e.buildExpr(ctx, pkg, f, x.Expr)
+		curType := x.Expr.GetType()
+		isThisReceiver := false
+		if vr, ok := x.Expr.(*ir.VarRef); ok {
+			if orig, ok := ctx.Names.GetOriginalName(vr.Ref.Sym); ok && orig == "this" {
+				isThisReceiver = true
+			}
+		}
+		lastWasMethod := false
+		for _, field := range x.Fields {
+			ty, ok := ctx.Types.GetByID(curType)
+			lastWasMethod = false
+			if ok && ty.Kind == ir.TK_Enum {
+				// Check if this is a case access (e.g., Color.Red)
+				isCaseAccess := false
+				for _, c := range ty.EnumCases {
+					if c.Name == field.Name {
+						isCaseAccess = true
+						enumName := symName(ctx, getEnumSymbol(ctx, pkg, ty.EnumName))
+						if ty.IsNumeric {
+							// Numeric enum: use dot notation (enumName.CaseName)
+							base = jsgen.Id(enumName).Dot(field.Name)
+						} else {
+							// Payload enum: use concatenated constant name (enumNameCaseName)
+							base = jsgen.Id(enumName + field.Name)
+						}
+						break
+					}
+				}
+
+				// If not a case, use dot notation for fields and methods
+				if !isCaseAccess {
+					// For methods, use the mangled method name
+					foundMethod := false
+					for _, m := range ty.EnumMethods {
+						if m.Name == field.Name {
+							foundMethod = true
+							// Look up the mangled method name
+							methodSym := getMethodSymbol(ctx, pkg, ty.EnumName, field.Name)
+							if methodSym != 0 {
+								base = base.Dot(symName(ctx, methodSym))
+							} else {
+								base = base.Dot(field.Name)
+							}
+							curType = m.Type
+							lastWasMethod = true
+							break
+						}
+					}
+
+					if !foundMethod {
+						base = base.Dot(field.Name)
+						// Update curType to the field type
+						for _, fld := range ty.EnumFields {
+							if fld.Name == field.Name {
+								curType = fld.Type
+								break
+							}
+						}
+					}
+				}
+			} else if ok && ty.Kind == ir.TK_Struct {
+				found := false
+				for _, sf := range ty.StructFields {
+					if sf.Name == field.Name {
+						base = base.Dot(field.Name)
+						curType = sf.Type
+						found = true
+						break
+					}
+				}
+				if !found {
+					for _, m := range ty.StructMethods {
+						if m.Name == field.Name {
+							if m.Sym != 0 {
+								base = base.Dot(symName(ctx, m.Sym))
+							} else {
+								base = base.Dot(m.Name)
+							}
+							curType = m.FuncTyp
+							found = true
+							lastWasMethod = true
+							break
+						}
+					}
+				}
+				if !found {
+					base = base.Dot(field.Name)
+				}
+			} else {
+				base = base.Dot(field.Name)
+			}
+		}
+		if isThisReceiver && lastWasMethod && len(x.Fields) == 1 {
+			if e.suppressThisKeyword {
+				base = base.Dot("bind").Call(e.buildExpr(ctx, pkg, f, x.Expr))
+			} else {
+				base = base.Dot("bind").Call(jsgen.Id("this"))
+			}
+		}
+		return base
+
+	case *ir.VarRef:
+		if orig, ok := ctx.Names.GetOriginalName(x.Ref.Sym); ok && orig == "this" && !e.suppressThisKeyword {
+			return jsgen.Id("this")
+		}
+		return jsgen.Id(symNameWithUnused(ctx, pkg, x.Ref.Sym))
+
+	case *ir.RangeExpr:
+		return e.buildRangeExpr(ctx, pkg, f, x.Start, x.End, x.Inc)
+
+	case *ir.FuncCallExpr:
+		if chOp, chRecv, ok := matchChanMethodJS(ctx, x); ok {
+			recv := e.buildExpr(ctx, pkg, f, chRecv)
+			switch chOp {
+			case "send":
+				var arg *jsgen.Statement
+				if len(x.Args) == 1 {
+					arg = e.buildExpr(ctx, pkg, f, x.Args[0].Expr)
+				} else {
+					arg = jsgen.Raw("undefined")
+				}
+				e.usesChanRuntime = true
+				return jsgen.Raw("(await ").Add(recv).Add(jsgen.Raw(".send(")).Add(arg).Add(jsgen.Raw("))"))
+			case "recv":
+				e.usesChanRuntime = true
+				return jsgen.Raw("(await ").Add(recv).Add(jsgen.Raw(".recv())"))
+			case "close":
+				e.usesChanRuntime = true
+				return recv.Dot("close").Call()
+			}
+		}
+		if intrinsic := lookupBuiltinIntrinsicJS(ctx, x.Callee); intrinsic != "" {
+			argCodes := make([]*jsgen.Statement, len(x.Args))
+			for i, arg := range x.Args {
+				argCodes[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
+			}
+			if code := emitBuiltinIntrinsicCallJS(intrinsic, argCodes); code != nil {
+				return code
+			}
+		}
+		callee := e.buildExpr(ctx, pkg, f, x.Callee)
+
+		var args []*jsgen.Statement
+		for _, arg := range x.Args {
+			args = append(args, e.buildExpr(ctx, pkg, f, arg.Expr))
+		}
+
+		call := callee.Call(args...)
+		if x.IsAsync {
+			return jsgen.Raw("await ").Add(call)
+		}
+		return call
+
+	case *ir.FuncLitExpr:
+		params := make([]string, len(x.Params))
+		for i, param := range x.Params {
+			params[i] = symNameWithUnused(ctx, pkg, param.Name.Sym)
+		}
+
+		var body []jsgen.Code
+		for _, stmt := range x.Body.Stmts {
+			body = append(body, e.buildStmtAsCode(ctx, pkg, f, stmt))
+		}
+
+		ab := jsgen.Arrow(params...)
+		if x.IsAsync {
+			ab = ab.Async()
+		}
+		return ab.Block(body...)
+
+	// Literals
+	case *ir.LitInt:
+		return jsgen.Lit(x.Value)
+
+	case *ir.LitFloat:
+		return jsgen.Lit(x.Value)
+
+	case *ir.LitString:
+		return jsgen.Lit(x.Value)
+
+	case *ir.LitChar:
+		return jsgen.Lit(string(x.Value))
+
+	case *ir.LitBool:
+		return jsgen.Lit(x.Value)
+
+	case *ir.LitNone:
+		return jsgen.Null()
+
+	case *ir.ArrayLiteral:
+		var elements []*jsgen.Statement
+		for _, elem := range x.Elems {
+			elements = append(elements, e.buildExpr(ctx, pkg, f, elem))
+		}
+		return jsgen.Array(elements...)
+
+	case *ir.MapLiteral:
+		var pairs []jsgen.KeyValue
+		for _, entry := range x.Entries {
+			keyStr := ""
+			switch k := entry.Key.(type) {
+			case *ir.LitString:
+				keyStr = k.Value
+			case *ir.LitInt:
+				keyStr = string(rune(k.Value))
+			case *ir.VarRef:
+				keyStr = symNameWithUnused(ctx, pkg, k.Ref.Sym)
+			default:
+				keyStr = "key"
+			}
+
+			pairs = append(pairs, jsgen.Kv(keyStr, e.buildExpr(ctx, pkg, f, entry.Value)))
+		}
+		return jsgen.Object(pairs...)
+
+	case *ir.TupleLiteral:
+		var elements []*jsgen.Statement
+		for _, elem := range x.Elems {
+			elements = append(elements, e.buildExpr(ctx, pkg, f, elem))
+		}
+		return jsgen.Array(elements...)
+
+	case *ir.StringTemplateExpr:
+		var sb strings.Builder
+		sb.WriteByte('`')
+		for _, part := range x.Parts {
+			if part.Expr != nil {
+				sb.WriteString("${")
+				sb.WriteString(e.buildExpr(ctx, pkg, f, part.Expr).Render())
+				sb.WriteByte('}')
+			} else {
+				sb.WriteString(escapeJSTemplateText(part.Lit))
+			}
+		}
+		sb.WriteByte('`')
+		return jsgen.Raw(sb.String())
+
+	case *ir.SessionExpr:
+		return jsgen.Comment("[error] @-session is backend-only")
+	case *ir.ComposableCallExpr:
+		var ctorCall *jsgen.Statement
+		calleeSym := composableCalleeSymJS(x.Callee)
+		if x.CtorSym != 0 {
+			ctorName := symName(ctx, x.CtorSym)
+			ctorSym, _ := pkg.Syms.GetByID(x.CtorSym)
+			var ctorFunc *ir.Type
+			if ctorSym != nil {
+				ctorFunc, _ = ctx.Types.GetByID(ctorSym.Typ)
+			}
+			args := make([]*jsgen.Statement, len(x.Args))
+			for i, arg := range x.Args {
+				if arg.Expr != nil {
+					args[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
+				} else if ctorFunc != nil && i < len(ctorFunc.ParamTypes) && ctorFunc.ParamTypes[i].Default != nil {
+					args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.ParamTypes[i].Default)
+				} else {
+					args[i] = jsgen.Null()
+				}
+			}
+			ctorCall = jsgen.Id(ctorName).Call(args...)
+		} else if calleeSym != 0 {
+			typeName := symName(ctx, calleeSym)
+			ctorCall = jsgen.Raw(fmt.Sprintf("new %s()", typeName))
+		} else {
+			ctorCall = jsgen.Null()
+		}
+		var sb strings.Builder
+		sb.WriteString("((() => { const __c = ")
+		sb.WriteString(ctorCall.String())
+		sb.WriteString("; ")
+		for _, child := range x.Children {
+			if child.Expr == nil {
+				continue
+			}
+			childCode := e.buildExpr(ctx, pkg, f, child.Expr)
+			sb.WriteString("__c.children.push(")
+			sb.WriteString(childCode.String())
+			sb.WriteString("); ")
+		}
+		e.composableDepth++
+		for _, child := range x.Children {
+			if child.Stmt == nil {
+				continue
+			}
+			stmtCode := e.buildStmtAsCode(ctx, pkg, f, child.Stmt)
+			if stmtCode == nil {
+				continue
+			}
+			if stmtStmt, ok := stmtCode.(*jsgen.Statement); ok {
+				sb.WriteString(stmtStmt.String())
+				sb.WriteString("; ")
+			}
+		}
+		e.composableDepth--
+		sb.WriteString("return __c; })())")
+		return jsgen.Raw(sb.String())
+	case *ir.ChanInitExpr:
+		e.usesChanRuntime = true
+		var capCode *jsgen.Statement
+		if x.Capacity != nil {
+			capCode = e.buildExpr(ctx, pkg, f, x.Capacity)
+		} else {
+			capCode = jsgen.Raw("0")
+		}
+		return jsgen.Raw("new __SovaChan(").Add(capCode).Add(jsgen.Raw(")"))
+	case *ir.NewExpr:
+		typeName := symName(ctx, x.TypeName.Sym)
+		if x.CtorSym != 0 {
+			ctorName := symName(ctx, x.CtorSym)
+			ctorPkg := pkg
+			if x.Qualifier != "" {
+				if found := lookupImportedPackage(ctx, pkg, x.Qualifier); found != nil {
+					ctorPkg = found
+				}
+			}
+			ctorSym, _ := ctorPkg.Syms.GetByID(x.CtorSym)
+			var ctorFunc *ir.Type
+			if ctorSym != nil {
+				ctorFunc, _ = ctx.Types.GetByID(ctorSym.Typ)
+			}
+			args := make([]*jsgen.Statement, len(x.Args))
+			for i, arg := range x.Args {
+				if arg.Expr != nil {
+					args[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
+				} else if ctorFunc != nil && i < len(ctorFunc.ParamTypes) && ctorFunc.ParamTypes[i].Default != nil {
+					args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.ParamTypes[i].Default)
+				} else {
+					args[i] = jsgen.Null()
+				}
+			}
+			return jsgen.Id(ctorName).Call(args...)
+		}
+		return jsgen.Raw(fmt.Sprintf("new %s()", typeName))
+
+	default:
+		return jsgen.Comment("Unknown expression type")
+	}
+}
+
+func (e *CodeEmitter) buildWhenExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.WhenExpr) *jsgen.Statement {
+	if len(x.Cases) == 0 {
+		return e.buildExpr(ctx, pkg, f, x.Default)
+	}
+
+	expr := e.buildExpr(ctx, pkg, f, x.Expr)
+
+	result := e.buildExpr(ctx, pkg, f, x.Default)
+
+	for i := len(x.Cases) - 1; i >= 0; i-- {
+		c := x.Cases[i]
+		thenExpr := e.buildExpr(ctx, pkg, f, c.Then)
+
+		var cond *jsgen.Statement
+		for j, val := range c.Values {
+			valExpr := e.buildExpr(ctx, pkg, f, val)
+			comparison := expr.Op("===").Add(valExpr)
+
+			if j == 0 {
+				cond = comparison
+			} else {
+				cond = cond.Op("||").Add(comparison)
+			}
+		}
+
+		result = cond.Op("?").Add(thenExpr).Op(":").Add(result).Parens()
+	}
+
+	return result
+}
+
+// buildAsExpr lowers a Sova `value as T` / `value as? T` cast to a JS runtime
+// check. JS lacks static type assertions, so the panicking form throws on a
+// mismatch and the safe form returns `undefined` (matching the Sova `option`
+// representation in the JS runtime, which uses undefined/null for `none`).
+// The predicate is derived from the target type's IR kind - primitive types
+// use `typeof`, arrays use `Array.isArray`, structs/enums use `instanceof`
+// against their mangled class name, and `any` short-circuits to the value.
+func (e *CodeEmitter) buildAsExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.AsExpr) *jsgen.Statement {
+	src := e.buildExpr(ctx, pkg, f, x.Expr)
+	if x.Target == nil || x.Target.Typ == 0 {
+		return src
+	}
+	if x.Safe {
+		if conv := jsSafePrimitiveConversion(ctx, x.Expr.GetType(), x.Target.Typ, "__v"); conv != "" {
+			body := fmt.Sprintf("(__v => %s)", conv)
+			return jsgen.Raw(body).Call(src)
+		}
+		check := jsAsExprPredicate(ctx, x.Target.Typ, "__v")
+		if check == "" {
+			return src
+		}
+		body := fmt.Sprintf("(__v => (%s) ? __v : null)", check)
+		return jsgen.Raw(body).Call(src)
+	}
+	if conv := jsPrimitiveConversion(ctx, x.Expr.GetType(), x.Target.Typ, "__v"); conv != "" {
+		body := fmt.Sprintf("(__v => %s)", conv)
+		return jsgen.Raw(body).Call(src)
+	}
+	return src
+}
+
+// jsSafePrimitiveConversion mirrors `jsPrimitiveConversion` but produces option-typed results: lossless conversions return the converted value directly (treated as a non-null option), parse-style conversions explicitly check for failure and return `null` (the option's `none`) when the input does not parse. Returns "" when the pair is not a primitive conversion the caller falls back to the structural predicate check.
+func jsSafePrimitiveConversion(ctx *codegen.EmitContext, srcTyp, dstTyp ir.TypID, varName string) string {
+	str := ctx.Types.PrimString()
+	in := ctx.Types.PrimInt()
+	fl := ctx.Types.PrimFloat()
+	bl := ctx.Types.PrimBool()
+	ch := ctx.Types.PrimChar()
+	if srcTyp == 0 || dstTyp == 0 || srcTyp == dstTyp {
+		return ""
+	}
+	if dstTyp == str {
+		if srcTyp == in || srcTyp == fl || srcTyp == bl || srcTyp == ch {
+			return fmt.Sprintf("String(%s)", varName)
+		}
+		return ""
+	}
+	if srcTyp == str {
+		switch dstTyp {
+		case in:
+			return fmt.Sprintf("((() => { const __n = parseInt(%s, 10); return Number.isNaN(__n) ? null : (__n | 0); })())", varName)
+		case fl:
+			return fmt.Sprintf("((() => { const __n = Number(%s); return Number.isNaN(__n) ? null : __n; })())", varName)
+		case bl:
+			return fmt.Sprintf("((() => { if (%s === 'true') return true; if (%s === 'false') return false; return null; })())", varName, varName)
+		}
+		return ""
+	}
+	if srcTyp == in && dstTyp == fl {
+		return fmt.Sprintf("Number(%s)", varName)
+	}
+	if srcTyp == fl && dstTyp == in {
+		return fmt.Sprintf("(%s | 0)", varName)
+	}
+	if srcTyp == in && dstTyp == ch {
+		return fmt.Sprintf("String.fromCharCode(%s)", varName)
+	}
+	if srcTyp == ch && dstTyp == in {
+		return fmt.Sprintf("(%s).charCodeAt(0)", varName)
+	}
+	return ""
+}
+
+// jsPrimitiveConversion returns a JS expression that converts `varName` from the Sova primitive `srcTyp` into the Sova primitive `dstTyp`, or "" when the cast isn't a known primitive conversion (in which case buildAsExpr falls back to the typecheck-throw path). The mappings: any primitive `as string` becomes `String(...)`; `string as int|float` parses; numeric widening uses `Number(...)`; int↔char round-trips through `String.fromCharCode` / `.charCodeAt(0)` so chars are interchangeable with their code-point ints.
+func jsPrimitiveConversion(ctx *codegen.EmitContext, srcTyp, dstTyp ir.TypID, varName string) string {
+	str := ctx.Types.PrimString()
+	in := ctx.Types.PrimInt()
+	fl := ctx.Types.PrimFloat()
+	bl := ctx.Types.PrimBool()
+	ch := ctx.Types.PrimChar()
+	if srcTyp == 0 || dstTyp == 0 || srcTyp == dstTyp {
+		return ""
+	}
+	if dstTyp == str {
+		if srcTyp == in || srcTyp == fl || srcTyp == bl {
+			return fmt.Sprintf("String(%s)", varName)
+		}
+		if srcTyp == ch {
+			return fmt.Sprintf("String(%s)", varName)
+		}
+		return ""
+	}
+	if srcTyp == str {
+		if dstTyp == in {
+			return fmt.Sprintf("(parseInt(%s, 10) | 0)", varName)
+		}
+		if dstTyp == fl {
+			return fmt.Sprintf("Number(%s)", varName)
+		}
+		if dstTyp == bl {
+			return fmt.Sprintf("(%s === 'true')", varName)
+		}
+		return ""
+	}
+	if srcTyp == in && dstTyp == fl {
+		return fmt.Sprintf("Number(%s)", varName)
+	}
+	if srcTyp == fl && dstTyp == in {
+		return fmt.Sprintf("(%s | 0)", varName)
+	}
+	if srcTyp == in && dstTyp == ch {
+		return fmt.Sprintf("String.fromCharCode(%s)", varName)
+	}
+	if srcTyp == ch && dstTyp == in {
+		return fmt.Sprintf("(%s).charCodeAt(0)", varName)
+	}
+	return ""
+}
+
+// jsAsExprPredicate returns a JS expression that evaluates to true iff the
+// local `varName` matches Sova type `typID`. Returns "" for `any`/unknown
+// targets (the caller should skip the runtime check in that case).
+func jsAsExprPredicate(ctx *codegen.EmitContext, typID ir.TypID, varName string) string {
+	ty, ok := ctx.Types.GetByID(typID)
+	if !ok {
+		return ""
+	}
+	switch ty.Kind {
+	case ir.TK_PrimitiveAny:
+		return ""
+	case ir.TK_PrimitiveString:
+		return fmt.Sprintf("typeof %s === 'string'", varName)
+	case ir.TK_PrimitiveInt, ir.TK_PrimitiveFloat:
+		return fmt.Sprintf("typeof %s === 'number'", varName)
+	case ir.TK_PrimitiveBool:
+		return fmt.Sprintf("typeof %s === 'boolean'", varName)
+	case ir.TK_PrimitiveChar:
+		return fmt.Sprintf("typeof %s === 'string' && %s.length === 1", varName, varName)
+	case ir.TK_Array, ir.TK_Slice:
+		return fmt.Sprintf("Array.isArray(%s)", varName)
+	case ir.TK_Map:
+		return fmt.Sprintf("%s !== null && typeof %s === 'object' && !Array.isArray(%s)", varName, varName, varName)
+	case ir.TK_Struct, ir.TK_Enum:
+		return fmt.Sprintf("%s !== null && typeof %s === 'object'", varName, varName)
+	}
+	return ""
+}
+
+// jsTypeLabel returns a short human-readable name for a Sova type, used in
+// runtime error messages emitted by failing `as` casts.
+func jsTypeLabel(ctx *codegen.EmitContext, typID ir.TypID) string {
+	ty, ok := ctx.Types.GetByID(typID)
+	if !ok {
+		return "<unknown>"
+	}
+	switch ty.Kind {
+	case ir.TK_PrimitiveString:
+		return "string"
+	case ir.TK_PrimitiveInt:
+		return "int"
+	case ir.TK_PrimitiveFloat:
+		return "float"
+	case ir.TK_PrimitiveBool:
+		return "bool"
+	case ir.TK_PrimitiveChar:
+		return "char"
+	case ir.TK_Array, ir.TK_Slice:
+		return "array"
+	case ir.TK_Map:
+		return "map"
+	case ir.TK_Struct:
+		return ty.StructName
+	case ir.TK_Enum:
+		return ty.EnumName
+	}
+	return string(ty.Key)
+}
+
+func (e *CodeEmitter) buildRangeExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, start, end, inc ir.Expr) *jsgen.Statement {
+	startExpr := e.buildExpr(ctx, pkg, f, start)
+	endExpr := e.buildExpr(ctx, pkg, f, end)
+
+	incExpr := jsgen.Lit(1)
+	if inc != nil {
+		incExpr = e.buildExpr(ctx, pkg, f, inc)
+	}
+
+	rangeFunc := jsgen.Arrow().Block(
+		jsgen.Const("result").Op("=").Add(jsgen.Array()),
+		jsgen.For(
+			jsgen.Let("i").Op("=").Add(startExpr),
+			jsgen.Id("i").Op("<").Add(endExpr),
+			jsgen.Id("i").Op("+=").Add(incExpr),
+		).Block(
+			jsgen.Id("result").Dot("push").Call(jsgen.Id("i")),
+		),
+		jsgen.Return(jsgen.Id("result")),
+	)
+
+	return rangeFunc.Parens().Call()
+}
+
+// jsOpOverloadName returns the method name for a user-overloadable operator, or ok=false for operators that cannot be overloaded.
+func jsOpOverloadName(op ir.Op) (string, bool) {
+	switch op {
+	case ir.OpAdd, ir.OpSub, ir.OpMul, ir.OpDiv, ir.OpMod, ir.OpEq:
+		return "op" + string(op), true
+	}
+	return "", false
+}

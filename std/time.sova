@@ -1,0 +1,23 @@
+package std/time on shared
+
+extern {
+    /// Returns the current wall-clock time as the number of whole seconds
+    /// since the Unix epoch.
+    func now(): int = {
+        frontend: "() => (typeof __sovaJSNow === 'function') ? __sovaJSNow() : Math.floor(Date.now() / 1000)",
+        backend: "func() int64 { if __sovaTestHarnessActive() { return __sovaTestNow().Unix() }; return time.Now().Unix() }"
+    }
+
+    /// Returns the current time in nanoseconds since the Unix epoch.
+    /// Useful as a high-resolution monotonic-ish stamp.
+    func unixNano(): int = {
+        frontend: "() => (typeof __sovaJSUnixNano === 'function') ? __sovaJSUnixNano() : Date.now() * 1000000",
+        backend: "func() int64 { if __sovaTestHarnessActive() { return __sovaTestNow().UnixNano() }; return time.Now().UnixNano() }"
+    }
+
+    /// Returns the current time in milliseconds since the Unix epoch.
+    func unixMillis(): int = {
+        frontend: "() => (typeof __sovaJSUnixMillis === 'function') ? __sovaJSUnixMillis() : Date.now()",
+        backend: "func() int64 { if __sovaTestHarnessActive() { return __sovaTestNow().UnixMilli() }; return time.Now().UnixMilli() }"
+    }
+}

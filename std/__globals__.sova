@@ -1,0 +1,20 @@
+package std/__globals__ on shared
+
+/// Composable nodes form the tree of UI elements that Sova frameworks render. Any type with the `with Composable` clause has a `children: []any` slot the framework manages.
+mixin Composable {
+    children: []any = [ ]
+}
+
+/// Prints `msg` to standard output without a trailing newline. Stringifies non-string arguments using the host language defaults.
+@builtin
+func print(msg: any) {}
+
+/// Like `print`, but appends a newline.
+@builtin
+func println(msg: any) {}
+
+/// Returns the length of `x`. Defined for strings (UTF-8 byte length), arrays, slices, maps, and channels.
+@builtin
+func len(x: any): int {
+    return 0
+}

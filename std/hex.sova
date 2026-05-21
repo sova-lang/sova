@@ -1,0 +1,24 @@
+package std/hex on shared
+
+extern {
+    /// Returns the lower-case hexadecimal encoding of `data`'s UTF-8 bytes.
+    /// Each byte becomes two hex digits, padded with a leading zero when
+    /// necessary.
+    ///
+    /// @param data the input string
+    /// @returns the hex-encoded representation
+    func encode(data: string): string = {
+        frontend: "(s) => { const bytes = new TextEncoder().encode(s); return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(''); }",
+        backend("encoding/hex"): "func(s string) string { return hex.EncodeToString([]byte(s)) }"
+    }
+
+    /// Parses a hex string back into the original UTF-8 bytes. The input
+    /// must be even-length; odd inputs yield an empty string.
+    ///
+    /// @param data the hex-encoded text
+    /// @returns the decoded string
+    func decode(data: string): string = {
+        frontend: "(s) => { const bytes = new Uint8Array(s.length / 2); for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(s.substr(i * 2, 2), 16); return new TextDecoder().decode(bytes); }",
+        backend("encoding/hex"): "func(s string) string { b, _ := hex.DecodeString(s); return string(b) }"
+    }
+}

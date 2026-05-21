@@ -1,0 +1,42 @@
+package std/base64 on shared
+
+extern {
+    /// Encodes `data` as standard base64 (RFC 4648, with `+`/`/` and `=`
+    /// padding).
+    ///
+    /// @param data the input string (UTF-8 bytes)
+    /// @returns the base64 representation
+    func encode(data: string): string = {
+        frontend: "(s) => { const bytes = new TextEncoder().encode(s); let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]); return btoa(bin); }",
+        backend("encoding/base64"): "func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }"
+    }
+
+    /// Decodes a standard base64-encoded string back to UTF-8. Returns
+    /// `""` on malformed input.
+    ///
+    /// @param data the base64 text
+    /// @returns the decoded string
+    func decode(data: string): string = {
+        frontend: "(s) => { const bin = atob(s); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return new TextDecoder().decode(bytes); }",
+        backend("encoding/base64"): "func(s string) string { b, _ := base64.StdEncoding.DecodeString(s); return string(b) }"
+    }
+
+    /// Encodes `data` as URL-safe base64 (using `-`/`_` instead of `+`/`/`
+    /// and no padding). Suitable for query parameters and JWT segments.
+    ///
+    /// @param data the input string
+    /// @returns the URL-safe base64 representation
+    func encodeURL(data: string): string = {
+        frontend: "(s) => { const bytes = new TextEncoder().encode(s); let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]); return btoa(bin).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, ''); }",
+        backend("encoding/base64"): "func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }"
+    }
+
+    /// Decodes a URL-safe base64 string back to UTF-8.
+    ///
+    /// @param data the URL-safe base64 text
+    /// @returns the decoded string
+    func decodeURL(data: string): string = {
+        frontend: "(s) => { let t = s.replace(/-/g, '+').replace(/_/g, '/'); while (t.length % 4) t += '='; const bin = atob(t); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return new TextDecoder().decode(bytes); }",
+        backend("encoding/base64"): "func(s string) string { b, _ := base64.RawURLEncoding.DecodeString(s); return string(b) }"
+    }
+}

@@ -1,0 +1,43 @@
+package std/json on shared
+
+extern {
+    /// Serialises `value` to a compact JSON string. Returns `""` if the value
+    /// contains unencodable cycles or unsupported types on the host platform.
+    ///
+    /// @param value the value to encode
+    /// @returns the JSON-encoded string
+    func encode(value: any): string = {
+        frontend: "(v) => JSON.stringify(v)",
+        backend("encoding/json"): "func(v any) string { b, _ := json.Marshal(v); return string(b) }"
+    }
+
+    /// Like `encode`, but indents the output with two spaces per level for
+    /// readability.
+    ///
+    /// @param value the value to encode
+    /// @returns the pretty-printed JSON string
+    func encodePretty(value: any): string = {
+        frontend: "(v) => JSON.stringify(v, null, 2)",
+        backend("encoding/json"): "func(v any) string { b, _ := json.MarshalIndent(v, \"\", \"  \"); return string(b) }"
+    }
+
+    /// Parses `s` as JSON and returns the resulting value. Returns `none`
+    /// when the input is malformed.
+    ///
+    /// @param s the JSON text
+    /// @returns the decoded value, or none
+    func decode(s: string): any = {
+        frontend: "(s) => { try { return JSON.parse(s); } catch (e) { return null; } }",
+        backend("encoding/json"): "func(s string) any { var v any; _ = json.Unmarshal([]byte(s), &v); return v }"
+    }
+
+    /// Reports whether `s` is syntactically-valid JSON without allocating
+    /// the parsed value.
+    ///
+    /// @param s the candidate JSON text
+    /// @returns true if `s` parses
+    func isValid(s: string): bool = {
+        frontend: "(s) => { try { JSON.parse(s); return true; } catch (e) { return false; } }",
+        backend("encoding/json"): "func(s string) bool { return json.Valid([]byte(s)) }"
+    }
+}

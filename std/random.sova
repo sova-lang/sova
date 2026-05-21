@@ -1,0 +1,41 @@
+package std/random on shared
+
+extern {
+    /// Returns a non-negative pseudo-random integer.
+    func nextInt(): int = {
+        frontend: "() => (typeof __sovaJSRandom === 'function') ? __sovaJSRandom() : Math.floor(Math.random() * 0x7fffffff)",
+        backend: "func() int64 { if __sovaTestHarnessActive() { return __sovaTestRandom() }; return time.Now().UnixNano() & 0x7FFFFFFFFFFFFFFF }"
+    }
+
+    /// Returns a pseudo-random float in [0, 1).
+    func nextFloat(): float = {
+        frontend: "() => (typeof __sovaJSRandom === 'function') ? (__sovaJSRandom() / 0x7fffffff) : Math.random()",
+        backend: "func() float64 { if __sovaTestHarnessActive() { return float64(__sovaTestRandom()) / float64(0x7FFFFFFFFFFFFFFF) }; return float64(time.Now().UnixNano() & 0x7FFFFFFFFFFFFFFF) / float64(0x7FFFFFFFFFFFFFFF) }"
+    }
+
+    /// Returns a pseudo-random integer in the half-open range [lo, hi).
+    ///
+    /// @param lo inclusive lower bound
+    /// @param hi exclusive upper bound
+    /// @returns a random integer in [lo, hi)
+    func intBetween(lo: int, hi: int): int = {
+        frontend: "(lo, hi) => { var r = (typeof __sovaJSRandom === 'function') ? __sovaJSRandom() : Math.floor(Math.random() * 0x7fffffff); return lo + (r % (hi - lo)); }",
+        backend: "func(lo int64, hi int64) int64 { var r int64; if __sovaTestHarnessActive() { r = __sovaTestRandom() } else { r = time.Now().UnixNano() & 0x7FFFFFFFFFFFFFFF }; return lo + (r % (hi - lo)) }"
+    }
+
+    /// Returns a pseudo-random float in the half-open range [lo, hi).
+    ///
+    /// @param lo inclusive lower bound
+    /// @param hi exclusive upper bound
+    /// @returns a random float in [lo, hi)
+    func floatBetween(lo: float, hi: float): float = {
+        frontend: "(lo, hi) => { var f = (typeof __sovaJSRandom === 'function') ? (__sovaJSRandom() / 0x7fffffff) : Math.random(); return lo + f * (hi - lo); }",
+        backend: "func(lo float64, hi float64) float64 { var f float64; if __sovaTestHarnessActive() { f = float64(__sovaTestRandom()) / float64(0x7FFFFFFFFFFFFFFF) } else { f = float64(time.Now().UnixNano() & 0x7FFFFFFFFFFFFFFF) / float64(0x7FFFFFFFFFFFFFFF) }; return lo + f * (hi - lo) }"
+    }
+
+    /// Returns a uniformly-random boolean.
+    func nextBool(): bool = {
+        frontend: "() => { var r = (typeof __sovaJSRandom === 'function') ? __sovaJSRandom() : Math.floor(Math.random() * 0x7fffffff); return (r & 1) === 1; }",
+        backend: "func() bool { var r int64; if __sovaTestHarnessActive() { r = __sovaTestRandom() } else { r = time.Now().UnixNano() }; return r & 1 == 1 }"
+    }
+}

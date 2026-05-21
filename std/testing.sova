@@ -1,0 +1,192 @@
+package std/testing on shared
+
+extern {
+    /// In the integration harness: disconnects the current session's
+    /// WebSocket as if the network dropped, without invalidating the
+    /// session record itself. Use to test reconnect logic.
+    func disconnect() = {
+        frontend: "() => undefined",
+        backend: "func() { if __sovaTestHarnessActive() { __sovaTestDisconnect() } }"
+    }
+
+    /// Advances mocked time by `seconds`. Triggers any `after`/`every`
+    /// timers that fall inside the new interval.
+    ///
+    /// @param seconds elapsed time to simulate (may be fractional)
+    func advanceTime(seconds: float) = {
+        frontend: "(s) => __sovaJSAdvanceTime(s)",
+        backend: "func(seconds float64) { if __sovaTestHarnessActive() { __sovaTestAdvanceTime(seconds) } }"
+    }
+
+    /// Yields until every previously-issued wire call has resolved. Used
+    /// to flush queued async work before making assertions.
+    func awaitWires() = {
+        frontend: "() => undefined",
+        backend: "func() { if __sovaTestHarnessActive() { __sovaTestAwaitWires() } }"
+    }
+
+    /// Returns the id of the session bound to the active test request.
+    /// Empty string when running outside a request context.
+    func currentSessionId(): string = {
+        frontend: "() => ''",
+        backend: "func() string { if s := __sovaCurrentSession(); s != nil { return s.Id }; return \"\" }"
+    }
+
+    /// Turns off mocked time for the remainder of the test, reverting to
+    /// the host clock. Symmetric with `mockTime`.
+    func useRealTime() = {
+        frontend: "() => __sovaJSUseRealTime()",
+        backend: "func() { if __sovaTestHarnessActive() { __sovaTestUseRealTime() } }"
+    }
+
+    /// Turns off mocked randomness for the remainder of the test.
+    /// Symmetric with `mockRandom`.
+    func useRealRandom() = {
+        frontend: "() => undefined",
+        backend: "func() { if __sovaTestHarnessActive() { __sovaTestUseRealRandom() } }"
+    }
+
+    /// Registers a mock that returns `returnValue` every time `name` is
+    /// looked up. Pair with `mockCall` / `mockCallCount` to assert that
+    /// the production code called it.
+    ///
+    /// @param name the mock identifier
+    /// @param returnValue value the mock should yield
+    func mock(name: string, returnValue: any) = {
+        frontend: "(n, v) => __sovaJSMockRegister(n, v, true)",
+        backend: "func(name string, retVal any) { if __sovaTestHarnessActive() { __sovaTestMockRegister(name, retVal, true) } }"
+    }
+
+    /// Registers a void mock - one that records calls without yielding a
+    /// value.
+    ///
+    /// @param name the mock identifier
+    func mockVoid(name: string) = {
+        frontend: "(n) => __sovaJSMockRegister(n, null, false)",
+        backend: "func(name string) { if __sovaTestHarnessActive() { __sovaTestMockRegister(name, nil, false) } }"
+    }
+
+    /// Invokes the registered mock named `name` with the given argument
+    /// and returns whatever the mock recorded.
+    ///
+    /// @param name the mock identifier
+    /// @param arg argument forwarded to the mock
+    /// @returns the mock's recorded return value, or none if void
+    func mockCall(name: string, arg: any): any = {
+        frontend: "(n, a) => { var h = __sovaJSMockHook(n, [a]); return h ? h.value : null; }",
+        backend: "func(name string, arg any) any { if !__sovaTestHarnessActive() { return nil }; v, _ := __sovaTestMockCall(name, arg); return v }"
+    }
+
+    /// Returns how many times `mockCall(name, …)` has been invoked since
+    /// the last `mockReset`.
+    func mockCallCount(name: string): int = {
+        frontend: "(n) => __sovaJSMockCallCount(n)",
+        backend: "func(name string) int64 { if !__sovaTestHarnessActive() { return 0 }; return int64(__sovaTestMockCallCount(name)) }"
+    }
+
+    /// Returns the most recent arguments passed to `mockCall(name, …)`.
+    func mockLastArgs(name: string): []any = {
+        frontend: "(n) => __sovaJSMockLastArgs(n)",
+        backend: "func(name string) []any { if !__sovaTestHarnessActive() { return nil }; return __sovaTestMockLastArgs(name) }"
+    }
+
+    /// Clears every registered mock and resets every counter. Call at the
+    /// start of a fresh scenario.
+    func mockReset() = {
+        frontend: "() => __sovaJSMockReset()",
+        backend: "func() { if __sovaTestHarnessActive() { __sovaTestMockReset() } }"
+    }
+
+    /// Pins the mocked clock to a specific unix timestamp. Subsequent
+    /// `time.now()` / `time.unixNano()` calls return values relative to
+    /// this pin until `advanceTime` or `useRealTime` is called.
+    ///
+    /// @param unixSecs the new "now"
+    func mockTime(unixSecs: int) = {
+        frontend: "(s) => __sovaJSMockTime(s)",
+        backend: "func(unixSecs int64) { if __sovaTestHarnessActive() { __sovaTestMockTime(unixSecs) } }"
+    }
+
+    /// Compiles `src` and expects at least one compile-time error.
+    /// Returns true when an error was raised.
+    func expectCompileError(src: string): bool = {
+        frontend: "(s) => false",
+        backend: "func(src string) bool { if !__sovaTestHarnessActive() { return false }; return __sovaTestExpectCompileError(src) }"
+    }
+
+    /// Compiles `src` and expects the generated output to contain
+    /// `marker`. Returns true on match.
+    func expectCompileOutput(src: string, marker: string): bool = {
+        frontend: "(s, m) => false",
+        backend: "func(src string, marker string) bool { if !__sovaTestHarnessActive() { return false }; return __sovaTestExpectCompileOutput(src, marker) }"
+    }
+
+    /// Aborts the current test immediately with `message`. Equivalent to a
+    /// hard `t.Fatal`.
+    func failNow(message: string) = {
+        frontend: "(m) => { throw new Error('__sovaJSFailNow:' + m); }",
+        backend: "func(message string) { __sovaTestFailNow(message) }"
+    }
+
+    /// Reports whether `actual` and `expected` have the same JSON
+    /// serialisation. Sufficient for primitives, slices, and maps.
+    func expectEqual(actual: any, expected: any): bool = {
+        frontend: "(a, e) => JSON.stringify(a) === JSON.stringify(e)",
+        backend: "func(actual any, expected any) bool { return __sovaTestExpectEqual(actual, expected) }"
+    }
+
+    /// Reports whether `haystack` (a string or slice) contains `needle`.
+    func expectContains(haystack: any, needle: any): bool = {
+        frontend: "(h, n) => (typeof h === 'string') ? h.indexOf(n) >= 0 : (Array.isArray(h) ? h.indexOf(n) >= 0 : false)",
+        backend: "func(haystack any, needle any) bool { return __sovaTestExpectContains(haystack, needle) }"
+    }
+
+    /// Runs `fn` and reports whether it threw or panicked. Used to assert
+    /// that error paths fire.
+    func expectThrows(fn: func()): bool = {
+        frontend: "(fn) => { try { fn(); return false; } catch (e) { return true; } }",
+        backend: "func(fn func() any) bool { return __sovaTestExpectThrows(func() { fn() }) }"
+    }
+
+    /// Compares `value` against a stored snapshot named `name`. Creates
+    /// the snapshot on first run; flags a mismatch on subsequent runs.
+    func expectSnapshot(name: string, value: any): bool = {
+        frontend: "(n, v) => { var payload = JSON.stringify(v, null, 2); if (typeof __sovaJSSnapshotIO === 'function') { var res = __sovaJSSnapshotIO(n, payload); return !!(res && res.ok); } if (typeof XMLHttpRequest !== 'undefined') { try { var xhr = new XMLHttpRequest(); xhr.open('POST', '/__sova/snapshot?name=' + encodeURIComponent(n), false); xhr.send(payload); if (xhr.status !== 200) return false; var r = JSON.parse(xhr.responseText); return r && r.ok === true; } catch (e) { return false; } } return true; }",
+        backend: "func(name string, value any) bool { return __sovaTestExpectSnapshot(name, value) }"
+    }
+
+    /// Signs a raw session id with the server-secret HMAC and returns
+    /// the canonical cookie value. Test-only.
+    func signSessionId(id: string): string = {
+        frontend: "(id) => id + '.unsigned'",
+        backend: "func(id string) string { return __sovaSignSessionId(id) }"
+    }
+
+    /// Verifies that `token` is a properly-signed session id cookie. Test-only.
+    func verifySessionId(token: string): bool = {
+        frontend: "(t) => true",
+        backend: "func(token string) bool { _, ok := __sovaVerifySessionId(token); return ok }"
+    }
+
+    /// Reports whether the session registry currently holds an entry for
+    /// the given id. Test-only.
+    func sessionExists(id: string): bool = {
+        frontend: "(id) => false",
+        backend: "func(id string) bool { return __sovaSessionGet(id) != nil }"
+    }
+
+    /// Seeds the mocked random source so `random.*` produces a
+    /// deterministic sequence under test.
+    ///
+    /// @param seed the PRNG seed
+    func mockRandom(seed: int) = {
+        frontend: "(s) => { __sovaJSRandSeed = (typeof s === 'number' ? s : 0) >>> 0; __sovaJSRandReal = false; }",
+        backend: "func(seed int64) { if __sovaTestHarnessActive() { __sovaTestMockRandom(seed) } }"
+    }
+
+    /// Returns the next pseudo-random value from the mocked source.
+    func random(): int = {
+        frontend: "() => __sovaJSRandom()",
+        backend: "func() int64 { if !__sovaTestHarnessActive() { return 0 }; return __sovaTestRandom() }"
+    }
+}

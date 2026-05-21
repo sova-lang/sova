@@ -1,0 +1,311 @@
+package std/browser on frontend
+
+extern {
+    func _query(selector: string): any = {
+        frontend: "(s) => document.querySelector(s)"
+    }
+    func _queryAll(selector: string): []any = {
+        frontend: "(s) => Array.from(document.querySelectorAll(s))"
+    }
+    func _byId(id: string): any = {
+        frontend: "(i) => document.getElementById(i)"
+    }
+    func _body(): any = {
+        frontend: "() => document.body"
+    }
+    func _head(): any = {
+        frontend: "() => document.head"
+    }
+    func _create(tagName: string): any = {
+        frontend: "(tagName) => document.createElement(tagName)"
+    }
+
+    func _text(el: any): string = {
+        frontend: "(e) => e == null ? '' : (e.textContent || '')"
+    }
+    func _setText(el: any, t: string) = {
+        frontend: "(e, t) => { if (e) e.textContent = t; }"
+    }
+    func _html(el: any): string = {
+        frontend: "(e) => e == null ? '' : (e.innerHTML || '')"
+    }
+    func _setHtml(el: any, h: string) = {
+        frontend: "(e, h) => { if (e) e.innerHTML = h; }"
+    }
+    func _value(el: any): string = {
+        frontend: "(e) => (e && 'value' in e) ? String(e.value) : ''"
+    }
+    func _setValue(el: any, v: string) = {
+        frontend: "(e, v) => { if (e && 'value' in e) e.value = v; }"
+    }
+    func _checked(el: any): bool = {
+        frontend: "(e) => !!(e && e.checked)"
+    }
+    func _setChecked(el: any, c: bool) = {
+        frontend: "(e, c) => { if (e) e.checked = !!c; }"
+    }
+
+    func _addClass(el: any, c: string) = {
+        frontend: "(e, c) => { if (e) e.classList.add(c); }"
+    }
+    func _removeClass(el: any, c: string) = {
+        frontend: "(e, c) => { if (e) e.classList.remove(c); }"
+    }
+    func _toggleClass(el: any, c: string) = {
+        frontend: "(e, c) => { if (e) e.classList.toggle(c); }"
+    }
+    func _hasClass(el: any, c: string): bool = {
+        frontend: "(e, c) => !!(e && e.classList && e.classList.contains(c))"
+    }
+
+    func _attr(el: any, name: string): string = {
+        frontend: "(e, n) => (e && e.getAttribute) ? (e.getAttribute(n) || '') : ''"
+    }
+    func _setAttr(el: any, name: string, value: string) = {
+        frontend: "(e, n, v) => { if (e && e.setAttribute) e.setAttribute(n, v); }"
+    }
+    func _removeAttr(el: any, name: string) = {
+        frontend: "(e, n) => { if (e && e.removeAttribute) e.removeAttribute(n); }"
+    }
+
+    func _append(parent: any, child: any) = {
+        frontend: "(p, c) => { if (p && c) p.appendChild(c); }"
+    }
+    func _remove(el: any) = {
+        frontend: "(e) => { if (e && e.parentNode) e.parentNode.removeChild(e); }"
+    }
+    func _clear(el: any) = {
+        frontend: "(e) => { if (e) { while (e.firstChild) e.removeChild(e.firstChild); } }"
+    }
+    func _listen(el: any, event: string, handler: func(any)): func() = {
+        frontend: "(e, ev, fn) => { if (!e) return () => {}; const wrapped = (evt) => fn(evt); e.addEventListener(ev, wrapped); return () => e.removeEventListener(ev, wrapped); }"
+    }
+    func _dispatch(el: any, event: string) = {
+        frontend: "(e, ev) => { if (e) e.dispatchEvent(new Event(ev, { bubbles: true })); }"
+    }
+
+    func localGet(key: string): string = {
+        frontend: "(k) => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }"
+    }
+    func localSet(key: string, value: string) = {
+        frontend: "(k, v) => { try { localStorage.setItem(k, v); } catch (e) {} }"
+    }
+    func localRemove(key: string) = {
+        frontend: "(k) => { try { localStorage.removeItem(k); } catch (e) {} }"
+    }
+    func localClear() = {
+        frontend: "() => { try { localStorage.clear(); } catch (e) {} }"
+    }
+    func sessionGet(key: string): string = {
+        frontend: "(k) => { try { return sessionStorage.getItem(k) || ''; } catch (e) { return ''; } }"
+    }
+    func sessionSet(key: string, value: string) = {
+        frontend: "(k, v) => { try { sessionStorage.setItem(k, v); } catch (e) {} }"
+    }
+    func sessionRemove(key: string) = {
+        frontend: "(k) => { try { sessionStorage.removeItem(k); } catch (e) {} }"
+    }
+    func sessionClear() = {
+        frontend: "() => { try { sessionStorage.clear(); } catch (e) {} }"
+    }
+
+    func cookieGet(name: string): string = {
+        frontend: "(n) => { const m = document.cookie.match(new RegExp('(^|; )' + n.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '=([^;]*)')); return m ? decodeURIComponent(m[2]) : ''; }"
+    }
+    func cookieSet(name: string, value: string, days: int) = {
+        frontend: "(n, v, d) => { const exp = d > 0 ? '; expires=' + new Date(Date.now() + d * 86400000).toUTCString() : ''; document.cookie = n + '=' + encodeURIComponent(v) + exp + '; path=/'; }"
+    }
+    func cookieDelete(name: string) = {
+        frontend: "(n) => { document.cookie = n + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'; }"
+    }
+
+    func url(): string = {
+        frontend: "() => window.location.href"
+    }
+    func pathname(): string = {
+        frontend: "() => window.location.pathname"
+    }
+    func goTo(target: string) = {
+        frontend: "(u) => { window.location.href = u; }"
+    }
+    func reload() = {
+        frontend: "() => window.location.reload()"
+    }
+    func queryParam(key: string): string = {
+        frontend: "(k) => { try { return new URL(window.location.href).searchParams.get(k) || ''; } catch (e) { return ''; } }"
+    }
+    func setQueryParam(key: string, value: string) = {
+        frontend: "(k, v) => { const u = new URL(window.location.href); u.searchParams.set(k, v); window.history.replaceState({}, '', u.toString()); }"
+    }
+
+    func _title(): string = {
+        frontend: "() => document.title || ''"
+    }
+    func _setTitle(t: string) = {
+        frontend: "(t) => { document.title = t; }"
+    }
+    func viewportWidth(): int = {
+        frontend: "() => window.innerWidth | 0"
+    }
+    func viewportHeight(): int = {
+        frontend: "() => window.innerHeight | 0"
+    }
+    func scrollTo(x: int, y: int) = {
+        frontend: "(x, y) => window.scrollTo(x, y)"
+    }
+    func scrollY(): int = {
+        frontend: "() => window.scrollY | 0"
+    }
+
+    async func fetchText(url: string): string = {
+        frontend: "async (u) => { const r = await fetch(u); return await r.text(); }"
+    }
+    async func fetchJson(url: string): any = {
+        frontend: "async (u) => { const r = await fetch(u); return await r.json(); }"
+    }
+    async func fetchStatus(url: string): int = {
+        frontend: "async (u) => { const r = await fetch(u); return r.status | 0; }"
+    }
+    async func postJson(url: string, body: string): string = {
+        frontend: "async (u, b) => { const r = await fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: b }); return await r.text(); }"
+    }
+
+    async func copy(text: string) = {
+        frontend: "async (t) => { try { await navigator.clipboard.writeText(t); } catch (e) {} }"
+    }
+    async func paste(): string = {
+        frontend: "async () => { try { return await navigator.clipboard.readText(); } catch (e) { return ''; } }"
+    }
+
+    func confirm(msg: string): bool = {
+        frontend: "(m) => !!window.confirm(m)"
+    }
+    func alert(msg: string) = {
+        frontend: "(m) => window.alert(m)"
+    }
+    func prompt(msg: string, fallback: string): string = {
+        frontend: "(m, d) => { const r = window.prompt(m, d); return r == null ? '' : r; }"
+    }
+
+    func consoleLog(v: any) = {
+        frontend: "(v) => console.log(v)"
+    }
+    func consoleWarn(v: any) = {
+        frontend: "(v) => console.warn(v)"
+    }
+    func consoleError(v: any) = {
+        frontend: "(v) => console.error(v)"
+    }
+}
+
+/// A handle to a DOM element. Methods are thin wrappers over the
+/// corresponding `Element` / `HTMLElement` properties (`textContent`,
+/// `classList`, `setAttribute`, event listeners, etc.). All methods are
+/// safe to call on a missing element - they're no-ops or return empty
+/// values rather than throwing.
+type Element {
+    private _h: any = none
+    new(handle: any) { this._h = handle }
+
+    func handle(): any { return this._h }
+    func exists(): bool { return this._h != none }
+
+    func text(): string { return _text(this._h) }
+    func setText(t: string) { _setText(this._h, t) }
+    func html(): string { return _html(this._h) }
+    func setHtml(h: string) { _setHtml(this._h, h) }
+    func value(): string { return _value(this._h) }
+    func setValue(v: string) { _setValue(this._h, v) }
+    func checked(): bool { return _checked(this._h) }
+    func setChecked(c: bool) { _setChecked(this._h, c) }
+
+    func addClass(c: string) { _addClass(this._h, c) }
+    func removeClass(c: string) { _removeClass(this._h, c) }
+    func toggleClass(c: string) { _toggleClass(this._h, c) }
+    func hasClass(c: string): bool { return _hasClass(this._h, c) }
+
+    func attr(name: string): string { return _attr(this._h, name) }
+    func setAttr(name: string, v: string) { _setAttr(this._h, name, v) }
+    func removeAttr(name: string) { _removeAttr(this._h, name) }
+
+    func append(child: Element) { _append(this._h, child.handle()) }
+    func remove() { _remove(this._h) }
+    func clear() { _clear(this._h) }
+    func dispatch(event: string) { _dispatch(this._h, event) }
+
+    func listen(event: string, handler: func(any)): func() {
+        return _listen(this._h, event, handler)
+    }
+    func onClick(handler: func(any)): func() {
+        return _listen(this._h, "click", handler)
+    }
+    func onChange(handler: func(any)): func() {
+        return _listen(this._h, "change", handler)
+    }
+    func onInput(handler: func(any)): func() {
+        return _listen(this._h, "input", handler)
+    }
+    func onSubmit(handler: func(any)): func() {
+        return _listen(this._h, "submit", handler)
+    }
+}
+
+/// The global document handle. Use `browser.doc()` to obtain one, or call
+/// the package-level `query`, `byId`, `create` shortcuts directly.
+type Document {
+    new() {}
+
+    func query(selector: string): Element {
+        return new Element(_query(selector))
+    }
+    func byId(id: string): Element {
+        return new Element(_byId(id))
+    }
+    func create(tagName: string): Element {
+        return new Element(_create(tagName))
+    }
+    func body(): Element {
+        return new Element(_body())
+    }
+    func head(): Element {
+        return new Element(_head())
+    }
+    func title(): string { return _title() }
+    func setTitle(t: string) { _setTitle(t) }
+}
+
+/// Returns the global `Document` handle. Equivalent to creating a fresh
+/// `Document()`; the call exists so consumers can write
+/// `browser.doc().body()` in a readable chain.
+///
+/// @returns the document handle
+func doc(): Document {
+    return new Document()
+}
+
+/// Finds the first element matching the CSS selector. The returned
+/// `Element` may report `exists() == false` if no node matched; methods on
+/// it are safe to call regardless.
+///
+/// @param selector a CSS selector
+/// @returns the matching element wrapper
+func query(selector: string): Element {
+    return new Element(_query(selector))
+}
+
+/// Looks up the element with the given `id` attribute.
+///
+/// @param id the element's id
+/// @returns the matching element wrapper
+func byId(id: string): Element {
+    return new Element(_byId(id))
+}
+
+/// Creates a detached element with the given tag name. Append it to the
+/// tree via `Element.append(...)` to make it visible.
+///
+/// @param tagName HTML tag name (e.g. `"div"`, `"button"`)
+/// @returns the newly-created element wrapper
+func create(tagName: string): Element {
+    return new Element(_create(tagName))
+}

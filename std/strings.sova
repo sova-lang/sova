@@ -1,0 +1,97 @@
+package std/strings on shared
+
+extern {
+    /// Reports whether `s` contains `needle` anywhere. Returns true for an
+    /// empty needle.
+    ///
+    /// @param s the haystack
+    /// @param needle the substring to look for
+    /// @returns true if found
+    func contains(s: string, needle: string): bool = {
+        frontend: "(s, n) => String(s).includes(n)",
+        backend("strings"): "strings.Contains"
+    }
+
+    /// Reports whether `s` begins with `prefix`.
+    ///
+    /// @param s the string to inspect
+    /// @param prefix the prefix to test
+    /// @returns true if `s` starts with `prefix`
+    func startsWith(s: string, prefix: string): bool = {
+        frontend: "(s, p) => String(s).startsWith(p)",
+        backend("strings"): "strings.HasPrefix"
+    }
+
+    /// Reports whether `s` ends with `suffix`.
+    ///
+    /// @param s the string to inspect
+    /// @param suffix the suffix to test
+    /// @returns true if `s` ends with `suffix`
+    func endsWith(s: string, suffix: string): bool = {
+        frontend: "(s, p) => String(s).endsWith(p)",
+        backend("strings"): "strings.HasSuffix"
+    }
+
+    /// Returns `s` with every letter converted to upper case using the
+    /// host platform's locale-aware rules.
+    ///
+    /// @param s the input string
+    /// @returns the upper-cased copy
+    func upper(s: string): string = {
+        frontend: "(s) => String(s).toUpperCase()",
+        backend("strings"): "strings.ToUpper"
+    }
+
+    /// Returns `s` with every letter converted to lower case using the
+    /// host platform's locale-aware rules.
+    ///
+    /// @param s the input string
+    /// @returns the lower-cased copy
+    func lower(s: string): string = {
+        frontend: "(s) => String(s).toLowerCase()",
+        backend("strings"): "strings.ToLower"
+    }
+
+    /// Removes leading and trailing whitespace (matching Unicode
+    /// whitespace categories) from `s`.
+    ///
+    /// @param s the input string
+    /// @returns the trimmed string
+    func trim(s: string): string = {
+        frontend: "(s) => String(s).trim()",
+        backend("strings"): "strings.TrimSpace"
+    }
+
+    /// Returns a copy of `s` with every occurrence of `old` replaced by
+    /// `repl`. Pass an empty `old` to insert between every character.
+    ///
+    /// @param s the input string
+    /// @param old the substring to replace
+    /// @param repl the replacement substring
+    /// @returns the resulting string
+    func replace(s: string, old: string, repl: string): string = {
+        frontend: "(s, o, r) => String(s).split(o).join(r)",
+        backend("strings"): "func(s, o, r string) string { return strings.ReplaceAll(s, o, r) }"
+    }
+
+    /// Splits `s` into substrings separated by `sep`. With an empty
+    /// separator the input is split into single-character chunks.
+    ///
+    /// @param s the input string
+    /// @param sep the separator
+    /// @returns the slice of fragments
+    func split(s: string, sep: string): []string = {
+        frontend: "(s, sep) => String(s).split(sep)",
+        backend("strings"): "strings.Split"
+    }
+
+    /// Concatenates `parts` with `sep` between each element.
+    ///
+    /// @param parts the strings to join
+    /// @param sep the separator to insert between elements
+    /// @returns the joined string
+    func join(parts: []string, sep: string): string = {
+        frontend: "(parts, sep) => (parts || []).join(sep)",
+        backend("strings"): "strings.Join"
+    }
+}

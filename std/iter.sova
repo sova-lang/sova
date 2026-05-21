@@ -1,0 +1,11 @@
+package std/iter on shared
+
+/// Iterable is the protocol Sova's `for x in iter` loop dispatches on for
+/// user-defined types. Any type with a `func next(): option<T>` method is
+/// treated as iterable structurally — explicitly declaring `with Iterable<T>`
+/// is optional and serves as documentation / a future generic-constraint
+/// anchor. `next()` returns the next element wrapped in `option<T>`;
+/// returning `none` signals end of iteration and breaks the loop.
+interface Iterable<T> {
+    func next(): option<T>
+}

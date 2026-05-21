@@ -1,0 +1,651 @@
+package std/list on shared
+
+import "std/sync"
+
+/// A growable, indexed sequence of `T` backed by a native slice. Implements the iterable protocol so `for x in list { ... }` walks the elements in order. After a full iteration the internal cursor auto-resets so the list can be iterated again from the next call site - this means nested iterations on the same list don't behave as you'd expect; use `iter()` to get a fresh, independent iterator for those.
+type List<T> {
+    private items: []T = [ ]
+    private _cursor: int = 0
+
+    new() {}
+
+    new(initial: []T) {
+        this.items = initial
+    }
+
+    cast(src: []T): List<T> {
+        let l = new List<T>()
+        l.items = src
+        return l
+    }
+
+    /// Returns the number of elements in the list.
+    func size(): int {
+        return len(this.items)
+    }
+
+    /// Reports whether the list has zero elements.
+    func isEmpty(): bool {
+        return len(this.items) == 0
+    }
+
+    /// Appends `item` to the end of the list.
+    func add(item: T) {
+        this.items = this.items + [item]
+    }
+
+    /// Returns the element at `idx`, or `none` when `idx` is out of bounds.
+    func get(idx: int): option<T> {
+        if idx < 0 || idx >= len(this.items) {
+            return none
+        }
+        return this.items[idx]
+    }
+
+    /// Replaces the element at `idx`. No-op when `idx` is out of bounds.
+    func set(idx: int, item: T) {
+        if idx < 0 || idx >= len(this.items) {
+            return
+        }
+        let out: []T = [ ]
+        for x, i in this.items {
+            if i == idx {
+                out = out + [item]
+            } else {
+                out = out + [x]
+            }
+        }
+        this.items = out
+    }
+
+    /// Removes and returns the element at `idx`, or `none` when out of bounds.
+    func removeAt(idx: int): option<T> {
+        if idx < 0 || idx >= len(this.items) {
+            return none
+        }
+        let removed = this.items[idx]
+        let out: []T = [ ]
+        for x, i in this.items {
+            if i != idx {
+                out = out + [x]
+            }
+        }
+        this.items = out
+        return removed
+    }
+
+    /// Returns the first element, or `none` when the list is empty.
+    func first(): option<T> {
+        if len(this.items) == 0 {
+            return none
+        }
+        return this.items[0]
+    }
+
+    /// Returns the last element, or `none` when the list is empty.
+    func last(): option<T> {
+        let n = len(this.items)
+        if n == 0 {
+            return none
+        }
+        return this.items[n - 1]
+    }
+
+    /// Removes every element.
+    func clear() {
+        this.items = [ ]
+        this._cursor = 0
+    }
+
+    /// Returns a copy of the backing slice. Mutations on the returned slice don't affect the list.
+    func toSlice(): []T {
+        let out: []T = [ ]
+        for x in this.items {
+            out = out + [x]
+        }
+        return out
+    }
+
+    /// Applies `fn` to each element in order.
+    func forEach(fn: func(T)) {
+        for x in this.items {
+            fn(x)
+        }
+    }
+
+    /// Returns a fresh, independent iterator positioned at the start. Use this when you need nested iteration or multiple cursors over the same list.
+    func iter(): ListIterator<T> {
+        return new ListIterator<T>(items: this.items)
+    }
+
+    /// Iterable protocol: yields the next element, returning `none` and resetting the cursor at end-of-stream so the list stays iterable.
+    func next(): option<T> {
+        if this._cursor >= len(this.items) {
+            this._cursor = 0
+            return none
+        }
+        let v = this.items[this._cursor]
+        this._cursor = this._cursor + 1
+        return v
+    }
+}
+
+/// An iterator over a snapshot of a `List<T>`. Created by `List.iter()`; advances independently of the originating list's internal cursor.
+type ListIterator<T> {
+    private items: []T = [ ]
+    private pos: int = 0
+
+    new(items: []T) {
+        this.items = items
+        this.pos = 0
+    }
+
+    func next(): option<T> {
+        if this.pos >= len(this.items) {
+            return none
+        }
+        let v = this.items[this.pos]
+        this.pos = this.pos + 1
+        return v
+    }
+}
+
+/// Lock-protected variant of `List<T>` safe for concurrent producers and consumers. Every mutator and accessor acquires the same `Mutex` so reads see a consistent state. `iter()` snapshots the current contents under the lock and returns an iterator that walks the snapshot without holding the lock further.
+type ConcurrentList<T> {
+    private items: []T = [ ]
+    private _cursor: int = 0
+    private _lock: sync.Mutex = new sync.Mutex()
+
+    new() {}
+
+    new(initial: []T) {
+        this.items = initial
+    }
+
+    cast(src: []T): ConcurrentList<T> {
+        let l = new ConcurrentList<T>()
+        l.items = src
+        return l
+    }
+
+    func size(): int {
+        this._lock.lock()
+        let n = len(this.items)
+        this._lock.unlock()
+        return n
+    }
+
+    func isEmpty(): bool {
+        this._lock.lock()
+        let empty = len(this.items) == 0
+        this._lock.unlock()
+        return empty
+    }
+
+    func add(item: T) {
+        this._lock.lock()
+        this.items = this.items + [item]
+        this._lock.unlock()
+    }
+
+    func get(idx: int): option<T> {
+        this._lock.lock()
+        if idx < 0 || idx >= len(this.items) {
+            this._lock.unlock()
+            return none
+        }
+        let v = this.items[idx]
+        this._lock.unlock()
+        return v
+    }
+
+    func set(idx: int, item: T) {
+        this._lock.lock()
+        if idx < 0 || idx >= len(this.items) {
+            this._lock.unlock()
+            return
+        }
+        let out: []T = [ ]
+        for x, i in this.items {
+            if i == idx {
+                out = out + [item]
+            } else {
+                out = out + [x]
+            }
+        }
+        this.items = out
+        this._lock.unlock()
+    }
+
+    func removeAt(idx: int): option<T> {
+        this._lock.lock()
+        if idx < 0 || idx >= len(this.items) {
+            this._lock.unlock()
+            return none
+        }
+        let removed = this.items[idx]
+        let out: []T = [ ]
+        for x, i in this.items {
+            if i != idx {
+                out = out + [x]
+            }
+        }
+        this.items = out
+        this._lock.unlock()
+        return removed
+    }
+
+    func first(): option<T> {
+        this._lock.lock()
+        if len(this.items) == 0 {
+            this._lock.unlock()
+            return none
+        }
+        let v = this.items[0]
+        this._lock.unlock()
+        return v
+    }
+
+    func last(): option<T> {
+        this._lock.lock()
+        let n = len(this.items)
+        if n == 0 {
+            this._lock.unlock()
+            return none
+        }
+        let v = this.items[n - 1]
+        this._lock.unlock()
+        return v
+    }
+
+    func clear() {
+        this._lock.lock()
+        this.items = [ ]
+        this._cursor = 0
+        this._lock.unlock()
+    }
+
+    func toSlice(): []T {
+        this._lock.lock()
+        let out: []T = [ ]
+        for x in this.items {
+            out = out + [x]
+        }
+        this._lock.unlock()
+        return out
+    }
+
+    func forEach(fn: func(T)) {
+        let snap = this.toSlice()
+        for x in snap {
+            fn(x)
+        }
+    }
+
+    /// Returns a fresh iterator over a snapshot of the current contents. The snapshot is taken under the lock; the iterator itself runs lock-free.
+    func iter(): ListIterator<T> {
+        return new ListIterator<T>(items: this.toSlice())
+    }
+
+    func next(): option<T> {
+        this._lock.lock()
+        if this._cursor >= len(this.items) {
+            this._cursor = 0
+            this._lock.unlock()
+            return none
+        }
+        let v = this.items[this._cursor]
+        this._cursor = this._cursor + 1
+        this._lock.unlock()
+        return v
+    }
+}
+
+/// A single node in a `LinkedList<T>`. The pair of optional `prev` / `next` pointers makes the list doubly-linked so insertion and removal at either end are O(1) without scanning.
+type LinkedNode<T> {
+    value: T
+    prev: option<LinkedNode<T> > = none
+    next: option<LinkedNode<T> > = none
+
+    new(value: T) {
+        this.value = value
+    }
+}
+
+/// A doubly-linked list of `T`. Insertion and removal at the head or tail run in O(1); positional access (`get(idx)`) is O(n) because it walks from whichever end is closer. Implements the iterable protocol via an internal traversal cursor that auto-resets at end-of-stream.
+type LinkedList<T> {
+    private head: option<LinkedNode<T> > = none
+    private tail: option<LinkedNode<T> > = none
+    private _size: int = 0
+    private _cursor: option<LinkedNode<T> > = none
+    private _cursorPrimed: bool = false
+
+    new() {}
+
+    new(initial: []T) {
+        for x in initial {
+            this.addLast(x)
+        }
+    }
+
+    cast(src: []T): LinkedList<T> {
+        let l = new LinkedList<T>()
+        for x in src {
+            l.addLast(x)
+        }
+        return l
+    }
+
+    func size(): int {
+        return this._size
+    }
+
+    func isEmpty(): bool {
+        return this._size == 0
+    }
+
+    /// Inserts `item` at the head of the list. O(1).
+    func addFirst(item: T) {
+        let node = new LinkedNode<T>(item)
+        let oldHead = this.head
+        if oldHead == none {
+            this.head = node
+            this.tail = node
+        } else {
+            let h = oldHead!
+            node.next = h
+            h.prev = node
+            this.head = node
+        }
+        this._size = this._size + 1
+    }
+
+    /// Inserts `item` at the tail of the list. O(1).
+    func addLast(item: T) {
+        let node = new LinkedNode<T>(item)
+        let oldTail = this.tail
+        if oldTail == none {
+            this.head = node
+            this.tail = node
+        } else {
+            let t = oldTail!
+            node.prev = t
+            t.next = node
+            this.tail = node
+        }
+        this._size = this._size + 1
+    }
+
+    /// Alias for `addLast` so the API matches `List<T>`.
+    func add(item: T) {
+        this.addLast(item)
+    }
+
+    /// Removes and returns the first element, or `none` when the list is empty.
+    func removeFirst(): option<T> {
+        let cur = this.head
+        if cur == none {
+            return none
+        }
+        let h = cur!
+        let v = h.value
+        this.head = h.next
+        let newHead = this.head
+        if newHead == none {
+            this.tail = none
+        } else {
+            let nh = newHead!
+            nh.prev = none
+        }
+        this._size = this._size - 1
+        return v
+    }
+
+    /// Removes and returns the last element, or `none` when the list is empty.
+    func removeLast(): option<T> {
+        let cur = this.tail
+        if cur == none {
+            return none
+        }
+        let t = cur!
+        let v = t.value
+        this.tail = t.prev
+        let newTail = this.tail
+        if newTail == none {
+            this.head = none
+        } else {
+            let nt = newTail!
+            nt.next = none
+        }
+        this._size = this._size - 1
+        return v
+    }
+
+    /// Returns the first element, or `none` when the list is empty.
+    func first(): option<T> {
+        let h = this.head
+        if h == none {
+            return none
+        }
+        return h!.value
+    }
+
+    /// Returns the last element, or `none` when the list is empty.
+    func last(): option<T> {
+        let t = this.tail
+        if t == none {
+            return none
+        }
+        return t!.value
+    }
+
+    /// Returns the element at `idx` (O(n) walk from the head), or `none` when out of bounds.
+    func get(idx: int): option<T> {
+        if idx < 0 || idx >= this._size {
+            return none
+        }
+        let cur = this.head
+        let i = 0
+        while i < idx {
+            if cur == none {
+                return none
+            }
+            cur = cur!.next
+            i = i + 1
+        }
+        if cur == none {
+            return none
+        }
+        return cur!.value
+    }
+
+    func clear() {
+        this.head = none
+        this.tail = none
+        this._size = 0
+        this._cursor = none
+        this._cursorPrimed = false
+    }
+
+    /// Returns a `[]T` snapshot in head-to-tail order.
+    func toSlice(): []T {
+        let out: []T = [ ]
+        let cur = this.head
+        while cur != none {
+            out = out + [cur!.value]
+            cur = cur!.next
+        }
+        return out
+    }
+
+    func forEach(fn: func(T)) {
+        let cur = this.head
+        while cur != none {
+            fn(cur!.value)
+            cur = cur!.next
+        }
+    }
+
+    /// Returns a fresh, independent iterator positioned at the head.
+    func iter(): LinkedListIterator<T> {
+        return new LinkedListIterator<T>(start: this.head)
+    }
+
+    func next(): option<T> {
+        if !this._cursorPrimed {
+            this._cursor = this.head
+            this._cursorPrimed = true
+        }
+        let c = this._cursor
+        if c == none {
+            this._cursorPrimed = false
+            return none
+        }
+        let node = c!
+        let v = node.value
+        this._cursor = node.next
+        return v
+    }
+}
+
+/// An iterator over a `LinkedList<T>`. Created by `LinkedList.iter()`; walks from head to tail using its own cursor.
+type LinkedListIterator<T> {
+    private cur: option<LinkedNode<T> > = none
+
+    new(start: option<LinkedNode<T> >) {
+        this.cur = start
+    }
+
+    func next(): option<T> {
+        let c = this.cur
+        if c == none {
+            return none
+        }
+        let node = c!
+        let v = node.value
+        this.cur = node.next
+        return v
+    }
+}
+
+/// Lock-protected variant of `LinkedList<T>`. Same guarantees as `ConcurrentList<T>`: all operations are serialised through a `Mutex`, and `iter()` snapshots under the lock so the iterator runs lock-free.
+type ConcurrentLinkedList<T> {
+    private inner: LinkedList<T> = new LinkedList<T>()
+    private _lock: sync.Mutex = new sync.Mutex()
+
+    new() {}
+
+    new(initial: []T) {
+        for x in initial {
+            this.addLast(x)
+        }
+    }
+
+    cast(src: []T): ConcurrentLinkedList<T> {
+        let l = new ConcurrentLinkedList<T>()
+        for x in src {
+            l.addLast(x)
+        }
+        return l
+    }
+
+    func size(): int {
+        this._lock.lock()
+        let n = this.inner.size()
+        this._lock.unlock()
+        return n
+    }
+
+    func isEmpty(): bool {
+        this._lock.lock()
+        let e = this.inner.isEmpty()
+        this._lock.unlock()
+        return e
+    }
+
+    func addFirst(item: T) {
+        this._lock.lock()
+        this.inner.addFirst(item)
+        this._lock.unlock()
+    }
+
+    func addLast(item: T) {
+        this._lock.lock()
+        this.inner.addLast(item)
+        this._lock.unlock()
+    }
+
+    func add(item: T) {
+        this.addLast(item)
+    }
+
+    func removeFirst(): option<T> {
+        this._lock.lock()
+        let v = this.inner.removeFirst()
+        this._lock.unlock()
+        return v
+    }
+
+    func removeLast(): option<T> {
+        this._lock.lock()
+        let v = this.inner.removeLast()
+        this._lock.unlock()
+        return v
+    }
+
+    func first(): option<T> {
+        this._lock.lock()
+        let v = this.inner.first()
+        this._lock.unlock()
+        return v
+    }
+
+    func last(): option<T> {
+        this._lock.lock()
+        let v = this.inner.last()
+        this._lock.unlock()
+        return v
+    }
+
+    func get(idx: int): option<T> {
+        this._lock.lock()
+        let v = this.inner.get(idx)
+        this._lock.unlock()
+        return v
+    }
+
+    func clear() {
+        this._lock.lock()
+        this.inner.clear()
+        this._lock.unlock()
+    }
+
+    func toSlice(): []T {
+        this._lock.lock()
+        let s = this.inner.toSlice()
+        this._lock.unlock()
+        return s
+    }
+
+    func forEach(fn: func(T)) {
+        let snap = this.toSlice()
+        for x in snap {
+            fn(x)
+        }
+    }
+
+    /// Snapshot-based iterator: copies the current contents under the lock and returns a lock-free iterator over the snapshot.
+    func iter(): ListIterator<T> {
+        let it = new ListIterator<T>()
+        it.items = this.toSlice()
+        it.pos = 0
+        return it
+    }
+
+    func next(): option<T> {
+        this._lock.lock()
+        let v = this.inner.next()
+        this._lock.unlock()
+        return v
+    }
+}

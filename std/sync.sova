@@ -1,0 +1,109 @@
+package std/sync on shared
+
+extern {
+    func _newMutex(): any = {
+        frontend: "() => { let queue = []; let held = false; return { lock: async () => { if (!held) { held = true; return; } return new Promise(r => queue.push(r)); }, unlock: () => { if (queue.length > 0) { const r = queue.shift(); r(); } else { held = false; } }, tryLock: () => { if (held) return false; held = true; return true; } }; }",
+        backend("sync"): "func() any { return &sync.Mutex{} }"
+    }
+    func _lockMutex(h: any) = {
+        frontend: "async (h) => h.lock()",
+        backend("sync"): "func(h any) { h.(*sync.Mutex).Lock() }"
+    }
+    func _unlockMutex(h: any) = {
+        frontend: "(h) => h.unlock()",
+        backend("sync"): "func(h any) { h.(*sync.Mutex).Unlock() }"
+    }
+    func _tryLockMutex(h: any): bool = {
+        frontend: "(h) => h.tryLock()",
+        backend("sync"): "func(h any) bool { return h.(*sync.Mutex).TryLock() }"
+    }
+
+    func _newRWMutex(): any = {
+        frontend: "() => { let readers = 0; let writer = false; const writeQ = []; const readQ = []; const drainReaders = () => { while (readQ.length > 0 && !writer) { const r = readQ.shift(); readers++; r(); } }; return { rlock: async () => { if (!writer && writeQ.length === 0) { readers++; return; } return new Promise(r => readQ.push(r)); }, runlock: () => { readers--; if (readers === 0 && writeQ.length > 0) { writer = true; const w = writeQ.shift(); w(); } }, lock: async () => { if (!writer && readers === 0) { writer = true; return; } return new Promise(r => writeQ.push(r)); }, unlock: () => { writer = false; if (writeQ.length > 0) { writer = true; const w = writeQ.shift(); w(); } else { drainReaders(); } } }; }",
+        backend("sync"): "func() any { return &sync.RWMutex{} }"
+    }
+    func _rlockRW(h: any) = {
+        frontend: "async (h) => h.rlock()",
+        backend("sync"): "func(h any) { h.(*sync.RWMutex).RLock() }"
+    }
+    func _runlockRW(h: any) = {
+        frontend: "(h) => h.runlock()",
+        backend("sync"): "func(h any) { h.(*sync.RWMutex).RUnlock() }"
+    }
+    func _wlockRW(h: any) = {
+        frontend: "async (h) => h.lock()",
+        backend("sync"): "func(h any) { h.(*sync.RWMutex).Lock() }"
+    }
+    func _wunlockRW(h: any) = {
+        frontend: "(h) => h.unlock()",
+        backend("sync"): "func(h any) { h.(*sync.RWMutex).Unlock() }"
+    }
+
+    func _newWaitGroup(): any = {
+        frontend: "() => { let count = 0; const waiters = []; return { add: (n) => { count += n; }, done: () => { count--; if (count <= 0) { while (waiters.length > 0) { const w = waiters.shift(); w(); } } }, wait: async () => { if (count <= 0) return; return new Promise(r => waiters.push(r)); } }; }",
+        backend("sync"): "func() any { return &sync.WaitGroup{} }"
+    }
+    func _wgAdd(h: any, n: int) = {
+        frontend: "(h, n) => h.add(n)",
+        backend("sync"): "func(h any, n int64) { h.(*sync.WaitGroup).Add(int(n)) }"
+    }
+    func _wgDone(h: any) = {
+        frontend: "(h) => h.done()",
+        backend("sync"): "func(h any) { h.(*sync.WaitGroup).Done() }"
+    }
+    func _wgWait(h: any) = {
+        frontend: "async (h) => h.wait()",
+        backend("sync"): "func(h any) { h.(*sync.WaitGroup).Wait() }"
+    }
+
+    func _newOnce(): any = {
+        frontend: "() => { let done = false; return { do: (fn) => { if (!done) { done = true; fn(); } } }; }",
+        backend("sync"): "func() any { return &sync.Once{} }"
+    }
+    func _onceDo(h: any, fn: any) = {
+        frontend: "(h, fn) => h.do(fn)",
+        backend("sync"): "func(h any, fn any) { h.(*sync.Once).Do(fn.(func())) }"
+    }
+}
+
+/// A mutual-exclusion lock. Use `lock()` to acquire and `unlock()` to
+/// release; only one goroutine / task may hold the lock at a time.
+/// `tryLock()` is the non-blocking variant.
+type Mutex {
+    private _handle: any = _newMutex()
+    new() {}
+    func lock() { _lockMutex(this._handle) }
+    func unlock() { _unlockMutex(this._handle) }
+    func tryLock(): bool { return _tryLockMutex(this._handle) }
+}
+
+/// A reader/writer lock: many readers can hold `rlock()` concurrently, but
+/// `lock()` (writer) is exclusive against everyone. Writers have priority
+/// over new readers to avoid starvation.
+type RWMutex {
+    private _handle: any = _newRWMutex()
+    new() {}
+    func rlock() { _rlockRW(this._handle) }
+    func runlock() { _runlockRW(this._handle) }
+    func lock() { _wlockRW(this._handle) }
+    func unlock() { _wunlockRW(this._handle) }
+}
+
+/// A counted-completion barrier. Increase the counter with `add(n)`, signal
+/// completion of one unit with `done()`, and block in `wait()` until the
+/// counter returns to zero.
+type WaitGroup {
+    private _handle: any = _newWaitGroup()
+    new() {}
+    func add(n: int) { _wgAdd(this._handle, n) }
+    func done() { _wgDone(this._handle) }
+    func wait() { _wgWait(this._handle) }
+}
+
+/// Guarantees a function runs at most once across all callers of `do(fn)`.
+/// Useful for one-shot initialisation.
+type Once {
+    private _handle: any = _newOnce()
+    new() {}
+    func do(fn: any) { _onceDo(this._handle, fn) }
+}

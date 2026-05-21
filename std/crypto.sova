@@ -1,0 +1,65 @@
+package std/crypto on shared
+
+extern {
+    /// Computes the SHA-256 digest of `data` and returns it as a 64-character
+    /// lower-case hex string.
+    ///
+    /// @param data the input message
+    /// @returns the 256-bit hash, hex-encoded
+    async func sha256(data: string): string = {
+        frontend: "async (s) => { const buf = new TextEncoder().encode(s); const hash = await crypto.subtle.digest('SHA-256', buf); return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join(''); }",
+        backend("crypto/sha256"): "func(s string) string { h := sha256.Sum256([]byte(s)); const hexd = \"0123456789abcdef\"; out := make([]byte, 64); for i, b := range h { out[i*2] = hexd[b>>4]; out[i*2+1] = hexd[b&0x0f] }; return string(out) }"
+    }
+
+    /// Computes the SHA-512 digest of `data` and returns it as a 128-character
+    /// lower-case hex string.
+    ///
+    /// @param data the input message
+    /// @returns the 512-bit hash, hex-encoded
+    async func sha512(data: string): string = {
+        frontend: "async (s) => { const buf = new TextEncoder().encode(s); const hash = await crypto.subtle.digest('SHA-512', buf); return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join(''); }",
+        backend("crypto/sha512"): "func(s string) string { h := sha512.Sum512([]byte(s)); const hexd = \"0123456789abcdef\"; out := make([]byte, 128); for i, b := range h { out[i*2] = hexd[b>>4]; out[i*2+1] = hexd[b&0x0f] }; return string(out) }"
+    }
+
+    /// Computes the SHA-1 digest of `data`. Cryptographically broken; use
+    /// only for compatibility with legacy systems (git, TLS certificate
+    /// fingerprints, etc.).
+    ///
+    /// @param data the input message
+    /// @returns the 160-bit hash, hex-encoded
+    /// @deprecated SHA-1 is not collision-resistant; prefer SHA-256 for new code.
+    async func sha1(data: string): string = {
+        frontend: "async (s) => { const buf = new TextEncoder().encode(s); const hash = await crypto.subtle.digest('SHA-1', buf); return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join(''); }",
+        backend("crypto/sha1"): "func(s string) string { h := sha1.Sum([]byte(s)); const hexd = \"0123456789abcdef\"; out := make([]byte, 40); for i, b := range h { out[i*2] = hexd[b>>4]; out[i*2+1] = hexd[b&0x0f] }; return string(out) }"
+    }
+
+    /// Computes an HMAC-SHA-256 signature of `data` keyed by `key`.
+    ///
+    /// @param key the secret key
+    /// @param data the message to authenticate
+    /// @returns the 256-bit MAC, hex-encoded
+    async func hmacSha256(key: string, data: string): string = {
+        frontend: "async (k, s) => { const kb = new TextEncoder().encode(k); const db = new TextEncoder().encode(s); const ck = await crypto.subtle.importKey('raw', kb, {name: 'HMAC', hash: 'SHA-256'}, false, ['sign']); const sig = await crypto.subtle.sign('HMAC', ck, db); return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join(''); }",
+        backend("crypto/hmac"): "func(k string, s string) string { mac := hmac.New(sha256.New, []byte(k)); mac.Write([]byte(s)); h := mac.Sum(nil); const hexd = \"0123456789abcdef\"; out := make([]byte, 64); for i, b := range h { out[i*2] = hexd[b>>4]; out[i*2+1] = hexd[b&0x0f] }; return string(out) }"
+    }
+
+    /// Computes an HMAC-SHA-512 signature of `data` keyed by `key`.
+    ///
+    /// @param key the secret key
+    /// @param data the message to authenticate
+    /// @returns the 512-bit MAC, hex-encoded
+    async func hmacSha512(key: string, data: string): string = {
+        frontend: "async (k, s) => { const kb = new TextEncoder().encode(k); const db = new TextEncoder().encode(s); const ck = await crypto.subtle.importKey('raw', kb, {name: 'HMAC', hash: 'SHA-512'}, false, ['sign']); const sig = await crypto.subtle.sign('HMAC', ck, db); return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join(''); }",
+        backend("crypto/hmac"): "func(k string, s string) string { mac := hmac.New(sha512.New, []byte(k)); mac.Write([]byte(s)); h := mac.Sum(nil); const hexd = \"0123456789abcdef\"; out := make([]byte, 128); for i, b := range h { out[i*2] = hexd[b>>4]; out[i*2+1] = hexd[b&0x0f] }; return string(out) }"
+    }
+
+    /// Returns `n` cryptographically-strong random bytes as a hex string of
+    /// length `2*n`. Backed by Web Crypto / `crypto/rand` on the host.
+    ///
+    /// @param n number of raw bytes to generate
+    /// @returns the hex-encoded random bytes
+    async func randomBytes(n: int): string = {
+        frontend: "async (n) => { const b = new Uint8Array(n); crypto.getRandomValues(b); return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }",
+        backend("crypto/rand"): "func(n int64) string { b := make([]byte, n); _, _ = rand.Read(b); const hexd = \"0123456789abcdef\"; out := make([]byte, n*2); for i, v := range b { out[i*2] = hexd[v>>4]; out[i*2+1] = hexd[v&0x0f] }; return string(out) }"
+    }
+}

@@ -1,0 +1,36 @@
+package std/jwt on shared
+
+extern {
+    /// Signs `payloadJson` with HS256 and returns a `header.payload.signature`
+    /// JWT. The header is always `{"alg":"HS256","typ":"JWT"}`; `payloadJson`
+    /// is base64url-encoded as-is, so it should be valid JSON.
+    ///
+    /// @param payloadJson the JSON-encoded payload to sign
+    /// @param secret the HMAC key
+    /// @returns the signed JWT
+    async func signHS256(payloadJson: string, secret: string): string = {
+        frontend: "async (payload, secret) => { const header = JSON.stringify({alg: 'HS256', typ: 'JWT'}); const enc = new TextEncoder(); const b64u = (s) => btoa(s).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, ''); const b64uBytes = (b) => { let s=''; for(let i=0;i<b.length;i++) s+=String.fromCharCode(b[i]); return btoa(s).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, ''); }; const h = b64u(header); const p = b64u(payload); const data = enc.encode(h+'.'+p); const ck = await crypto.subtle.importKey('raw', enc.encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']); const sig = await crypto.subtle.sign('HMAC', ck, data); return h+'.'+p+'.'+b64uBytes(new Uint8Array(sig)); }",
+        backend("crypto/hmac"): "func(payload string, secret string) string { header := []byte(\"{\\\"alg\\\":\\\"HS256\\\",\\\"typ\\\":\\\"JWT\\\"}\"); h := base64.RawURLEncoding.EncodeToString(header); p := base64.RawURLEncoding.EncodeToString([]byte(payload)); mac := hmac.New(sha256.New, []byte(secret)); mac.Write([]byte(h+\".\"+p)); sig := mac.Sum(nil); return h+\".\"+p+\".\"+base64.RawURLEncoding.EncodeToString(sig) }"
+    }
+
+    /// Verifies the HS256 signature of `token` against `secret`. Does not
+    /// inspect the payload's `exp`/`nbf` claims - that's the caller's job.
+    ///
+    /// @param token the JWT to verify
+    /// @param secret the HMAC key
+    /// @returns true if the signature matches
+    async func verifyHS256(token: string, secret: string): bool = {
+        frontend: "async (token, secret) => { const parts = token.split('.'); if (parts.length !== 3) return false; const enc = new TextEncoder(); const ck = await crypto.subtle.importKey('raw', enc.encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['verify']); const dec = (s) => { const t = s.replace(/-/g,'+').replace(/_/g,'/').padEnd(s.length + (4 - s.length%4)%4, '='); const bin = atob(t); const b = new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) b[i]=bin.charCodeAt(i); return b; }; return await crypto.subtle.verify('HMAC', ck, dec(parts[2]), enc.encode(parts[0]+'.'+parts[1])); }",
+        backend("crypto/sha256"): "func(token string, secret string) bool { var parts []string; start := 0; for i := 0; i < len(token); i++ { if token[i] == '.' { parts = append(parts, token[start:i]); start = i+1 } }; parts = append(parts, token[start:]); if len(parts) != 3 { return false }; mac := hmac.New(sha256.New, []byte(secret)); mac.Write([]byte(parts[0]+\".\"+parts[1])); expected := base64.RawURLEncoding.EncodeToString(mac.Sum(nil)); return hmac.Equal([]byte(expected), []byte(parts[2])) }"
+    }
+
+    /// Returns the JSON-encoded payload section of `token` without
+    /// verifying the signature. Use only after `verifyHS256` succeeds.
+    ///
+    /// @param token the JWT to read
+    /// @returns the payload JSON, or `""` on malformed input
+    async func decode(token: string): string = {
+        frontend: "async (token) => { const parts = token.split('.'); if (parts.length !== 3) return ''; const t = parts[1].replace(/-/g,'+').replace(/_/g,'/').padEnd(parts[1].length + (4 - parts[1].length%4)%4, '='); try { const bin = atob(t); const b = new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) b[i]=bin.charCodeAt(i); return new TextDecoder().decode(b); } catch (e) { return ''; } }",
+        backend("encoding/base64"): "func(token string) string { var parts []string; start := 0; for i := 0; i < len(token); i++ { if token[i] == '.' { parts = append(parts, token[start:i]); start = i+1 } }; parts = append(parts, token[start:]); if len(parts) != 3 { return \"\" }; b, err := base64.RawURLEncoding.DecodeString(parts[1]); if err != nil { return \"\" }; return string(b) }"
+    }
+}
