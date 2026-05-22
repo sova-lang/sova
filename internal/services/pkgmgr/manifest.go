@@ -43,6 +43,8 @@ type WorkspaceSection struct {
 }
 
 // DependencySpec is the resolved view of a single dep declaration. The TOML grammar accepts two surface forms - a bare version string (`http = "^1.0"`) or an inline table (`http = { git = "...", tag = "..." }`) - both unmarshal into this struct via a custom UnmarshalTOML method.
+//
+// `Subdir` lets a dep point at a subdirectory of the cloned repository (or the path-resolved local source), enabling git monorepos that ship several Sova packages from a single repo. The subdir is treated as the package root - its `sova.toml` is read for the package's name/version, and the materialiser stages the subtree at it. Valid in combination with `Git` (typical case) and `Path` (treats it the same as if the user had written the full joined path); invalid for `Workspace`-typed deps because workspace siblings are addressed by name.
 type DependencySpec struct {
 	Version   string `toml:"version,omitempty"`
 	Git       string `toml:"git,omitempty"`
@@ -50,6 +52,7 @@ type DependencySpec struct {
 	Branch    string `toml:"branch,omitempty"`
 	Rev       string `toml:"rev,omitempty"`
 	Path      string `toml:"path,omitempty"`
+	Subdir    string `toml:"subdir,omitempty"`
 	Workspace bool   `toml:"workspace,omitempty"`
 	Optional  bool   `toml:"optional,omitempty"`
 }
@@ -79,6 +82,9 @@ func (d *DependencySpec) UnmarshalTOML(data any) error {
 		if s, ok := v["path"].(string); ok {
 			d.Path = s
 		}
+		if s, ok := v["subdir"].(string); ok {
+			d.Subdir = s
+		}
 		if b, ok := v["workspace"].(bool); ok {
 			d.Workspace = b
 		}
@@ -88,6 +94,24 @@ func (d *DependencySpec) UnmarshalTOML(data any) error {
 		return nil
 	}
 	return fmt.Errorf("dependency: expected string or table, got %T", data)
+}
+
+// NormalisedSubdir trims a leading "./" or "/" and rejects empty/upwards-escaping subpaths. Returns the canonical relative slash-form, or an error when the input would traverse outside the materialised tree. An empty subdir returns ("", nil) so callers can treat that as "use the root".
+func (d DependencySpec) NormalisedSubdir() (string, error) {
+	raw := strings.TrimSpace(d.Subdir)
+	if raw == "" {
+		return "", nil
+	}
+	clean := strings.TrimPrefix(strings.ReplaceAll(raw, "\\", "/"), "./")
+	clean = strings.TrimPrefix(clean, "/")
+	if clean == "" {
+		return "", fmt.Errorf("subdir %q resolves to the repository root, drop the field instead", d.Subdir)
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(clean))
+	if cleaned == "." || strings.HasPrefix(cleaned, "../") || cleaned == ".." {
+		return "", fmt.Errorf("subdir %q must stay within the repository (no parent traversal allowed)", d.Subdir)
+	}
+	return cleaned, nil
 }
 
 // SourceKind classifies a dependency by what backs it: a git URL (with optional ref), a local path on disk, a workspace sibling, or an index alias that still needs to be resolved against the alias map. The resolver dispatches per kind.

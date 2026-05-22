@@ -27,12 +27,13 @@ type Lockfile struct {
 	Packages []LockedPackage `toml:"package"`
 }
 
-// LockedPackage is one resolved node in the dependency graph. The `Commit` SHA is the immutable cache key; `Checksum` is the integrity hash of the materialised tree (excluding `.git`).
+// LockedPackage is one resolved node in the dependency graph. The `Commit` SHA is the immutable cache key; `Checksum` is the integrity hash of the materialised tree (excluding `.git`). `Subdir` is the slash-form path inside the source clone when the dep selected one (git monorepo, multi-package path); empty when the package sits at the source root.
 type LockedPackage struct {
 	Name         string   `toml:"name"`
 	Version      string   `toml:"version"`
 	Source       string   `toml:"source"`
 	Commit       string   `toml:"commit,omitempty"`
+	Subdir       string   `toml:"subdir,omitempty"`
 	Checksum     string   `toml:"checksum,omitempty"`
 	Dependencies []string `toml:"dependencies,omitempty"`
 }
@@ -90,6 +91,9 @@ func (lf *Lockfile) Save(path string) error {
 		fmt.Fprintf(&b, "source = %s\n", tomlQuote(p.Source))
 		if p.Commit != "" {
 			fmt.Fprintf(&b, "commit = %s\n", tomlQuote(p.Commit))
+		}
+		if p.Subdir != "" {
+			fmt.Fprintf(&b, "subdir = %s\n", tomlQuote(p.Subdir))
 		}
 		if p.Checksum != "" {
 			fmt.Fprintf(&b, "checksum = %s\n", tomlQuote(p.Checksum))

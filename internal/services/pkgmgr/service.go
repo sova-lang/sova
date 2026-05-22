@@ -119,10 +119,26 @@ func (s *Service) reproduceFromLockfile(lock *Lockfile, cache *Cache, _ *Manifes
 			Version: lp.Version,
 			Source:  lp.Source,
 			Commit:  lp.Commit,
+			Subdir:  lp.Subdir,
+		}
+		applySubdir := func(base string) (string, error) {
+			if lp.Subdir == "" {
+				return base, nil
+			}
+			joined := filepath.Clean(filepath.Join(base, filepath.FromSlash(lp.Subdir)))
+			if info, err := os.Stat(joined); err != nil || !info.IsDir() {
+				return "", fmt.Errorf("lockfile entry %s: subdir %q does not exist in %s", lp.Name, lp.Subdir, base)
+			}
+			return joined, nil
 		}
 		switch {
 		case strings.HasPrefix(lp.Source, "path+"):
-			pkg.Dir = strings.TrimPrefix(lp.Source, "path+")
+			base := strings.TrimPrefix(lp.Source, "path+")
+			dir, err := applySubdir(base)
+			if err != nil {
+				return nil, err
+			}
+			pkg.Dir = dir
 		case lp.Source == "workspace":
 			members, err := loadWorkspaceMemberByName(s.ProjectRoot, lp.Name)
 			if err != nil {
@@ -134,7 +150,11 @@ func (s *Service) reproduceFromLockfile(lock *Lockfile, cache *Cache, _ *Manifes
 			if lp.Commit == "" {
 				return nil, fmt.Errorf("lockfile entry %s has no commit; cannot reproduce", lp.Name)
 			}
-			_, dir, err := cache.ResolveAndMaterialise(repoURL, lp.Commit, false)
+			_, base, err := cache.ResolveAndMaterialise(repoURL, lp.Commit, false)
+			if err != nil {
+				return nil, err
+			}
+			dir, err := applySubdir(base)
 			if err != nil {
 				return nil, err
 			}
@@ -339,6 +359,7 @@ func buildLockfile(res *Resolution) *Lockfile {
 			Version: pkg.Version,
 			Source:  pkg.Source,
 			Commit:  pkg.Commit,
+			Subdir:  pkg.Subdir,
 		}
 		if checksum, err := ComputeChecksum(pkg.Dir); err == nil {
 			entry.Checksum = checksum
@@ -413,6 +434,8 @@ func parseAddSpec(raw string) (DependencySpec, error) {
 					spec.Branch = v
 				case "rev":
 					spec.Rev = v
+				case "subdir":
+					spec.Subdir = v
 				}
 			}
 		}
@@ -531,7 +554,7 @@ func removeManifestEntry(body, section, name string) string {
 }
 
 func renderDependencyValue(spec DependencySpec) string {
-	if spec.Git == "" && spec.Path == "" && !spec.Workspace && spec.Tag == "" && spec.Branch == "" && spec.Rev == "" && !spec.Optional {
+	if spec.Git == "" && spec.Path == "" && !spec.Workspace && spec.Tag == "" && spec.Branch == "" && spec.Rev == "" && spec.Subdir == "" && !spec.Optional {
 		return tomlQuote(spec.Version)
 	}
 	var parts []string
@@ -552,6 +575,9 @@ func renderDependencyValue(spec DependencySpec) string {
 	}
 	if spec.Path != "" {
 		parts = append(parts, "path = "+tomlQuote(spec.Path))
+	}
+	if spec.Subdir != "" {
+		parts = append(parts, "subdir = "+tomlQuote(spec.Subdir))
 	}
 	if spec.Workspace {
 		parts = append(parts, "workspace = true")

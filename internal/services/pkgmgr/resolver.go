@@ -2,6 +2,7 @@ package pkgmgr
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,13 +15,14 @@ type Resolution struct {
 	Packages map[string]*ResolvedPackage
 }
 
-// ResolvedPackage is one node in the resolved graph. `Dir` is the on-disk location the materialiser will hardlink from (cache slot for git/index sources, the literal path for path/workspace).
+// ResolvedPackage is one node in the resolved graph. `Dir` is the on-disk location the materialiser will hardlink from (cache slot for git/index sources, the literal path for path/workspace). `Subdir` is the normalised slash-form relative path inside that location when the dep used `subdir = "..."`, empty when the package sits at the dir's root - it's tracked separately so the lockfile can record it without polluting the source string.
 type ResolvedPackage struct {
 	Name         string
 	Version      string
 	Source       string
 	Commit       string
 	Dir          string
+	Subdir       string
 	Dependencies []string
 }
 
@@ -202,6 +204,9 @@ func (r *Resolver) resolveOne(workspace *Manifest, pending *pendingDep, state *r
 	if override, ok := workspace.Overrides[pending.Name]; ok {
 		pending = &pendingDep{Name: pending.Name, Spec: override, Origin: "override"}
 	}
+	if pending.Spec.Subdir != "" && pending.Spec.Kind() == SourceKindWorkspace {
+		return nil, fmt.Errorf("%s: `subdir` is not valid on a workspace dependency", pending.Name)
+	}
 	switch pending.Spec.Kind() {
 	case SourceKindWorkspace:
 		return r.resolveWorkspaceMember(workspace, pending.Name)
@@ -257,7 +262,18 @@ func (r *Resolver) resolvePath(workspace *Manifest, pending *pendingDep) (*Resol
 		abs = filepath.Join(workspace.Root(), abs)
 	}
 	abs = filepath.Clean(abs)
-	m, ok, err := LoadManifest(filepath.Join(abs, ManifestFilename))
+	subdir, err := pending.Spec.NormalisedSubdir()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", pending.Name, err)
+	}
+	pkgDir := abs
+	if subdir != "" {
+		pkgDir = filepath.Clean(filepath.Join(abs, filepath.FromSlash(subdir)))
+		if info, statErr := os.Stat(pkgDir); statErr != nil || !info.IsDir() {
+			return nil, fmt.Errorf("%s: subdir %q does not exist under %s", pending.Name, subdir, abs)
+		}
+	}
+	m, ok, err := LoadManifest(filepath.Join(pkgDir, ManifestFilename))
 	if err != nil {
 		return nil, err
 	}
@@ -275,12 +291,17 @@ func (r *Resolver) resolvePath(workspace *Manifest, pending *pendingDep) (*Resol
 		Name:    name,
 		Version: version,
 		Source:  "path+" + abs,
-		Dir:     abs,
+		Dir:     pkgDir,
+		Subdir:  subdir,
 	}, nil
 }
 
 // resolveGit handles both `{ git = "...", tag/branch/rev = "..." }` and index-resolved entries. The selector priority is rev > tag > branch > version range; range mode enumerates remote tags, semver-filters, picks the highest.
 func (r *Resolver) resolveGit(pending *pendingDep, state *resolveState, repoURL string) (*ResolvedPackage, error) {
+	subdir, err := pending.Spec.NormalisedSubdir()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", pending.Name, err)
+	}
 	selector, value := pending.Spec.SelectRef()
 	if selector == RefSelectorNone {
 		selector, value = RefSelectorBranch, "HEAD"
@@ -329,14 +350,22 @@ func (r *Resolver) resolveGit(pending *pendingDep, state *resolveState, repoURL 
 		_ = bestVersion
 		picked = bestVersion
 	}
+	pkgDir := dir
+	if subdir != "" {
+		pkgDir = filepath.Clean(filepath.Join(dir, filepath.FromSlash(subdir)))
+		if info, statErr := os.Stat(pkgDir); statErr != nil || !info.IsDir() {
+			return nil, fmt.Errorf("%s: subdir %q does not exist in %s @ %s", pending.Name, subdir, repoURL, sha)
+		}
+	}
 	pkg := &ResolvedPackage{
 		Name:    pending.Name,
 		Version: picked,
 		Source:  "git+" + NormaliseURL(repoURL),
 		Commit:  sha,
-		Dir:     dir,
+		Dir:     pkgDir,
+		Subdir:  subdir,
 	}
-	if m, ok, err := LoadManifest(filepath.Join(dir, ManifestFilename)); err == nil && ok && m.Package != nil {
+	if m, ok, err := LoadManifest(filepath.Join(pkgDir, ManifestFilename)); err == nil && ok && m.Package != nil {
 		if m.Package.Name != "" {
 			pkg.Name = m.Package.Name
 		}
