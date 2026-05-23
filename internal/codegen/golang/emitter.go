@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"sova/internal/codegen"
 	"sova/internal/ir"
 	"strconv"
@@ -153,15 +154,28 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 	if err := os.WriteFile(modPath, []byte(modContent), 0o644); err != nil {
 		return err
 	}
-	if needsSessionManagerFromCache(ctx) {
+	sumAnchor := goSumAnchorPath(ctx)
+	if sumAnchor != "" {
+		if data, err := os.ReadFile(sumAnchor); err == nil {
+			_ = os.WriteFile(filepath.Join(outDir, "go.sum"), data, 0o644)
+		}
+	}
+	if needsGoModTidy(ctx) {
 		if err := goModTidy(outDir); err != nil {
 			return fmt.Errorf("go mod tidy in %s: %w", outDir, err)
+		}
+	}
+	if sumAnchor != "" {
+		if data, err := os.ReadFile(filepath.Join(outDir, "go.sum")); err == nil {
+			if mkErr := os.MkdirAll(filepath.Dir(sumAnchor), 0o755); mkErr == nil {
+				_ = os.WriteFile(sumAnchor, data, 0o644)
+			}
 		}
 	}
 	return nil
 }
 
-// goModTidy runs `go mod tidy` in the given directory so that the WebSocket dep (and anything it pulls in) resolves to a populated go.sum. The dep resolves from the local module cache because the Sova-Go compiler module already depends on the same gorilla/websocket version.
+// goModTidy runs `go mod tidy` in the given directory so that every dependency in the generated `go.mod` (the WebSocket module when the build needs the session manager, plus every extern-pinned Go module) resolves into the module cache and into a populated `go.sum`. Hidden by default behind a feature gate (see `needsGoModTidy`) so legacy stdlib-only builds keep their fast no-network path.
 func goModTidy(dir string) error {
 	cmd := exec.Command("go", "mod", "tidy")
 	cmd.Dir = dir
@@ -178,7 +192,31 @@ func needsSessionManagerFromCache(ctx *codegen.EmitContext) bool {
 	return ok && v
 }
 
-// emittedGoMod returns the contents of the synthetic go.mod for the output module. The gorilla/websocket require line is added only when the build needs the session manager (frontend wires, mutable wire vars, lifecycle hooks); legacy backend-only wire builds keep the stdlib-only module.
+// needsGoModTidy reports whether the generated module has any non-stdlib `require` entries that would benefit from a `go mod tidy` invocation. True when the session manager is active OR when any extern declaration pinned a Go module via `extern "path@version"` / `backend("path@version")`. The two-state gate keeps the existing fast path for builds that don't reach for the network.
+func needsGoModTidy(ctx *codegen.EmitContext) bool {
+	if needsSessionManagerFromCache(ctx) {
+		return true
+	}
+	return len(externGoModulesFromCache(ctx)) > 0
+}
+
+// externGoModulesFromCache returns the `(modulePath -> version)` map produced by PassAggregateExternModules. Returns an empty map (never nil) when the cache entry is missing so callers can range over it unconditionally.
+func externGoModulesFromCache(ctx *codegen.EmitContext) map[string]string {
+	if ctx.Cache == nil {
+		return map[string]string{}
+	}
+	raw, ok := ctx.Cache["extern_go_modules"]
+	if !ok || raw == nil {
+		return map[string]string{}
+	}
+	m, ok := raw.(map[string]string)
+	if !ok {
+		return map[string]string{}
+	}
+	return m
+}
+
+// emittedGoMod returns the contents of the synthetic `go.mod` for the output module. The base module declaration is always emitted; the `gorilla/websocket` require line is appended when the build needs the session manager; and any extern-pinned Go modules (declared via `extern "path@version"` / `backend("path@version")` and aggregated by `PassAggregateExternModules`) are appended after, sorted alphabetically for a stable file content across builds.
 func emittedGoMod(ctx *codegen.EmitContext) string {
 	needsManager := false
 	if ctx.Cache != nil {
@@ -186,11 +224,44 @@ func emittedGoMod(ctx *codegen.EmitContext) string {
 			needsManager = v
 		}
 	}
-	base := "module sovaapp\n\ngo 1.23\n"
-	if !needsManager {
-		return base
+	var b strings.Builder
+	b.WriteString("module sovaapp\n\ngo 1.23\n")
+	if needsManager {
+		b.WriteString("\nrequire github.com/gorilla/websocket v1.5.3\n")
 	}
-	return base + "\nrequire github.com/gorilla/websocket v1.5.3\n"
+	pins := externGoModulesFromCache(ctx)
+	if len(pins) > 0 {
+		paths := make([]string, 0, len(pins))
+		for p := range pins {
+			paths = append(paths, p)
+		}
+		sort.Strings(paths)
+		b.WriteString("\n")
+		for _, p := range paths {
+			fmt.Fprintf(&b, "require %s %s\n", p, pins[p])
+		}
+	}
+	return b.String()
+}
+
+// goSumAnchorPath returns the persistent location of the `go.sum` file Sova keeps across builds (`<source-root>/.sova/go.sum`). The output directory itself is treated as a wipeable build artefact, so we round-trip the sum file through the workspace's `.sova/` directory (which the package manager already owns) to keep reproducibility intact between clean rebuilds. Returns the empty string when no source-root information is available, in which case the round-trip is skipped and `go mod tidy` regenerates the sum from scratch.
+func goSumAnchorPath(ctx *codegen.EmitContext) string {
+	if ctx.Cache == nil {
+		return ""
+	}
+	raw, ok := ctx.Cache["build_config"]
+	if !ok {
+		return ""
+	}
+	src, ok := raw.(interface{ SourceDirectory() string })
+	if !ok {
+		return ""
+	}
+	root := strings.TrimSpace(src.SourceDirectory())
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, ".sova", "go.sum")
 }
 
 func prodModeFromCache(ctx *codegen.EmitContext) bool {
@@ -480,10 +551,9 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				continue
 			}
 
-			// Hint jen at the preferred alias when the extern declares a module. The actual import resolution happens at file-render time via goimports (see `Emit`), which scans the rendered text and adds whatever imports are actually used - including modules that no extern declared explicitly, as long as the body references them by their canonical alias. This removes the need for the codegen to know which symbol belongs to which package.
-			if sideMapping.Module != nil && *sideMapping.Module != "" && !isDottedIdentGo(sideMapping.NativeFunc) {
+			if sideMapping.Module != nil && *sideMapping.Module != "" {
 				e.jf.ImportName(*sideMapping.Module, lastPathSegment(*sideMapping.Module))
-			} else if externModule != nil && *externModule != "" && !isDottedIdentGo(sideMapping.NativeFunc) {
+			} else if externModule != nil && *externModule != "" {
 				e.jf.ImportName(*externModule, lastPathSegment(*externModule))
 			}
 
@@ -510,10 +580,13 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				}
 
 				nativeCall := sideMapping.NativeFunc
+				modulePath := ""
 				if sideMapping.Module != nil {
 					nativeCall = e.replaceModPlaceholder(nativeCall, *sideMapping.Module)
+					modulePath = *sideMapping.Module
 				} else if externModule != nil {
 					nativeCall = e.replaceModPlaceholder(nativeCall, *externModule)
+					modulePath = *externModule
 				}
 
 				origNameForMock := orig
@@ -544,7 +617,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 							)
 						}
 					}
-					callExpr := e.buildNativeCall(nativeCall, paramNames)
+					callExpr := e.buildNativeCallWithModule(nativeCall, modulePath, paramNames)
 					if hasReturn {
 						g.Return(callExpr)
 					} else {
@@ -586,13 +659,16 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				varType := typeToGoWithContext(ctx, pkg, ctx.Types, v.Type.Typ)
 
 				nativeRef := sideMapping.NativeFunc
+				modulePath := ""
 				if sideMapping.Module != nil {
 					nativeRef = e.replaceModPlaceholder(nativeRef, *sideMapping.Module)
+					modulePath = *sideMapping.Module
 				} else if externModule != nil {
 					nativeRef = e.replaceModPlaceholder(nativeRef, *externModule)
+					modulePath = *externModule
 				}
 
-				nativeExpr := e.buildNativeRef(nativeRef)
+				nativeExpr := e.buildNativeRefWithModule(nativeRef, modulePath)
 
 				var result *jen.Statement
 				if v.IsConst {
@@ -2759,47 +2835,56 @@ func (e *CodeEmitter) replaceModPlaceholder(nativeCall string, module string) st
 }
 
 func (e *CodeEmitter) buildNativeCall(nativeCall string, params []jen.Code) jen.Code {
-	// Inline Go expressions (anything that isn't a dotted identifier path) get emitted verbatim wrapped in parens. This lets stdlib extern bindings carry full `func(...) { ... }` literals without compiler-side helpers.
+	return e.buildNativeCallWithModule(nativeCall, "", params)
+}
+
+// buildNativeCallWithModule emits a Go call expression for a native function reference. When `modulePath` is non-empty and `nativeCall` is a dotted identifier whose first segment matches the module's last path segment (e.g. `uuid.NewString` for module `github.com/google/uuid`), the package selector is rewritten to use the full module import path. This is what makes third-party extern bindings produce a correctly-resolved `jen.Qual("github.com/google/uuid", "NewString")` rather than the broken `jen.Qual("uuid", "NewString")` (which goimports would then attempt to resolve against a non-existent `"uuid"` import path). When `modulePath` is empty (stdlib externs and the inline-expression escape hatch), behaviour is identical to the original two-arg form.
+func (e *CodeEmitter) buildNativeCallWithModule(nativeCall string, modulePath string, params []jen.Code) jen.Code {
 	if !isDottedIdentGo(nativeCall) {
 		return jen.Parens(jen.Op(nativeCall)).Call(params...)
 	}
-	parts := make([]string, 0)
-	current := ""
-	for _, ch := range nativeCall {
-		if ch == '.' {
-			if current != "" {
-				parts = append(parts, current)
-				current = ""
-			}
-		} else {
-			current += string(ch)
-		}
+	parts := splitDottedIdent(nativeCall)
+	if modulePath != "" && len(parts) >= 2 && parts[0] == lastPathSegment(modulePath) {
+		parts[0] = modulePath
 	}
-	if current != "" {
-		parts = append(parts, current)
-	}
-
 	if len(parts) == 1 {
 		return jen.Id(parts[0]).Call(params...)
-	} else if len(parts) == 2 {
-		return jen.Qual(parts[0], parts[1]).Call(params...)
-	} else {
-		base := jen.Qual(parts[0], parts[1])
-		for i := 2; i < len(parts); i++ {
-			base = base.Dot(parts[i])
-		}
-		return base.Call(params...)
 	}
+	base := jen.Qual(parts[0], parts[1])
+	for i := 2; i < len(parts); i++ {
+		base = base.Dot(parts[i])
+	}
+	return base.Call(params...)
 }
 
 func (e *CodeEmitter) buildNativeRef(nativeRef string) jen.Code {
-	// Anything other than a dotted identifier path is emitted verbatim so that stdlib extern mappings can carry inline Go expressions like `func(s, old, repl string) string { return strings.ReplaceAll(s, old, repl) }`. The subsequent `.Call(args...)` then produces a valid `(expr)(args)` form because we wrap the raw text in parens.
+	return e.buildNativeRefWithModule(nativeRef, "")
+}
+
+// buildNativeRefWithModule mirrors buildNativeCallWithModule for the value-reference path: it rewrites the leading package alias of a dotted identifier to the full module import path when one is known, so `jen.Qual` registers the correct import. See buildNativeCallWithModule for the rationale.
+func (e *CodeEmitter) buildNativeRefWithModule(nativeRef string, modulePath string) jen.Code {
 	if !isDottedIdentGo(nativeRef) {
 		return jen.Parens(jen.Op(nativeRef))
 	}
-	parts := make([]string, 0)
+	parts := splitDottedIdent(nativeRef)
+	if modulePath != "" && len(parts) >= 2 && parts[0] == lastPathSegment(modulePath) {
+		parts[0] = modulePath
+	}
+	if len(parts) == 1 {
+		return jen.Id(parts[0])
+	}
+	base := jen.Qual(parts[0], parts[1])
+	for i := 2; i < len(parts); i++ {
+		base = base.Dot(parts[i])
+	}
+	return base
+}
+
+// splitDottedIdent splits a dotted Go identifier chain (`pkg.Type.Field`) into its segments. Caller must already have verified the input is a dotted identifier via `isDottedIdentGo`; the function does no validation of its own.
+func splitDottedIdent(s string) []string {
+	parts := []string{}
 	current := ""
-	for _, ch := range nativeRef {
+	for _, ch := range s {
 		if ch == '.' {
 			if current != "" {
 				parts = append(parts, current)
@@ -2812,18 +2897,7 @@ func (e *CodeEmitter) buildNativeRef(nativeRef string) jen.Code {
 	if current != "" {
 		parts = append(parts, current)
 	}
-
-	if len(parts) == 1 {
-		return jen.Id(parts[0])
-	} else if len(parts) == 2 {
-		return jen.Qual(parts[0], parts[1])
-	} else {
-		base := jen.Qual(parts[0], parts[1])
-		for i := 2; i < len(parts); i++ {
-			base = base.Dot(parts[i])
-		}
-		return base
-	}
+	return parts
 }
 
 // lastPathSegment returns the final `/`-delimited component of a Go import path (e.g. "github.com/foo/bar" → "bar"). Used when stdlib extern bindings carry inline `func(...) { ... }` literals: jen needs a deterministic import alias to register the module that the lambda body references.

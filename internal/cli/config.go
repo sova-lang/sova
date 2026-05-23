@@ -36,6 +36,9 @@ func DefaultBuildConfig() BuildConfig {
 // OutputDirectory returns the resolved output directory. Implements the buildConfigGetter contract consumed by the codegen passes.
 func (c BuildConfig) OutputDirectory() string { return c.OutputDir }
 
+// SourceDirectory returns the resolved source directory (project root). Implements the buildConfigGetter contract consumed by the codegen passes; the Go emitter uses it to anchor build-artefact persistence (like the carried-over `go.sum` for extern Go-module dependencies) at the project root rather than inside the wipeable output directory.
+func (c BuildConfig) SourceDirectory() string { return c.SourceDir }
+
 // OutputBaseName returns the resolved output basename without extension. Implements the buildConfigGetter contract consumed by the codegen passes.
 func (c BuildConfig) OutputBaseName() string { return c.OutputName }
 

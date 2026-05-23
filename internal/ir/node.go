@@ -324,6 +324,7 @@ type ExternDeclStmt struct {
 	node
 	docBase
 	Module          *string              // Module is the optional module import (e.g., "lodash"). May be nil.
+	Version         string               // Version is the optional Go-module version pin parsed from `extern "path@version"`. Empty when no pin was given or when the surface form did not include `@`. Currently honoured only by the Go backend; the JS side ignores it.
 	IsDefaultImport bool                 // IsDefaultImport selects the JS `import X from "mod"` form instead of the namespace `import * as X from "mod"` default; ignored for Go where modules are always namespace-imported.
 	Funcs           []*ExternFunc        // Funcs are the extern function declarations.
 	Vars            []*ExternVar         // Vars are the extern variable/const declarations.
@@ -360,6 +361,7 @@ type ExternMapping struct {
 
 type SideMapping struct {
 	Module     *string // Module is the optional module for this side (e.g., "fmt" for backend). May be nil.
+	Version    string  // Version is the optional Go-module version pin parsed from `backend("path@version")`. Empty when no pin was given. Currently honoured only on the backend side.
 	NativeFunc string  // NativeFunc is the native function call (e.g., "fmt.Println").
 }
 

@@ -34,6 +34,8 @@ var (
 	ErrAnnotationNotConst             = templateErr(CategorySemantic, "annotation '@%s' argument must be a compile-time constant (literal or const-named string/int/bool, or a `+` of those)")
 	ErrExternTypeInSharedFile         = templateErr(CategorySemantic, "extern type/interface '%s' is not allowed in a shared file; native bindings are side-specific. Put them in a backend or frontend file instead.")
 	ErrExternTypeWrongSide            = templateErr(CategorySemantic, "extern type '%s' is %s-only and cannot be referenced from a %s file")
+	ErrExternModuleVersionConflict    = templateErr(CategorySemantic, "extern Go module '%s' is pinned to conflicting versions: '%s' (here) vs. '%s' (declared elsewhere); reconcile the `@version` selectors so every extern block for this module agrees")
+	ErrExternModuleVersionInvalid     = templateErr(CategorySemantic, "extern Go module '%s' has an invalid version pin '%s': expected a Go module version such as 'v1.2.3', 'v1.2.3-pre', or 'latest'")
 	ErrImportSideMismatch             = templateErr(CategorySemantic, "cannot import %s package '%s' from a %s file: %s files may only import %s packages")
 	ErrCastNotAllowed                 = templateErr(CategorySemantic, "cannot cast %s to %s: explicit `as` is only supported between compatible concrete types or when one side is `any`")
 	ErrImplicitAnyNarrowing           = templateErr(CategorySemantic, "implicit conversion from `any` to %s is not allowed; use an explicit cast (`value as %s` or `value as? %s`)")

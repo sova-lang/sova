@@ -230,6 +230,20 @@ func unquoteChar(raw string) rune {
 	return 0
 }
 
+// splitExternModuleSpec splits an extern module reference of the form `path[@version]` into its module path and the optional version pin. Sova accepts versioned references on Go-backend externs so the package manager can synthesise a `require <path> <version>` line into the generated `go.mod` and pull the dependency through `go mod tidy`. The split uses the last `@` so that legitimate Go module paths (which never contain `@`) parse cleanly while still allowing future ref selectors that could contain extra punctuation. Returns the raw input unchanged and an empty version when no `@` is present.
+func splitExternModuleSpec(raw string) (string, string) {
+	at := strings.LastIndexByte(raw, '@')
+	if at < 0 {
+		return raw, ""
+	}
+	path := strings.TrimSpace(raw[:at])
+	version := strings.TrimSpace(raw[at+1:])
+	if path == "" {
+		return raw, ""
+	}
+	return path, version
+}
+
 func parseIntLiteral(raw string) (int64, error) {
 	if strings.HasPrefix(raw, "0x") || strings.HasPrefix(raw, "0X") {
 		u, err := strconv.ParseUint(raw[2:], 16, 64)
@@ -1055,8 +1069,10 @@ func (v *HirVisitor) VisitExternDecl(ctx *parser.ExternDeclContext) any {
 	}
 
 	if ctx.STRING_LITERAL() != nil {
-		module := unquoteString(ctx.STRING_LITERAL().GetText())
-		st.Module = &module
+		raw := unquoteString(ctx.STRING_LITERAL().GetText())
+		modulePath, version := splitExternModuleSpec(raw)
+		st.Module = &modulePath
+		st.Version = version
 	}
 	st.IsDefaultImport = hasLiteralChild(ctx, "default")
 
@@ -1202,10 +1218,13 @@ func (v *HirVisitor) VisitExternSideMapping(ctx *parser.ExternSideMappingContext
 	literals := ctx.AllSTRING_LITERAL()
 	var nativeFunc string
 	var module *string
+	var version string
 
 	if len(literals) == 2 {
-		mod := unquoteString(literals[0].GetText())
-		module = &mod
+		raw := unquoteString(literals[0].GetText())
+		modulePath, ver := splitExternModuleSpec(raw)
+		module = &modulePath
+		version = ver
 		nativeFunc = unquoteString(literals[1].GetText())
 	} else {
 		nativeFunc = unquoteString(literals[0].GetText())
@@ -1214,6 +1233,7 @@ func (v *HirVisitor) VisitExternSideMapping(ctx *parser.ExternSideMappingContext
 	sideMapping := &SideMapping{
 		NativeFunc: nativeFunc,
 		Module:     module,
+		Version:    version,
 	}
 
 	return &struct {
