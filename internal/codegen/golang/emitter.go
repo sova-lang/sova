@@ -35,6 +35,7 @@ type CodeEmitter struct {
 	wiredFuncs      []*ir.FuncDeclStmt
 	wiredVars       []*ir.VarDeclStmt
 	composableDepth int
+	externImports   map[string]string
 }
 
 func (e *CodeEmitter) Init(ctx *codegen.EmitContext) error {
@@ -42,6 +43,7 @@ func (e *CodeEmitter) Init(ctx *codegen.EmitContext) error {
 	e.jf = jen.NewFile("main")
 	e.loopLabels = make([]string, 0)
 	e.typeDecls = map[ir.TypID]*ir.TypeDeclStmt{}
+	e.externImports = map[string]string{}
 	for _, pkg := range ctx.Pkgs {
 		for _, file := range pkg.Files {
 			for _, st := range file.Hir.Statements {
@@ -552,9 +554,9 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			}
 
 			if sideMapping.Module != nil && *sideMapping.Module != "" {
-				e.jf.ImportName(*sideMapping.Module, lastPathSegment(*sideMapping.Module))
+				e.registerExternImport(*sideMapping.Module, sideMapping.NativeFunc)
 			} else if externModule != nil && *externModule != "" {
-				e.jf.ImportName(*externModule, lastPathSegment(*externModule))
+				e.registerExternImport(*externModule, sideMapping.NativeFunc)
 			}
 
 			e.withStmt(block, func() jen.Code {
@@ -651,6 +653,12 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				externModule = s.Module
 			} else {
 				continue
+			}
+
+			if sideMapping.Module != nil && *sideMapping.Module != "" {
+				e.registerExternImport(*sideMapping.Module, sideMapping.NativeFunc)
+			} else if externModule != nil && *externModule != "" {
+				e.registerExternImport(*externModule, sideMapping.NativeFunc)
 			}
 
 			e.withStmt(block, func() jen.Code {
@@ -2900,14 +2908,243 @@ func splitDottedIdent(s string) []string {
 	return parts
 }
 
-// lastPathSegment returns the final `/`-delimited component of a Go import path (e.g. "github.com/foo/bar" → "bar"). Used when stdlib extern bindings carry inline `func(...) { ... }` literals: jen needs a deterministic import alias to register the module that the lambda body references.
-func lastPathSegment(p string) string {
-	for i := len(p) - 1; i >= 0; i-- {
-		if p[i] == '/' {
-			return p[i+1:]
+// registerExternImport hooks an extern's native body up to the Go output's import block. `modulePath` is the Go import path; `nativeCall` is the raw native expression (either a dotted identifier like `pkg.Func` or an inline `func(...) {...}` literal). The function does two things: it registers the conventional package-name alias with jen via `ImportName`, and — because jen only materialises an import when it sees a `Qual` reference in the AST — it also scans `nativeCall` for `<alias>.<Symbol>` occurrences and emits a synthetic `var _ = pkg.Symbol` at file scope. Without that synthetic reference, inline `func(...) {...}` bodies (which jen renders as opaque text) would never trigger an import for third-party paths like `github.com/redis/go-redis/v9`, and the resulting Go output would fail to compile with `undefined: redis`.
+func (e *CodeEmitter) registerExternImport(modulePath string, nativeCall string) {
+	if modulePath == "" {
+		return
+	}
+	bodyAlias := aliasFromBody(nativeCall, modulePath)
+	existing, seen := e.externImports[modulePath]
+	switch {
+	case bodyAlias != "" && !seen:
+		e.jf.ImportName(modulePath, bodyAlias)
+		e.externImports[modulePath] = bodyAlias
+	case bodyAlias != "" && seen && existing == "":
+		e.jf.ImportName(modulePath, bodyAlias)
+		e.externImports[modulePath] = bodyAlias
+	case bodyAlias == "" && !seen:
+		fallback := lastPathSegment(modulePath)
+		e.jf.ImportName(modulePath, fallback)
+		e.externImports[modulePath] = ""
+	}
+	aliasForRefs := bodyAlias
+	if aliasForRefs == "" {
+		aliasForRefs = e.externImports[modulePath]
+	}
+	if aliasForRefs == "" {
+		aliasForRefs = lastPathSegment(modulePath)
+	}
+	for _, sym := range firstExportedRefs(nativeCall, aliasForRefs) {
+		e.jf.Add(jen.Var().Id("_").Op("=").Qual(modulePath, sym))
+	}
+}
+
+// aliasFromBody scans an inline native body for `<ident>.<Symbol>` package selectors (both call form and type/value form) and picks the most frequent `<ident>` that is a plausible alias for `modulePath`. Plausibility is judged by `aliasPlausibleForModule`: the candidate must appear as a segment of the module path (after stripping the conventional `/vN` major-version suffix and any `go-` prefix that Go libraries often carry). This rejects unrelated stdlib qualifiers like `context.Background(...)` or `time.Duration(...)` that frequently show up in extern bodies and would otherwise be mistaken for the alias of the wrapped module. Returns the empty string when no plausible candidate is found, in which case the caller falls back to a path-based default.
+func aliasFromBody(body string, modulePath string) string {
+	if body == "" {
+		return ""
+	}
+	counts := map[string]int{}
+	for _, ref := range allPackageRefs(body) {
+		if !aliasPlausibleForModule(ref.alias, modulePath) {
+			continue
+		}
+		counts[ref.alias]++
+	}
+	var best string
+	bestN := 0
+	for k, v := range counts {
+		if v > bestN {
+			best = k
+			bestN = v
 		}
 	}
-	return p
+	return best
+}
+
+// allPackageRefs returns every `<ident>.<UpperSymbol>` occurrence in `body`, whether followed by `(` (call), `)` (type assertion), or anything else (field/method-value reference). Used by alias detection to consider every plausible package selector, not only call-form.
+func allPackageRefs(body string) []packageCallRef {
+	out := []packageCallRef{}
+	if body == "" {
+		return out
+	}
+	i := 0
+	for i < len(body) {
+		if !isLetterOrUnderscoreByte(body[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(body) && isIdentRuneByte(body[i]) {
+			i++
+		}
+		if i >= len(body) || body[i] != '.' {
+			continue
+		}
+		j := i + 1
+		if j >= len(body) {
+			continue
+		}
+		if !(body[j] >= 'A' && body[j] <= 'Z') {
+			continue
+		}
+		k := j + 1
+		for k < len(body) && isIdentRuneByte(body[k]) {
+			k++
+		}
+		if start > 0 && body[start-1] == '.' {
+			continue
+		}
+		alias := body[start:i]
+		if isGoReservedOrCommonVar(alias) {
+			continue
+		}
+		identStart := body[start]
+		if !(identStart >= 'a' && identStart <= 'z') && identStart != '_' {
+			continue
+		}
+		out = append(out, packageCallRef{alias: alias, sym: body[j:k]})
+	}
+	return out
+}
+
+// aliasPlausibleForModule reports whether `alias` could reasonably be the Go-side package name of `modulePath`. A name is plausible if it appears verbatim as a `/`-segment of the path, OR if it matches a segment with a conventional `go-` prefix stripped (`go-redis` → `redis`), OR if it matches the second-to-last segment when the last is a Go major-version tag (`v2`/`v9`/etc). The check is liberal on purpose: false positives would mean we pick a slightly wrong alias hint, which jen handles gracefully; false negatives would mean we fall back to a path-derived alias that may itself be wrong.
+func aliasPlausibleForModule(alias string, modulePath string) bool {
+	if alias == "" || modulePath == "" {
+		return false
+	}
+	for _, seg := range strings.Split(modulePath, "/") {
+		if seg == alias {
+			return true
+		}
+		if strings.HasPrefix(seg, "go-") && seg[3:] == alias {
+			return true
+		}
+		if strings.HasSuffix(seg, "-go") && seg[:len(seg)-3] == alias {
+			return true
+		}
+	}
+	return false
+}
+
+type packageCallRef struct {
+	alias string
+	sym   string
+}
+
+// allPackageCallRefs walks `body` and returns every `<alias>.<UpperSymbol>(` occurrence, in source order. The `(` is the discriminator: it guarantees the symbol after the dot is a function (and therefore a value), which makes it safe to reference as `var _ = alias.Symbol` to force-import the underlying package without picking up types or constants. Common-variable and Go-keyword aliases (`c`, `tx`, `if`, ...) are filtered out so method calls on locally-bound values do not get mistaken for package-qualified calls.
+func allPackageCallRefs(body string) []packageCallRef {
+	out := []packageCallRef{}
+	if body == "" {
+		return out
+	}
+	i := 0
+	for i < len(body) {
+		if !isLetterOrUnderscoreByte(body[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(body) && isIdentRuneByte(body[i]) {
+			i++
+		}
+		if i >= len(body) || body[i] != '.' {
+			continue
+		}
+		j := i + 1
+		if j >= len(body) {
+			continue
+		}
+		if !(body[j] >= 'A' && body[j] <= 'Z') {
+			continue
+		}
+		k := j + 1
+		for k < len(body) && isIdentRuneByte(body[k]) {
+			k++
+		}
+		if k >= len(body) || body[k] != '(' {
+			continue
+		}
+		if start > 0 && body[start-1] == '.' {
+			continue
+		}
+		alias := body[start:i]
+		if isGoReservedOrCommonVar(alias) {
+			continue
+		}
+		identStart := body[start]
+		if !(identStart >= 'a' && identStart <= 'z') && identStart != '_' {
+			continue
+		}
+		out = append(out, packageCallRef{alias: alias, sym: body[j:k]})
+	}
+	return out
+}
+
+func isLetterOrUnderscoreByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_'
+}
+
+func isIdentRuneByte(b byte) bool {
+	return isLetterOrUnderscoreByte(b) || (b >= '0' && b <= '9')
+}
+
+// isGoReservedOrCommonVar filters out identifiers that show up as `<ident>.X` in inline bodies but are obviously not package names — Go keywords, common single-letter receivers (`c`, `e`, `v`, `r`, `o`, `m`, `n`, ...), and the placeholder receiver names used throughout this codebase's externs (`db`, `tx`, `cfg`, etc.). Keeps the alias-detection precise without requiring a full Go parser.
+func isGoReservedOrCommonVar(s string) bool {
+	switch s {
+	case "if", "else", "for", "range", "return", "var", "func", "switch", "case", "default", "break", "continue", "go", "defer", "select", "chan", "map", "interface", "struct", "type", "const", "true", "false", "nil", "package", "import":
+		return true
+	case "c", "e", "v", "r", "o", "m", "n", "h", "d", "i", "j", "k", "p", "s", "t", "u", "x", "y", "z", "f", "g", "fn", "tx", "db", "cfg", "ok", "err", "ms", "ks", "chs", "pats", "ps", "msg", "out", "tmp", "ctx", "opts", "result", "strs", "head", "args", "id", "ch", "raw", "fb", "hit", "loc", "params", "ws":
+		return true
+	}
+	return false
+}
+
+// firstExportedRefs returns the first exported function-call symbol invoked through `alias` in `body` — e.g. `firstExportedRefs("redis.ParseURL(u); redis.NewClient(o)", "redis")` returns `["ParseURL"]`. Only call-form `<alias>.<Sym>(` matches; types and constants (which are not valid in `var _ = pkg.X`) are filtered out. We deliberately return only the FIRST symbol per body — one synthetic reference per extern is enough to force the import, and emitting more would clutter the output.
+func firstExportedRefs(body string, alias string) []string {
+	if alias == "" || body == "" {
+		return nil
+	}
+	for _, ref := range allPackageCallRefs(body) {
+		if ref.alias == alias {
+			return []string{ref.sym}
+		}
+	}
+	return nil
+}
+
+// lastPathSegment returns the conventional Go package name implied by an import path. For most paths this is the final `/`-delimited segment ("github.com/foo/bar" → "bar"); Go's semantic-import-versioning convention (`/v2`, `/v3`, ... — see https://go.dev/ref/mod#major-version-suffixes) is detected and the version segment is skipped, so "github.com/redis/go-redis/v9" → "redis" rather than the literal "v9", matching the actual package name the module exports.
+func lastPathSegment(p string) string {
+	last := p
+	for i := len(p) - 1; i >= 0; i-- {
+		if p[i] == '/' {
+			last = p[i+1:]
+			break
+		}
+	}
+	if isGoMajorVersionTag(last) {
+		head := p[:len(p)-len(last)-1]
+		for i := len(head) - 1; i >= 0; i-- {
+			if head[i] == '/' {
+				return head[i+1:]
+			}
+		}
+		return head
+	}
+	return last
+}
+
+// isGoMajorVersionTag reports whether s matches Go's major-version-suffix shape (`v` followed by digits), e.g. "v2", "v15".
+func isGoMajorVersionTag(s string) bool {
+	if len(s) < 2 || s[0] != 'v' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // isDottedIdentGo reports whether s is a chain of identifiers separated by dots (e.g. `strings.Contains`). Anything else is treated as a raw Go expression by the extern emitter, so stdlib mappings can use inline `func(...) { ... }` literals without compiler runtime helpers.

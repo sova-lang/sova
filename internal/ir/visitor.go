@@ -1131,6 +1131,9 @@ func (v *HirVisitor) VisitExternFunc(ctx *parser.ExternFuncContext) any {
 		IsAsync: strings.HasPrefix(ctx.GetText(), "async"),
 	}
 
+	if ctx.ID() == nil {
+		return fn
+	}
 	nameTok := ctx.ID().GetSymbol()
 	fn.Name = NameRef{
 		Name: nameTok.GetText(),
@@ -1157,8 +1160,11 @@ func (v *HirVisitor) VisitExternFunc(ctx *parser.ExternFuncContext) any {
 		}
 	}
 
-	mapping := v.Visit(ctx.ExternMapping()).(*ExternMapping)
-	fn.Mapping = mapping
+	if ctx.ExternMapping() != nil {
+		if mapping, ok := v.Visit(ctx.ExternMapping()).(*ExternMapping); ok {
+			fn.Mapping = mapping
+		}
+	}
 
 	return fn
 }
@@ -1183,8 +1189,11 @@ func (v *HirVisitor) VisitExternVar(ctx *parser.ExternVarContext) any {
 		}
 	}
 
-	mapping := v.Visit(ctx.ExternMapping()).(*ExternMapping)
-	ev.Mapping = mapping
+	if ctx.ExternMapping() != nil {
+		if mapping, ok := v.Visit(ctx.ExternMapping()).(*ExternMapping); ok {
+			ev.Mapping = mapping
+		}
+	}
 
 	return ev
 }
@@ -1220,14 +1229,17 @@ func (v *HirVisitor) VisitExternSideMapping(ctx *parser.ExternSideMappingContext
 	var module *string
 	var version string
 
-	if len(literals) == 2 {
+	switch len(literals) {
+	case 2:
 		raw := unquoteString(literals[0].GetText())
 		modulePath, ver := splitExternModuleSpec(raw)
 		module = &modulePath
 		version = ver
 		nativeFunc = unquoteString(literals[1].GetText())
-	} else {
+	case 1:
 		nativeFunc = unquoteString(literals[0].GetText())
+	default:
+		nativeFunc = ""
 	}
 
 	sideMapping := &SideMapping{
@@ -1827,7 +1839,11 @@ func (v *HirVisitor) VisitAssignmentTarget(ctx *parser.AssignmentTargetContext) 
 }
 
 func (v *HirVisitor) VisitFuncCallExprStmt(ctx *parser.FuncCallExprStmtContext) any {
-	callee := v.Visit(ctx.Expr()).(Expr)
+	if ctx.Expr() == nil {
+		return &FuncCallExpr{node: v.mkNode(ctx)}
+	}
+	visited := v.Visit(ctx.Expr())
+	callee, _ := visited.(Expr)
 	fc := &FuncCallExpr{
 		node:     v.mkNode(ctx),
 		exprBase: exprBase{},
