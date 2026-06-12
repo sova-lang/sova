@@ -8,6 +8,26 @@ import (
 	"strings"
 )
 
+// classMemberLookup resolves `sym` against the currently-emitted type declaration, returning the JS member name to use after `this.` plus a flag distinguishing fields from methods. The Sova surface lets a method body reference its own type's fields and methods without an explicit `this.` qualifier (e.g. `count = newCount`, `Button(onClick: increment)` inside a method of `CounterView`), which the resolver correctly threads through the type's scope. This helper closes the loop on the codegen side: it lets `VarRef`/`AssignmentExpr` recognise such references and emit the required `this.<name>` (`this.<name>.bind(this)` for methods passed as values) instead of a bare mangled identifier — which at runtime would resolve to `undefined` and silently break reactive setters or click handlers.
+//
+// Returns `("", false, false)` when no enclosing type is in scope, when the suppress-this flag is set (we are emitting outside the class body, e.g. inside a static factory wrapper), or when `sym` is not a member of the current type. The boolean is the "is method" flag (false → field, true → method).
+func (e *CodeEmitter) classMemberLookup(ctx *codegen.EmitContext, sym ir.SymID) (string, bool, bool) {
+	if e.currentTypeDecl == nil || e.suppressThisKeyword || sym == 0 {
+		return "", false, false
+	}
+	for _, field := range e.currentTypeDecl.Fields {
+		if field.Name.Sym == sym {
+			return field.Name.Name, false, true
+		}
+	}
+	for _, m := range e.currentTypeDecl.Methods {
+		if m.Func != nil && m.Func.Name.Sym == sym {
+			return symName(ctx, m.Func.Name.Sym), true, true
+		}
+	}
+	return "", false, false
+}
+
 // escapeJSTemplateText escapes a literal segment for safe embedding inside a JavaScript backtick template literal.
 func escapeJSTemplateText(s string) string {
 	var b strings.Builder
@@ -97,7 +117,14 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		return e.buildAsExpr(ctx, pkg, f, x)
 
 	case *ir.AssignmentExpr:
-		left := jsgen.Id(symNameWithUnused(ctx, pkg, x.Left.Sym))
+		var left *jsgen.Statement
+		if name, isMethod, ok := e.classMemberLookup(ctx, x.Left.Sym); ok && !isMethod {
+			left = jsgen.Raw("this.").Add(jsgen.Id(name))
+		} else if reactiveWireVarOriginalNameJS(ctx, x.Left.Sym) != "" {
+			left = jsgen.Id(symName(ctx, x.Left.Sym)).Dot("value")
+		} else {
+			left = jsgen.Id(symNameWithUnused(ctx, pkg, x.Left.Sym))
+		}
 		right := e.buildExpr(ctx, pkg, f, x.Right)
 		return left.Op(string(x.Op)).Add(right)
 
@@ -215,6 +242,16 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 	case *ir.VarRef:
 		if orig, ok := ctx.Names.GetOriginalName(x.Ref.Sym); ok && orig == "this" && !e.suppressThisKeyword {
 			return jsgen.Id("this")
+		}
+		if name, isMethod, ok := e.classMemberLookup(ctx, x.Ref.Sym); ok {
+			ref := jsgen.Raw("this.").Add(jsgen.Id(name))
+			if isMethod {
+				return ref.Dot("bind").Call(jsgen.Id("this"))
+			}
+			return ref
+		}
+		if reactiveWireVarOriginalNameJS(ctx, x.Ref.Sym) != "" {
+			return jsgen.Id(symName(ctx, x.Ref.Sym)).Dot("value")
 		}
 		return jsgen.Id(symNameWithUnused(ctx, pkg, x.Ref.Sym))
 

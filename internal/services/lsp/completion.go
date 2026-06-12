@@ -44,6 +44,8 @@ func (s *Server) Completion(ctx context.Context, params *protocol.CompletionPara
 		items = importPathCompletions(s, snap, c, params.TextDocument.URI)
 	case completionWireOption:
 		items = wireOptionCompletions()
+	case completionAnnotation:
+		items = annotationCompletions()
 	default:
 		items = identifierCompletions(c, pkg, file)
 		items = append(items, localScopeCompletions(c, file, params.Position)...)
@@ -120,6 +122,7 @@ const (
 	completionAfterDot
 	completionImportPath
 	completionWireOption
+	completionAnnotation
 )
 
 // classifyCompletion peeks at the raw source just before the cursor and decides whether the user is partway through a member access (`recv.<TAB>`), typing a standalone identifier, or inside an `import "..."` string literal. Returns the receiver text when in dot context.
@@ -137,6 +140,10 @@ func classifyCompletion(src string, pos protocol.Position) (completionContextKin
 	end := offset
 	for end > 0 && isIdentChar(src[end-1]) {
 		end--
+	}
+	// Annotation context: cursor sits in an `@<ident>` token (or just past the `@`). Distinguished from the `@.member` session-shortcut, which is handled below in the dot-context branch and requires a `.` between the `@` and the identifier.
+	if end > 0 && src[end-1] == '@' {
+		return completionAnnotation, ""
 	}
 	if end == 0 || src[end-1] != '.' {
 		return completionIdentifier, ""
@@ -159,6 +166,29 @@ func classifyCompletion(src string, pos protocol.Position) (completionContextKin
 		recvStart--
 	}
 	return completionAfterDot, src[recvStart:recvEnd]
+}
+
+// annotationCompletions returns the static list of `@`-prefixed declaration annotations Sova recognises today. The user has already typed the leading `@` by the time this fires (the `@` is registered as a completion trigger on the server's capabilities), so labels are bare identifier names and the editor's word-replace logic substitutes only the identifier portion. Mirrors the annotation names the visitor + analysis passes accept; extend whenever a new annotation enters the language surface.
+func annotationCompletions() []protocol.CompletionItem {
+	type ann struct{ name, detail, doc string }
+	anns := []ann{
+		{
+			name:   "reactive",
+			detail: "@reactive (field | wire let)",
+			doc:    "Marks a field on a `type` or a top-level `wire let` as reactive. Reads tracked inside Strix `effect` / `computed` / `view()` subscribe to the field; writes notify every observer, so views re-render automatically.\n\n```sova\ntype Counter with Composable, Component {\n    @reactive count: int = 0\n\n    func view(): Composable {\n        return H1 { \"count: \" + count }\n    }\n}\n\n@reactive wire let ingameTime: int = 0\n```",
+		},
+	}
+	out := make([]protocol.CompletionItem, 0, len(anns))
+	for _, a := range anns {
+		item := protocol.CompletionItem{
+			Label:  a.name,
+			Kind:   protocol.CompletionItemKindProperty,
+			Detail: a.detail,
+		}
+		attachDocToCompletionItem(&item, a.doc)
+		out = append(out, item)
+	}
+	return out
 }
 
 // wireOptionCompletions returns the known option keys accepted by Sova's

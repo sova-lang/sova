@@ -19,6 +19,7 @@ type CodeEmitter struct {
 	mangledMainName     string
 	mainIsAsync         bool
 	currentFunc         *ir.FuncDeclStmt
+	currentTypeDecl     *ir.TypeDeclStmt
 	discardCounter      int
 	suppressThisKeyword bool
 	moduleBinds         map[string]moduleBind

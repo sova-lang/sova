@@ -9,6 +9,30 @@ import (
 	"strings"
 )
 
+// reactiveWireVarOriginalNameJS mirrors the Go-side helper of the same name: returns the original (pre-mangle) name of a `@reactive wire let` declaration identified by `sym`, or "" when the symbol does not refer to one. The JS emitter consults this whenever it walks a `VarRef` / `AssignmentExpr` / `MultiAssignmentStmt` target so that reads of a reactive wire-let symbol go through the cell's `value` accessor (which calls `__sovaReactiveRead`) and writes go through the cell's setter (which fires observers and propagates into Strix's reactive system). The cache slot is populated by `analyze_wire` once per build under `ReactiveWireVarsCacheKey`.
+func reactiveWireVarOriginalNameJS(ctx *codegen.EmitContext, sym ir.SymID) string {
+	if ctx == nil || ctx.Cache == nil || sym == 0 {
+		return ""
+	}
+	raw, ok := ctx.Cache["reactive_wire_vars"]
+	if !ok {
+		return ""
+	}
+	vars, ok := raw.([]*ir.VarDeclStmt)
+	if !ok {
+		return ""
+	}
+	for _, vd := range vars {
+		if len(vd.Targets) == 0 || vd.Targets[0].Name == nil {
+			continue
+		}
+		if vd.Targets[0].Name.Sym == sym {
+			return vd.Targets[0].Name.Name
+		}
+	}
+	return ""
+}
+
 // fieldHasReactiveAnnotationJS mirrors the Go-side helper: true when the annotation list carries an `@reactive` marker.
 func fieldHasReactiveAnnotationJS(annos []ir.Annotation) bool {
 	for _, a := range annos {

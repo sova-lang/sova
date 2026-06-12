@@ -12,6 +12,36 @@ function __sovaRegisterWire(name, fn) { __sova_ws_wires[name] = fn; }
 function __sovaOnWireVar(name, fn) {
   (__sova_ws_var_listeners[name] = __sova_ws_var_listeners[name] || []).push(fn);
 }
+function __sovaMakeReactiveWireCell(name) {
+  return {
+    _value: null,
+    __obsValue: [],
+    __sova_wire_name: name,
+    get value() {
+      var t = globalThis.__sovaReactiveRead;
+      if (t) { t(this, 'value'); }
+      return this._value;
+    },
+    set value(v) {
+      var __old = this._value;
+      if (__old === v) { return; }
+      this._value = v;
+      for (var __i = 0; __i < this.__obsValue.length; __i++) {
+        try { this.__obsValue[__i](__old, v); } catch (_) {}
+      }
+    },
+    observeValue: function (fn) {
+      var __idx = this.__obsValue.length;
+      this.__obsValue.push(fn);
+      var __obs = this.__obsValue;
+      return function () {
+        if (__idx >= __obs.length) { return null; }
+        __obs.splice(__idx, 1);
+        return null;
+      };
+    },
+  };
+}
 function __sovaWSCall(name, args) {
   return new Promise(function (resolve) {
     if (!__sova_ws || __sova_ws.readyState !== 1) {

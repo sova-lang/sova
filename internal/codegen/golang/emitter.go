@@ -31,6 +31,7 @@ type CodeEmitter struct {
 	loopLabels      []string
 	mangledMainName string
 	currentFunc     *ir.FuncDeclStmt
+	currentTypeDecl *ir.TypeDeclStmt
 	typeDecls       map[ir.TypID]*ir.TypeDeclStmt
 	wiredFuncs      []*ir.FuncDeclStmt
 	wiredVars       []*ir.VarDeclStmt
@@ -820,6 +821,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 		}
 		for _, method := range s.Methods {
 			methodRef := method
+			declRef := s
 			e.withStmt(block, func() jen.Code {
 				fn := methodRef.Func
 				methodName := symName(ctx, fn.Name.Sym)
@@ -836,8 +838,13 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				}
 				return funcDecl.BlockFunc(func(g *jen.Group) {
 					prevFunc := e.currentFunc
+					prevType := e.currentTypeDecl
 					e.currentFunc = fn
-					defer func() { e.currentFunc = prevFunc }()
+					e.currentTypeDecl = declRef
+					defer func() {
+						e.currentFunc = prevFunc
+						e.currentTypeDecl = prevType
+					}()
 					for _, st := range fn.Body.Stmts {
 						e.emitStmt(ctx, pkg, f, g, st, false)
 					}
@@ -1137,13 +1144,19 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			if target.Name == nil {
 				return
 			}
-			lhsName := symNameWithUnused(ctx, pkg, target.Name.Sym)
+			var lhsBuild func() *jen.Statement
+			if name, isMethod, ok := e.classMemberLookup(ctx, target.Name.Sym); ok && !isMethod {
+				lhsBuild = func() *jen.Statement { return jen.Id("this").Dot(name) }
+			} else {
+				lhsName := symNameWithUnused(ctx, pkg, target.Name.Sym)
+				lhsBuild = func() *jen.Statement { return jen.Id(lhsName) }
+			}
 			e.withStmt(block, func() jen.Code {
-				return jen.Id(lhsName).Op("=").Add(e.buildExpr(ctx, pkg, f, s.Value))
+				return lhsBuild().Op("=").Add(e.buildExpr(ctx, pkg, f, s.Value))
 			})
 			if origName := reactiveWireVarOriginalName(ctx, target.Name.Sym); origName != "" {
 				e.withStmt(block, func() jen.Code {
-					return jen.Id("__sovaPushWireVar").Call(jen.Lit(origName), jen.Id(lhsName))
+					return jen.Id("__sovaPushWireVar").Call(jen.Lit(origName), lhsBuild())
 				})
 			}
 			return
@@ -1691,22 +1704,27 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 	case *ir.AssignmentExpr:
 		return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).BlockFunc(func(group *jen.Group) {
 			right := e.buildExpr(ctx, pkg, f, x.Right)
-			left := symName(ctx, x.Left.Sym)
+			var lhs *jen.Statement
+			if name, isMethod, ok := e.classMemberLookup(ctx, x.Left.Sym); ok && !isMethod {
+				lhs = jen.Id("this").Dot(name)
+			} else {
+				lhs = jen.Id(symName(ctx, x.Left.Sym))
+			}
 
 			if x.Op == ir.OpAssign {
-				group.Id(left).Op("=").Add(right)
+				group.Add(lhs.Clone()).Op("=").Add(right)
 			} else {
 				op := string(x.Op[:len(x.Op)-1]) // Trim the '=' from the operator
 				temp := e.hk.NewTemp()
-				group.Id(temp).Op(":=").Id(left).Op(op).Add(right)
-				group.Id(left).Op("=").Id(temp)
+				group.Id(temp).Op(":=").Add(lhs.Clone()).Op(op).Add(right)
+				group.Add(lhs.Clone()).Op("=").Id(temp)
 			}
 
 			if reactiveWireVarOriginalName(ctx, x.Left.Sym) != "" {
-				group.Id("__sovaPushWireVar").Call(jen.Lit(reactiveWireVarOriginalName(ctx, x.Left.Sym)), jen.Id(left))
+				group.Id("__sovaPushWireVar").Call(jen.Lit(reactiveWireVarOriginalName(ctx, x.Left.Sym)), lhs.Clone())
 			}
 
-			group.Return(jen.Id(left))
+			group.Return(lhs.Clone())
 		}).Call()
 	case *ir.IndexExpr:
 		return jen.Parens(e.buildExpr(ctx, pkg, f, x.Expr)).Index(e.buildExpr(ctx, pkg, f, x.Index))
@@ -1941,6 +1959,9 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		// Special handling for "this" in enum methods
 		if orig, ok := ctx.Names.GetOriginalName(x.Ref.Sym); ok && orig == "this" {
 			return jen.Id("this")
+		}
+		if name, _, ok := e.classMemberLookup(ctx, x.Ref.Sym); ok {
+			return jen.Id("this").Dot(name)
 		}
 		return jen.Id(symName(ctx, x.Ref.Sym))
 	case *ir.ArrayLiteral:
@@ -3111,6 +3132,24 @@ func firstExportedRefs(body string, alias string) []string {
 		}
 	}
 	return nil
+}
+
+// classMemberLookup mirrors the JS-side helper: when emitting a method body of a Sova `type`, an unqualified `count` or `increment` reference should be rewritten to `this.count` / `this.increment` rather than the mangled global the symbol would otherwise resolve to. Returns ("", false, false) when no enclosing type context is active or when `sym` isn't a member of it; otherwise returns the receiver-relative name and an `isMethod` flag (false → field, true → method).
+func (e *CodeEmitter) classMemberLookup(ctx *codegen.EmitContext, sym ir.SymID) (string, bool, bool) {
+	if e.currentTypeDecl == nil || sym == 0 {
+		return "", false, false
+	}
+	for _, field := range e.currentTypeDecl.Fields {
+		if field.Name.Sym == sym {
+			return field.Name.Name, false, true
+		}
+	}
+	for _, m := range e.currentTypeDecl.Methods {
+		if m.Func != nil && m.Func.Name.Sym == sym {
+			return symName(ctx, m.Func.Name.Sym), true, true
+		}
+	}
+	return "", false, false
 }
 
 // lastPathSegment returns the conventional Go package name implied by an import path. For most paths this is the final `/`-delimited segment ("github.com/foo/bar" → "bar"); Go's semantic-import-versioning convention (`/v2`, `/v3`, ... — see https://go.dev/ref/mod#major-version-suffixes) is detected and the version segment is skipped, so "github.com/redis/go-redis/v9" → "redis" rather than the literal "v9", matching the actual package name the module exports.

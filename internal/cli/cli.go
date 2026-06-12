@@ -483,6 +483,7 @@ func crawlSova(root string) ([]sourceFile, error) {
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
+	memberAllowed := workspaceMemberSet(root)
 	var out []sourceFile
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -492,6 +493,19 @@ func crawlSova(root string) ([]sourceFile, error) {
 			name := d.Name()
 			if name != "." && strings.HasPrefix(name, ".") {
 				return fs.SkipDir
+			}
+			if path != root {
+				if _, statErr := os.Stat(filepath.Join(path, pkgmgr.ManifestFilename)); statErr == nil {
+					rel, _ := filepath.Rel(root, path)
+					rel = filepath.ToSlash(rel)
+					if memberAllowed != nil {
+						if _, ok := memberAllowed[rel]; !ok {
+							return fs.SkipDir
+						}
+					} else {
+						return fs.SkipDir
+					}
+				}
 			}
 			return nil
 		}
@@ -513,4 +527,25 @@ func crawlSova(root string) ([]sourceFile, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// workspaceMemberSet loads the root's `sova.toml` and, when it carries a `[workspace]` section, returns a set of slash-form member paths relative to the root. Returns nil when the root is not a workspace, signalling to `crawlSova` that any sub-manifest is an unrelated sub-project (example, scratch, sample) and must not be pulled into the build. Treats every manifest discovered below the root as a hard boundary by default; workspace members opt back in by being explicitly listed.
+func workspaceMemberSet(root string) map[string]bool {
+	m, ok, err := pkgmgr.LoadManifest(filepath.Join(root, pkgmgr.ManifestFilename))
+	if err != nil || !ok || m == nil || !m.IsWorkspaceRoot() {
+		return nil
+	}
+	abs, err := m.ResolveWorkspaceMembers()
+	if err != nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, dir := range abs {
+		rel, err := filepath.Rel(root, dir)
+		if err != nil {
+			continue
+		}
+		out[filepath.ToSlash(rel)] = true
+	}
+	return out
 }

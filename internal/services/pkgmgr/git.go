@@ -157,6 +157,8 @@ func (g *Git) ResolveRef(bareDir, ref string) (string, error) {
 }
 
 // Materialise extracts the tree at `sha` into `destDir`. Atomic: writes to a tempdir alongside `destDir`, then renames. Idempotent: if `destDir` exists and contains a `.sova-commit` sentinel matching `sha`, it's a no-op.
+//
+// Uses `git archive | tar -x` rather than `git checkout` so the extraction is index-free: a bare repo only has one index file, and parallel `checkout` calls on the same bare (which is the common case when several deps point at the same monorepo via different subdirs) would race on that single index and silently leave the cache slot with shuffled file contents from whichever checkout lost the race. `archive` reads straight from the object store and never touches the index, so the same bare repo can be extracted concurrently for different SHAs without corruption.
 func (g *Git) Materialise(bareDir, sha, destDir string) error {
 	sentinel := filepath.Join(destDir, ".sova-commit")
 	if data, err := os.ReadFile(sentinel); err == nil {
@@ -178,8 +180,8 @@ func (g *Git) Materialise(bareDir, sha, destDir string) error {
 			_ = os.RemoveAll(tmp)
 		}
 	}()
-	if err := g.run(bareDir, "--work-tree="+tmp, "checkout", sha, "--", "."); err != nil {
-		return fmt.Errorf("git checkout %s: %w", sha[:8], err)
+	if err := g.archiveExtract(bareDir, sha, tmp); err != nil {
+		return fmt.Errorf("git archive %s: %w", sha[:8], err)
 	}
 	if err := os.WriteFile(filepath.Join(tmp, ".sova-commit"), []byte(sha+"\n"), 0o644); err != nil {
 		return err
@@ -191,6 +193,44 @@ func (g *Git) Materialise(bareDir, sha, destDir string) error {
 		return err
 	}
 	cleanup = false
+	return nil
+}
+
+// archiveExtract pipes `git archive --format=tar <sha>` from the bare repo into a `tar -xf - -C <destDir>`. Selecting tar over zip keeps Unix file modes intact; the operation reads from the object store only and is safe to run concurrently across multiple destinations.
+func (g *Git) archiveExtract(bareDir, sha, destDir string) error {
+	archive := exec.Command("git", "--git-dir="+bareDir, "archive", "--format=tar", sha)
+	extract := exec.Command("tar", "-x", "-f", "-", "-C", destDir)
+	pipe, err := archive.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	extract.Stdin = pipe
+	var archiveErr, extractErr bytes.Buffer
+	if g.verbose {
+		archive.Stderr = os.Stderr
+		extract.Stderr = os.Stderr
+	} else {
+		archive.Stderr = &archiveErr
+		extract.Stderr = &extractErr
+	}
+	if err := extract.Start(); err != nil {
+		return fmt.Errorf("tar start: %w", err)
+	}
+	if err := archive.Run(); err != nil {
+		_ = extract.Wait()
+		msg := strings.TrimSpace(archiveErr.String())
+		if msg == "" {
+			return err
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	if err := extract.Wait(); err != nil {
+		msg := strings.TrimSpace(extractErr.String())
+		if msg == "" {
+			return fmt.Errorf("tar extract: %w", err)
+		}
+		return fmt.Errorf("tar extract: %s", msg)
+	}
 	return nil
 }
 

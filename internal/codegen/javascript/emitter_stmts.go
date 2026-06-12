@@ -433,29 +433,40 @@ func (e *CodeEmitter) emitMultiAssignment(ctx *codegen.EmitContext, pkg *ir.Pack
 
 	hasNonDiscard := false
 	var names []string
+	var targetExprs []*jsgen.Statement
 	for _, target := range s.Targets {
 		if target.Name == nil {
-			names = append(names, e.nextDiscardName())
+			discardName := e.nextDiscardName()
+			names = append(names, discardName)
+			targetExprs = append(targetExprs, jsgen.Id(discardName))
+			continue
+		}
+		if symbol, ok := pkg.Syms.GetByID(target.Name.Sym); ok && symbol.Flags&ir.SF_Unused != 0 {
+			discardName := e.nextDiscardName()
+			names = append(names, discardName)
+			targetExprs = append(targetExprs, jsgen.Id(discardName))
+			continue
+		}
+		hasNonDiscard = true
+		if memberName, isMethod, ok := e.classMemberLookup(ctx, target.Name.Sym); ok && !isMethod {
+			names = append(names, "this."+memberName)
+			targetExprs = append(targetExprs, jsgen.Raw("this.").Add(jsgen.Id(memberName)))
+		} else if reactiveWireVarOriginalNameJS(ctx, target.Name.Sym) != "" {
+			cellName := symName(ctx, target.Name.Sym)
+			names = append(names, cellName+".value")
+			targetExprs = append(targetExprs, jsgen.Id(cellName).Dot("value"))
 		} else {
-			if symbol, ok := pkg.Syms.GetByID(target.Name.Sym); ok {
-				if symbol.Flags&ir.SF_Unused != 0 {
-					names = append(names, e.nextDiscardName())
-				} else {
-					hasNonDiscard = true
-					names = append(names, symName(ctx, target.Name.Sym))
-				}
-			} else {
-				hasNonDiscard = true
-				names = append(names, symName(ctx, target.Name.Sym))
-			}
+			plain := symName(ctx, target.Name.Sym)
+			names = append(names, plain)
+			targetExprs = append(targetExprs, jsgen.Id(plain))
 		}
 	}
 
 	if !hasNonDiscard {
 		return
 	}
-	if len(names) == 1 {
-		e.jf.Add(withPosFromStmt(jsgen.Id(names[0]).Op("=").Add(e.buildExpr(ctx, pkg, f, s.Value)), s))
+	if len(targetExprs) == 1 {
+		e.jf.Add(withPosFromStmt(targetExprs[0].Op("=").Add(e.buildExpr(ctx, pkg, f, s.Value)), s))
 		return
 	}
 	e.jf.Add(withPosFromStmt(jsgen.DestructArray("let", names, e.buildExpr(ctx, pkg, f, s.Value)), s))
@@ -846,6 +857,9 @@ func (e *CodeEmitter) buildWhileStmt(ctx *codegen.EmitContext, pkg *ir.PackageCo
 }
 
 func (e *CodeEmitter) emitTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.TypeDeclStmt, topLevel bool) {
+	prevTypeDecl := e.currentTypeDecl
+	e.currentTypeDecl = s
+	defer func() { e.currentTypeDecl = prevTypeDecl }()
 	typeName := symName(ctx, s.Name.Sym)
 
 	parentClass := ""
@@ -1331,15 +1345,30 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 
 	case *ir.MultiAssignmentStmt:
 		var names []string
+		var targetExprs []*jsgen.Statement
 		for _, target := range s.Targets {
 			if target.Name == nil {
 				names = append(names, "")
-			} else {
-				names = append(names, symName(ctx, target.Name.Sym))
+				targetExprs = append(targetExprs, nil)
+				continue
 			}
+			if memberName, isMethod, ok := e.classMemberLookup(ctx, target.Name.Sym); ok && !isMethod {
+				names = append(names, "this."+memberName)
+				targetExprs = append(targetExprs, jsgen.Raw("this.").Add(jsgen.Id(memberName)))
+				continue
+			}
+			if reactiveWireVarOriginalNameJS(ctx, target.Name.Sym) != "" {
+				cellName := symName(ctx, target.Name.Sym)
+				names = append(names, cellName+".value")
+				targetExprs = append(targetExprs, jsgen.Id(cellName).Dot("value"))
+				continue
+			}
+			plain := symName(ctx, target.Name.Sym)
+			names = append(names, plain)
+			targetExprs = append(targetExprs, jsgen.Id(plain))
 		}
-		if len(names) == 1 && names[0] != "" {
-			return jsgen.Id(names[0]).Op("=").Add(e.buildExpr(ctx, pkg, f, s.Value))
+		if len(targetExprs) == 1 && targetExprs[0] != nil {
+			return targetExprs[0].Op("=").Add(e.buildExpr(ctx, pkg, f, s.Value))
 		}
 		return jsgen.DestructAssign(names, e.buildExpr(ctx, pkg, f, s.Value))
 
@@ -1512,15 +1541,15 @@ func (e *CodeEmitter) emitWiredVarStub(ctx *codegen.EmitContext, pkg *ir.Package
 		if orig != "" {
 			sb.WriteString(fmt.Sprintf("// @reactive wire let %s (%s %s)\n", orig, method, rawPath))
 		}
-		sb.WriteString(fmt.Sprintf("let %s;\n", funcName))
+		sb.WriteString(fmt.Sprintf("const %s = __sovaMakeReactiveWireCell(%q);\n", funcName, orig))
 		sb.WriteString("(async () => {\n")
 		sb.WriteString("  const __base = (typeof process !== 'undefined' && process.env && process.env.WIRE_BACKEND) || (typeof window !== 'undefined' && window.WIRE_BACKEND) || (typeof window !== 'undefined' && window.location && window.location.origin) || '';\n")
 		sb.WriteString(fmt.Sprintf("  try { const __res = await fetch(__base + `%s`, { method: %q, credentials: 'include' });\n", rawPath, method))
 		sb.WriteString("    if (__res.ok) { const __data = await __res.json(); ")
-		sb.WriteString(fmt.Sprintf("%s = __data.value; }\n", funcName))
+		sb.WriteString(fmt.Sprintf("%s.value = __data.value; }\n", funcName))
 		sb.WriteString("  } catch (_) {}\n")
 		sb.WriteString("})();\n")
-		sb.WriteString(fmt.Sprintf("if (typeof __sovaOnWireVar === 'function') { __sovaOnWireVar(%q, function(v) { %s = v; }); }", orig, funcName))
+		sb.WriteString(fmt.Sprintf("if (typeof __sovaOnWireVar === 'function') { __sovaOnWireVar(%q, function(v) { %s.value = v; }); }", orig, funcName))
 		e.jf.Add(jsgen.Raw(sb.String()))
 		return
 	}
