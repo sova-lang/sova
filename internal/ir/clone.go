@@ -53,11 +53,12 @@ func CloneTypeField(f *TypeField, alloc *IdAlloc) *TypeField {
 		return nil
 	}
 	return &TypeField{
-		node:    node{id: NodeID(alloc.Next()), span: f.span},
-		Name:    NameRef{Name: f.Name.Name, Span: f.Name.Span},
-		Type:    cloneTypeRef(f.Type, alloc),
-		Default: CloneExpr(f.Default, alloc),
-		Private: f.Private,
+		node:     node{id: NodeID(alloc.Next()), span: f.span},
+		Name:     NameRef{Name: f.Name.Name, Span: f.Name.Span},
+		Type:     cloneTypeRef(f.Type, alloc),
+		Default:  CloneExpr(f.Default, alloc),
+		Private:  f.Private,
+		IsShared: f.IsShared,
 	}
 }
 
@@ -67,9 +68,10 @@ func CloneTypeMethodDecl(m *TypeMethodDecl, alloc *IdAlloc) *TypeMethodDecl {
 		return nil
 	}
 	return &TypeMethodDecl{
-		node:    node{id: NodeID(alloc.Next()), span: m.span},
-		Private: m.Private,
-		Func:    cloneFuncDeclStmt(m.Func, alloc),
+		node:     node{id: NodeID(alloc.Next()), span: m.span},
+		Private:  m.Private,
+		IsShared: m.IsShared,
+		Func:     cloneFuncDeclStmt(m.Func, alloc),
 	}
 }
 

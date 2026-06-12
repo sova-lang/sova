@@ -15,6 +15,7 @@ func buildPassManager() *passes.PassManager {
 	pm.Register(&passes.PassAnalyzeWire{})
 	pm.Register(&passes.PassAnalyzeExterns{})
 	pm.Register(&passes.PassAggregateExternModules{})
+	pm.Register(&passes.PassAnalyzeSharedMembers{})
 	pm.Register(&passes.PassAnalyzeComposables{})
 	pm.Register(&passes.PassFoldAnnotations{})
 	pm.Register(&passes.PassPropagateAsync{})
@@ -41,6 +42,7 @@ func TestPipeline() []string {
 		"infer_types",
 		"analyze_externs",
 		"aggregate_extern_modules",
+		"analyze_shared_members",
 		"analyze_composables",
 		"fold_annotations",
 		"propagate_async",
@@ -74,6 +76,7 @@ func compilerPipeline() []string {
 		"infer_types",
 		"analyze_externs",
 		"aggregate_extern_modules",
+		"analyze_shared_members",
 		"analyze_composables",
 		"fold_annotations",
 		"propagate_async",
@@ -99,6 +102,7 @@ func checkPipeline() []string {
 		"infer_types",
 		"analyze_externs",
 		"aggregate_extern_modules",
+		"analyze_shared_members",
 		"analyze_composables",
 		"fold_annotations",
 		"propagate_async",

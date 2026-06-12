@@ -1,4 +1,4 @@
-// Code generated from /home/dasdarki/Development/DasDarki/Sova-Go/Sova.g4 by ANTLR 4.13.2. DO NOT EDIT.
+// Code generated from /home/dasdarki/Development/DasDarki/Sova/sova/Sova.g4 by ANTLR 4.13.2. DO NOT EDIT.
 
 package parser // Sova
 
@@ -196,6 +196,9 @@ type SovaVisitor interface {
 
 	// Visit a parse tree produced by SovaParser#castDecl.
 	VisitCastDecl(ctx *CastDeclContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#memberModifier.
+	VisitMemberModifier(ctx *MemberModifierContext) interface{}
 
 	// Visit a parse tree produced by SovaParser#annotation.
 	VisitAnnotation(ctx *AnnotationContext) interface{}

@@ -130,6 +130,24 @@ func (p *PassInferTypes) preComputeFuncSignatures(pc *PassContext, stmts []ir.St
 	}
 }
 
+// interfaceFileSide locates the file that declares `ifaceSym` and returns its side. Used by InterfaceSigInfo population to implicitly mark every method on a shared-file interface as `IsShared` so the conformance check enforces shared implementations even without an explicit per-method modifier. Returns `SideShared` as a safe default when the interface cannot be located (e.g. compiler-injected interfaces with no source).
+func interfaceFileSide(pc *PassContext, ifaceSym ir.SymID) ir.SideKind {
+	if pc == nil || pc.Pkg == nil || ifaceSym == 0 {
+		return ir.SideShared
+	}
+	for _, f := range pc.Pkg.Files {
+		if f.Hir == nil {
+			continue
+		}
+		for _, st := range f.Hir.Statements {
+			if iface, ok := st.(*ir.InterfaceDeclStmt); ok && iface.Name.Sym == ifaceSym {
+				return f.Hir.Side.Kind
+			}
+		}
+	}
+	return ir.SideShared
+}
+
 func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 	for i, st := range stmts {
 		if ir.IsNilStmt(st) {
@@ -402,7 +420,8 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				}
 				funcTyp := pc.Types.FuncOf(sig.Params, retType)
 				pc.Pkg.Syms.SetType(sig.Name.Sym, funcTyp)
-				sigs = append(sigs, ir.InterfaceSigInfo{Name: sig.Name.Name, FuncTyp: funcTyp})
+				isShared := sig.IsShared || interfaceFileSide(pc, st.Name.Sym) == ir.SideShared
+				sigs = append(sigs, ir.InterfaceSigInfo{Name: sig.Name.Name, FuncTyp: funcTyp, IsShared: isShared})
 			}
 			if ifaceTy, ok := pc.Types.GetByID(ifaceTyp); ok {
 				ifaceTy.InterfaceMethods = sigs
@@ -488,7 +507,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				}
 				funcTyp := pc.Types.FuncOf(fn.Params, returnType)
 				pc.Pkg.Syms.SetType(fn.Name.Sym, funcTyp)
-				methodInfos = append(methodInfos, ir.StructMethodInfo{Name: fn.Name.Name, Sym: fn.Name.Sym, FuncTyp: funcTyp})
+				methodInfos = append(methodInfos, ir.StructMethodInfo{Name: fn.Name.Name, Sym: fn.Name.Sym, FuncTyp: funcTyp, IsShared: method.IsShared})
 			}
 
 			var ctorInfos []ir.StructCtorInfo
@@ -685,6 +704,9 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					}
 					if pc.Types.GetFunctionSignatureKey(match.FuncTyp) != pc.Types.GetFunctionSignatureKey(want.FuncTyp) {
 						pc.Diag.Report(diag.ErrInterfaceMethodSigMismatch, st.Name.Span, st.Name.Name, want.Name, impl.Name)
+					}
+					if want.IsShared && !match.IsShared {
+						pc.Diag.Report(diag.ErrInterfaceSharedMethodNotShared, st.Name.Span, st.Name.Name, impl.Name, want.Name)
 					}
 				}
 			}

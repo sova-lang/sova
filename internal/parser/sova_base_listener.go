@@ -1,4 +1,4 @@
-// Code generated from /home/dasdarki/Development/DasDarki/Sova-Go/Sova.g4 by ANTLR 4.13.2. DO NOT EDIT.
+// Code generated from /home/dasdarki/Development/DasDarki/Sova/sova/Sova.g4 by ANTLR 4.13.2. DO NOT EDIT.
 
 package parser // Sova
 
@@ -398,6 +398,12 @@ func (s *BaseSovaListener) EnterCastDecl(ctx *CastDeclContext) {}
 
 // ExitCastDecl is called when production castDecl is exited.
 func (s *BaseSovaListener) ExitCastDecl(ctx *CastDeclContext) {}
+
+// EnterMemberModifier is called when production memberModifier is entered.
+func (s *BaseSovaListener) EnterMemberModifier(ctx *MemberModifierContext) {}
+
+// ExitMemberModifier is called when production memberModifier is exited.
+func (s *BaseSovaListener) ExitMemberModifier(ctx *MemberModifierContext) {}
 
 // EnterAnnotation is called when production annotation is entered.
 func (s *BaseSovaListener) EnterAnnotation(ctx *AnnotationContext) {}

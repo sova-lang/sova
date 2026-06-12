@@ -1,4 +1,4 @@
-// Code generated from /home/dasdarki/Development/DasDarki/Sova-Go/Sova.g4 by ANTLR 4.13.2. DO NOT EDIT.
+// Code generated from /home/dasdarki/Development/DasDarki/Sova/sova/Sova.g4 by ANTLR 4.13.2. DO NOT EDIT.
 
 package parser // Sova
 
@@ -257,6 +257,10 @@ func (v *BaseSovaVisitor) VisitMethodDecl(ctx *MethodDeclContext) interface{} {
 }
 
 func (v *BaseSovaVisitor) VisitCastDecl(ctx *CastDeclContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitMemberModifier(ctx *MemberModifierContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 

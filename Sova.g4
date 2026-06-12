@@ -132,10 +132,11 @@ typeMember : fieldDecl
            | methodDecl
            | castDecl
            ;
-fieldDecl : annotation* 'private'? ID typeAnnot ('=' expr)?;
-ctorDecl : annotation* 'new' '(' funcParamList? ')' block?;
-methodDecl : annotation* 'private'? 'func' methodName '(' funcParamList? ')' typeAnnot? block?;
-castDecl : annotation* 'cast' '(' ID typeAnnot ')' typeAnnot? block;
+fieldDecl : annotation* memberModifier* ID typeAnnot ('=' expr)?;
+ctorDecl : annotation* memberModifier* 'new' '(' funcParamList? ')' block?;
+methodDecl : annotation* memberModifier* 'func' methodName '(' funcParamList? ')' typeAnnot? block?;
+castDecl : annotation* memberModifier* 'cast' '(' ID typeAnnot ')' typeAnnot? block;
+memberModifier : 'private' | 'shared';
 
 annotation : '@' ID ('(' (expr (',' expr)*)? ')')?;
 
@@ -153,7 +154,7 @@ opSymbol : PLUS | MINUS | MULT | DIV | MOD | EQUAL;
 
 // Interface Statements
 interfaceDeclStmt : 'interface' ID LBRACE methodSignature* RBRACE;
-methodSignature : 'func' ID '(' funcParamList? ')' typeAnnot?;
+methodSignature : memberModifier* 'func' ID '(' funcParamList? ')' typeAnnot?;
 
 // Mixin Statements
 mixinDeclStmt : 'mixin' ID LBRACE mixinMember* RBRACE;

@@ -587,26 +587,37 @@ type TypeAliasStmt struct {
 
 func (*TypeAliasStmt) stmtNode() {}
 
-// InterfaceMethodSig represents a single method signature on an interface.
+// InterfaceMethodSig represents a single method signature on an interface. `IsShared` opts the contract method into the cross-side conformance rule: a type implementing this method must mark its matching method `shared` so the body is emitted on both sides. Set by the visitor from the per-method `shared` modifier and also implicitly when the interface's declaring file is `on shared`.
 type InterfaceMethodSig struct {
 	node
 	Name       NameRef
 	Params     []*FuncParam
 	ReturnType *TypeRef
+	IsShared   bool
 }
 
-// TypeMethodDecl is a method attached to a TypeDeclStmt. It wraps a normal FuncDeclStmt and tracks the receiver symbol.
+// SharedTypeMembers is the codegen-facing summary of which members of a type opt into cross-side emission. Stored under the `shared_type_members` cache key by `pass_analyze_shared_members` and consumed by both code emitters. Lives in `ir` (rather than `passes`) so both codegens can reference it without circular imports.
+type SharedTypeMembers struct {
+	TypeDecl *TypeDeclStmt
+	Fields   []*TypeField
+	Methods  []*TypeMethodDecl
+	Ctors    []*CtorDecl
+	Casts    []*CastDecl
+}
+
+// TypeMethodDecl is a method attached to a TypeDeclStmt. It wraps a normal FuncDeclStmt and tracks the receiver symbol. `IsShared` follows the same semantics as `TypeField.IsShared`: it opts the method body into emission on the other side of a one-sided type.
 type TypeMethodDecl struct {
 	node
 	ThisSym     SymID
 	Private     bool
+	IsShared    bool
 	Func        *FuncDeclStmt
 	Annotations []Annotation
 }
 
 func (*TypeDeclStmt) stmtNode() {}
 
-// TypeField represents a single field on a TypeDeclStmt.
+// TypeField represents a single field on a TypeDeclStmt. `IsShared` opts the field into cross-side emission when the enclosing type lives in a one-sided file (`on backend` / `on frontend`): the other side gets a parallel field on its host class so the shared subset of the type round-trips across the wire as a real class instance. Has no effect on types declared `on shared` — those already exist on both sides in full.
 type TypeField struct {
 	node
 	Annotations []Annotation
@@ -614,9 +625,10 @@ type TypeField struct {
 	Type        *TypeRef
 	Default     Expr
 	Private     bool
+	IsShared    bool
 }
 
-// CastDecl represents a `cast(p: SourceT): Self { … }` declaration inside a TypeDeclStmt body. It is the only cast-overloading hook a type exposes: the compiler may automatically insert a call to it where a value of SourceT appears in a position expecting Self.
+// CastDecl represents a `cast(p: SourceT): Self { … }` declaration inside a TypeDeclStmt body. It is the only cast-overloading hook a type exposes: the compiler may automatically insert a call to it where a value of SourceT appears in a position expecting Self. `IsShared` follows the same semantics as `TypeField.IsShared`.
 type CastDecl struct {
 	node
 	Sym         SymID
@@ -624,11 +636,12 @@ type CastDecl struct {
 	ReturnType  *TypeRef
 	Body        *BlockStmt
 	Annotations []Annotation
+	IsShared    bool
 }
 
 func (*CastDecl) stmtNode() {}
 
-// CtorDecl represents an explicit constructor declaration inside a TypeDeclStmt body.
+// CtorDecl represents an explicit constructor declaration inside a TypeDeclStmt body. `IsShared` follows the same semantics as `TypeField.IsShared`.
 type CtorDecl struct {
 	node
 	Sym         SymID
@@ -637,6 +650,7 @@ type CtorDecl struct {
 	Body        *BlockStmt
 	Annotations []Annotation
 	IsSynthetic bool // IsSynthetic marks ctors produced by the visitor's field-init synthesis path; they must be dropped before bind/infer when the enclosing type turns out to be IsExtern.
+	IsShared    bool
 }
 
 // EnumDeclStmt represents an enum declaration.

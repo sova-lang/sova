@@ -32,6 +32,7 @@ func (p *PassFoldAnnotations) walkStmt(pc *PassContext, st ir.Stmt) {
 		p.foldList(pc, s.Annotations)
 		for _, fld := range s.Fields {
 			p.foldList(pc, fld.Annotations)
+			p.validateTagShape(pc, fld.Annotations, fld.Name.Name, s.Name.Name)
 		}
 		for _, m := range s.Methods {
 			p.foldList(pc, m.Annotations)
@@ -56,6 +57,31 @@ func (p *PassFoldAnnotations) foldList(pc *PassContext, annos []ir.Annotation) {
 				continue
 			}
 			a.ResolvedArgs = append(a.ResolvedArgs, val)
+		}
+	}
+}
+
+// validateTagShape enforces the `@tag` annotation's two-string-arg contract on every annotation in `annos` whose name is `tag`. The annotation is the user-facing surface for Go struct tags emitted on type fields: each occurrence contributes one `key:"value"` pair, where `key` is the tag namespace (`json`, `gorm`, `validate`, ...) and `value` is the literal tag content. Restricting to exactly two string args keeps the surface free of library-specific knowledge in the compiler — the codegen only joins the recorded key/value pairs into the Go tag string at struct emission. Reports a per-annotation diagnostic on shape violations; the codegen later skips any malformed `@tag` so the rendered Go does not carry partial tag data.
+func (p *PassFoldAnnotations) validateTagShape(pc *PassContext, annos []ir.Annotation, fieldName, typeName string) {
+	for i := range annos {
+		a := &annos[i]
+		if a.Name.Name != "structTag" {
+			continue
+		}
+		ctx := fieldName
+		if typeName != "" {
+			ctx = typeName + "." + fieldName
+		}
+		if len(a.ResolvedArgs) != 2 {
+			pc.Diag.Report(diag.ErrTagAnnotationMalformed, a.Name.Span, ctx)
+			continue
+		}
+		if a.ResolvedArgs[0].Kind != ir.AnnotationValueString || a.ResolvedArgs[1].Kind != ir.AnnotationValueString {
+			pc.Diag.Report(diag.ErrTagAnnotationMalformed, a.Name.Span, ctx)
+			continue
+		}
+		if a.ResolvedArgs[0].Str == "" {
+			pc.Diag.Report(diag.ErrTagAnnotationMalformed, a.Name.Span, ctx)
 		}
 	}
 }

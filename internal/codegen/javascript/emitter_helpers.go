@@ -33,6 +33,141 @@ func reactiveWireVarOriginalNameJS(ctx *codegen.EmitContext, sym ir.SymID) strin
 	return ""
 }
 
+// buildTypeDescriptorJSLiteral returns a JS object-literal source string describing `typID` for the wire-reification runtime (`__sovaReify`). The descriptor is compact and recursive:
+//
+//   primitive / any / none → {kind:"primitive"}
+//   option<T>              → {kind:"option", elem: <desc T>}
+//   []T  / [N]T            → {kind:"slice", elem: <desc T>}
+//   map<K,V>               → {kind:"map", value: <desc V>}
+//   (A, B, ...)            → {kind:"tuple", elems:[<desc A>, <desc B>, ...]}
+//   struct X               → {kind:"struct", name:"<mangled-X>"}      // resolved via registry at runtime
+//   enum / func / chan     → {kind:"primitive"}                       // passthrough; not reified
+//
+// Struct references are stored by name only so circular topologies (User has friends:[]User) terminate naturally; the runtime registry maps names to constructors. When a struct type's emitted class lives on the OTHER side (e.g. a backend-only type referenced from a frontend wire arg), the registry lookup returns nothing and the value passes through as a plain object — preserving the property bag without crashing.
+func (e *CodeEmitter) buildTypeDescriptorJSLiteral(ctx *codegen.EmitContext, typID ir.TypID) string {
+	if typID == 0 {
+		return `{kind:"any"}`
+	}
+	ty, ok := ctx.Types.GetByID(typID)
+	if !ok {
+		return `{kind:"any"}`
+	}
+	switch ty.Kind {
+	case ir.TK_PrimitiveAny, ir.TK_PrimitiveNone:
+		return `{kind:"any"}`
+	case ir.TK_PrimitiveInt, ir.TK_PrimitiveFloat, ir.TK_PrimitiveBool, ir.TK_PrimitiveString, ir.TK_PrimitiveChar, ir.TK_PrimitiveByte:
+		return `{kind:"primitive"}`
+	case ir.TK_Option:
+		return fmt.Sprintf(`{kind:"option",elem:%s}`, e.buildTypeDescriptorJSLiteral(ctx, ty.ElemType))
+	case ir.TK_Slice, ir.TK_Array:
+		return fmt.Sprintf(`{kind:"slice",elem:%s}`, e.buildTypeDescriptorJSLiteral(ctx, ty.ElemType))
+	case ir.TK_Map:
+		return fmt.Sprintf(`{kind:"map",value:%s}`, e.buildTypeDescriptorJSLiteral(ctx, ty.ElemType))
+	case ir.TK_Tuple:
+		parts := make([]string, len(ty.Fields))
+		for i, te := range ty.Fields {
+			parts[i] = e.buildTypeDescriptorJSLiteral(ctx, te.Type)
+		}
+		return fmt.Sprintf(`{kind:"tuple",elems:[%s]}`, strings.Join(parts, ","))
+	case ir.TK_Struct:
+		if ty.IsExtern {
+			return `{kind:"any"}`
+		}
+		structName := lookupMangledNameForType(ctx, typID)
+		if structName == "" {
+			return `{kind:"any"}`
+		}
+		return fmt.Sprintf(`{kind:"struct",name:%q}`, structName)
+	default:
+		return `{kind:"primitive"}`
+	}
+}
+
+// lookupMangledNameForType resolves the mangled JS class name for a struct `typID` by walking every package's TypeDeclStmts and returning the mangled name of the one whose declaration-sym carries `typID`. Going via the declaration (rather than walking all symbols) is necessary because per-field symbols and other type-typed values often share the same Typ — picking the first sym-by-Typ would land on a variable's mangling instead of the class's mangling. Falls back to the empty string when the type does not correspond to a user-declared type-decl in any in-build package (e.g. extern struct types).
+func lookupMangledNameForType(ctx *codegen.EmitContext, typID ir.TypID) string {
+	for _, pkg := range ctx.Pkgs {
+		if name := lookupMangledNameInPkg(ctx, pkg, typID); name != "" {
+			return name
+		}
+	}
+	for _, pkg := range ctx.TransPkgs {
+		if name := lookupMangledNameInPkg(ctx, pkg, typID); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func lookupMangledNameInPkg(ctx *codegen.EmitContext, pkg *ir.PackageContext, typID ir.TypID) string {
+	if pkg == nil {
+		return ""
+	}
+	for _, f := range pkg.Files {
+		if f.Hir == nil {
+			continue
+		}
+		for _, st := range f.Hir.Statements {
+			td, ok := st.(*ir.TypeDeclStmt)
+			if !ok || td.IsExtern || td.Name.Sym == 0 {
+				continue
+			}
+			sym, ok := pkg.Syms.GetByID(td.Name.Sym)
+			if !ok || sym.Typ != typID {
+				continue
+			}
+			if name, ok := ctx.Names.GetMangledName(td.Name.Sym); ok {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+// emitTypeRegistration appends a `__sovaRegisterType("<mangled>", ClassRef, {field1:<desc1>, ...})` call after a class declaration so the wire-reification runtime can later construct instances with the correct prototype. Gated at runtime by a `typeof` check: if the reification helper isn't present (e.g. legacy builds without wires), the registration is a no-op.
+func (e *CodeEmitter) emitTypeRegistration(ctx *codegen.EmitContext, typeName string, fields []*ir.TypeField) {
+	parts := make([]string, 0, len(fields))
+	for _, fld := range fields {
+		if fld == nil || fld.Name.Name == "" {
+			continue
+		}
+		desc := e.buildTypeDescriptorJSLiteral(ctx, fld.Type.Typ)
+		parts = append(parts, fmt.Sprintf("%q:%s", fld.Name.Name, desc))
+	}
+	literal := fmt.Sprintf("{%s}", strings.Join(parts, ","))
+	e.jf.Add(jsgen.Raw(fmt.Sprintf("if (typeof __sovaRegisterType === 'function') { __sovaRegisterType(%q, %s, %s); }", typeName, typeName, literal)))
+}
+
+// sharedSubsetTypeDecl returns a shallow-copy `*ir.TypeDeclStmt` whose Fields/Methods/Ctors/Casts contain only the members marked `shared` (or, when the enclosing file is `on shared`, the full set). When the type has no shared members and isn't declared `on shared`, returns nil — signalling "no cross-side emission needed". The returned copy points at the same field/method nodes as the original; downstream codegen treats it like any other type-decl. This is the surgical hook the Stage 3 design uses to produce a parallel JS class that exposes only the shared subset of a backend-declared type (and symmetrically a parallel Go struct from a frontend-declared type).
+//
+// Looking up the summary in the `shared_type_members` cache (populated by `pass_analyze_shared_members`) keeps codegen decoupled from the validator's specifics: codegen consumes the precomputed subset and does not re-derive it from `IsShared` markers.
+func sharedSubsetTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageContext, td *ir.TypeDeclStmt) *ir.TypeDeclStmt {
+	if ctx == nil || ctx.Cache == nil || td == nil || td.Name.Sym == 0 {
+		return nil
+	}
+	raw, ok := ctx.Cache["shared_type_members"]
+	if !ok {
+		return nil
+	}
+	store, ok := raw.(map[ir.TypID]*ir.SharedTypeMembers)
+	if !ok {
+		return nil
+	}
+	sym, ok := pkg.Syms.GetByID(td.Name.Sym)
+	if !ok || sym.Typ == 0 {
+		return nil
+	}
+	summary, ok := store[sym.Typ]
+	if !ok || summary == nil {
+		return nil
+	}
+	tdCopy := *td
+	tdCopy.Fields = summary.Fields
+	tdCopy.Methods = summary.Methods
+	tdCopy.Ctors = summary.Ctors
+	tdCopy.Casts = summary.Casts
+	return &tdCopy
+}
+
 // fieldHasReactiveAnnotationJS mirrors the Go-side helper: true when the annotation list carries an `@reactive` marker.
 func fieldHasReactiveAnnotationJS(annos []ir.Annotation) bool {
 	for _, a := range annos {

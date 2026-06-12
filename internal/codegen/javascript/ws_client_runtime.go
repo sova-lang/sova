@@ -4,11 +4,15 @@ package javascript
 const sovaWSClientRuntime = `
 var __sova_ws = null;
 var __sova_ws_wires = {};
+var __sova_ws_wire_param_descs = {};
 var __sova_ws_var_listeners = {};
 var __sova_ws_pending = {};
 var __sova_ws_reconnect_ms = 1000;
 var __sova_ws_call_seq = 0;
-function __sovaRegisterWire(name, fn) { __sova_ws_wires[name] = fn; }
+function __sovaRegisterWire(name, fn, paramDescs) {
+  __sova_ws_wires[name] = fn;
+  if (paramDescs) { __sova_ws_wire_param_descs[name] = paramDescs; }
+}
 function __sovaOnWireVar(name, fn) {
   (__sova_ws_var_listeners[name] = __sova_ws_var_listeners[name] || []).push(fn);
 }
@@ -80,6 +84,12 @@ async function __sovaWSDispatch(env) {
     try { args = env.args ? JSON.parse(typeof env.args === 'string' ? env.args : JSON.stringify(env.args)) : []; }
     catch (e) { args = []; }
     if (!Array.isArray(args)) args = [];
+    var descs = __sova_ws_wire_param_descs[env.fn];
+    if (descs && typeof __sovaReify === 'function') {
+      for (var __ai = 0; __ai < args.length; __ai++) {
+        if (descs[__ai]) { args[__ai] = __sovaReify(args[__ai], descs[__ai]); }
+      }
+    }
     try {
       var result = await fn.apply(null, args);
       if (env.id && __sova_ws && __sova_ws.readyState === 1) {

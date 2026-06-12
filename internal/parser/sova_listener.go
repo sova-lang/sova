@@ -1,4 +1,4 @@
-// Code generated from /home/dasdarki/Development/DasDarki/Sova-Go/Sova.g4 by ANTLR 4.13.2. DO NOT EDIT.
+// Code generated from /home/dasdarki/Development/DasDarki/Sova/sova/Sova.g4 by ANTLR 4.13.2. DO NOT EDIT.
 
 package parser // Sova
 
@@ -196,6 +196,9 @@ type SovaListener interface {
 
 	// EnterCastDecl is called when entering the castDecl production.
 	EnterCastDecl(c *CastDeclContext)
+
+	// EnterMemberModifier is called when entering the memberModifier production.
+	EnterMemberModifier(c *MemberModifierContext)
 
 	// EnterAnnotation is called when entering the annotation production.
 	EnterAnnotation(c *AnnotationContext)
@@ -679,6 +682,9 @@ type SovaListener interface {
 
 	// ExitCastDecl is called when exiting the castDecl production.
 	ExitCastDecl(c *CastDeclContext)
+
+	// ExitMemberModifier is called when exiting the memberModifier production.
+	ExitMemberModifier(c *MemberModifierContext)
 
 	// ExitAnnotation is called when exiting the annotation production.
 	ExitAnnotation(c *AnnotationContext)

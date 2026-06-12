@@ -80,6 +80,7 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 		e.jf.Add(jsgen.Raw(importLine))
 	}
 
+	e.jf.Add(jsgen.Raw(sovaReifyRuntime))
 	if v, ok := ctx.Cache["needs_session_manager"].(bool); ok && v {
 		e.jf.Add(jsgen.Raw(sovaWSClientRuntime))
 	}
@@ -92,7 +93,7 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 		emitJSTestRuntime(e.jf)
 	}
 
-	// Emit wired-func stubs from the other side (e.g. backend files): the JS frontend never gets the implementation, but it needs callable fetch stubs so cross-side calls resolve to the gemangelt symbol name.
+	// Emit wired-func stubs from the other side (e.g. backend files): the JS frontend never gets the implementation, but it needs callable fetch stubs so cross-side calls resolve to the gemangelt symbol name. Same loop also emits the shared subset of any cross-side TypeDecl: when a backend type carries `shared` members (Stage 3 of the GORM-friendly Sova design), the JS side gets a parallel class with only the shared fields + methods so the wire layer can hand back real class instances rather than property bags.
 	for _, pkg := range ctx.TransPkgs {
 		for _, file := range pkg.Files {
 			for _, st := range file.Hir.Statements {
@@ -104,6 +105,13 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 				case *ir.VarDeclStmt:
 					if v.IsWired {
 						e.emitWiredVarStub(ctx, pkg, file.Hir, v)
+					}
+				case *ir.TypeDeclStmt:
+					if v.IsExtern || jsHasBuiltinAnnotation(v.Annotations) {
+						continue
+					}
+					if filtered := sharedSubsetTypeDecl(ctx, pkg, v); filtered != nil {
+						e.emitTypeDecl(ctx, pkg, file.Hir, filtered, true)
 					}
 				}
 			}

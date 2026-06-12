@@ -87,6 +87,23 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 			}
 		}
 
+		// Cross-side TypeDecl emission: when a type lives in a frontend file but carries `shared` members (Stage 3 of the GORM-friendly Sova design), Go needs a struct with the shared subset so the wire layer can JSON-marshal/unmarshal it as a typed value. We only emit the struct shape with its `@structTag` annotations; methods live on the JS side and don't get a Go body.
+		for _, pkg := range ctx.TransPkgs {
+			for _, file := range pkg.Files {
+				for _, st := range file.Hir.Statements {
+					td, ok := st.(*ir.TypeDeclStmt)
+					if !ok || td.IsExtern || hasBuiltinAnnotation(td.Annotations) {
+						continue
+					}
+					filtered := sharedSubsetTypeDeclGo(ctx, pkg, td)
+					if filtered == nil {
+						continue
+					}
+					e.emitStmt(ctx, pkg, file.Hir, block, filtered, true)
+				}
+			}
+		}
+
 		if testMode {
 			e.emitTestImplFuncs(ctx, block)
 		}
@@ -2355,35 +2372,29 @@ func goExportedName(s string) string {
 	return string(r)
 }
 
-// buildStructTag turns a slice of resolved annotations into a Go struct tag map suitable for jen.Statement.Tag. Returns nil when there are no annotations with resolved arguments (jen skips the tag rendering for nil).
+// buildStructTag collects every `@structTag("<key>", "<value>")` annotation on a struct field into a Go-side tag map suitable for `jen.Statement.Tag`. Other annotations (`@reactive`, `@value`, future markers) are ignored — they convey compile-time semantics, not Go-struct metadata. Multiple `@structTag` entries with the same key concatenate their values with a single space, matching the convention `gorm` and `validate` use for multi-rule strings (`gorm:"primaryKey;autoIncrement"`-style users supply already-joined values themselves; the comma/semicolon convention is library-specific). The shape (exactly two string args) is enforced by `validateTagShape` in `pass_fold_annotations`; malformed entries that slipped through validation (e.g. when the pass already errored elsewhere) are skipped so the rendered Go does not carry partial data.
 func buildStructTag(annos []ir.Annotation) map[string]string {
 	if len(annos) == 0 {
 		return nil
 	}
 	out := map[string]string{}
 	for _, a := range annos {
-		if a.Name.Name == "" || len(a.ResolvedArgs) == 0 {
+		if a.Name.Name != "structTag" || len(a.ResolvedArgs) != 2 {
 			continue
 		}
-		parts := make([]string, 0, len(a.ResolvedArgs))
-		for _, v := range a.ResolvedArgs {
-			switch v.Kind {
-			case ir.AnnotationValueString:
-				parts = append(parts, v.Str)
-			case ir.AnnotationValueInt:
-				parts = append(parts, strconv.FormatInt(v.Int, 10))
-			case ir.AnnotationValueBool:
-				if v.Bool {
-					parts = append(parts, "true")
-				} else {
-					parts = append(parts, "false")
-				}
-			}
-		}
-		if len(parts) == 0 {
+		if a.ResolvedArgs[0].Kind != ir.AnnotationValueString || a.ResolvedArgs[1].Kind != ir.AnnotationValueString {
 			continue
 		}
-		out[a.Name.Name] = strings.Join(parts, ",")
+		key := a.ResolvedArgs[0].Str
+		val := a.ResolvedArgs[1].Str
+		if key == "" {
+			continue
+		}
+		if existing, ok := out[key]; ok && existing != "" {
+			out[key] = existing + " " + val
+		} else {
+			out[key] = val
+		}
 	}
 	if len(out) == 0 {
 		return nil
@@ -3134,14 +3145,43 @@ func firstExportedRefs(body string, alias string) []string {
 	return nil
 }
 
-// classMemberLookup mirrors the JS-side helper: when emitting a method body of a Sova `type`, an unqualified `count` or `increment` reference should be rewritten to `this.count` / `this.increment` rather than the mangled global the symbol would otherwise resolve to. Returns ("", false, false) when no enclosing type context is active or when `sym` isn't a member of it; otherwise returns the receiver-relative name and an `isMethod` flag (false → field, true → method).
+// sharedSubsetTypeDeclGo mirrors the JS-side helper of the same shape (Stage 3 of the GORM-friendly Sova design): looks up the precomputed shared-member summary for `td` in the `shared_type_members` cache and returns a shallow-copied `*ir.TypeDeclStmt` whose Fields/Methods/Ctors/Casts contain only the shared subset. The Go variant deliberately drops methods, ctors, and casts entirely — they live on the declaring side (frontend in the symmetric case) and don't need a Go body; the struct shape with its `@structTag` annotations is all the backend needs so the wire layer can JSON-marshal/unmarshal typed values. Returns nil when the type has no shared members, so Go emits nothing for cross-side types without an opt-in.
+func sharedSubsetTypeDeclGo(ctx *codegen.EmitContext, pkg *ir.PackageContext, td *ir.TypeDeclStmt) *ir.TypeDeclStmt {
+	if ctx == nil || ctx.Cache == nil || td == nil || td.Name.Sym == 0 {
+		return nil
+	}
+	raw, ok := ctx.Cache["shared_type_members"]
+	if !ok {
+		return nil
+	}
+	store, ok := raw.(map[ir.TypID]*ir.SharedTypeMembers)
+	if !ok {
+		return nil
+	}
+	sym, ok := pkg.Syms.GetByID(td.Name.Sym)
+	if !ok || sym.Typ == 0 {
+		return nil
+	}
+	summary, ok := store[sym.Typ]
+	if !ok || summary == nil || len(summary.Fields) == 0 {
+		return nil
+	}
+	tdCopy := *td
+	tdCopy.Fields = summary.Fields
+	tdCopy.Methods = nil
+	tdCopy.Ctors = nil
+	tdCopy.Casts = nil
+	return &tdCopy
+}
+
+// classMemberLookup mirrors the JS-side helper: when emitting a method body of a Sova `type`, an unqualified `count` or `increment` reference should be rewritten to `this.<member>` rather than the mangled global the symbol would otherwise resolve to. Returns ("", false, false) when no enclosing type context is active or when `sym` isn't a member of it; otherwise returns the receiver-relative name and an `isMethod` flag (false → field, true → method). Fields go through `goExportedName` so the returned name matches the Go-side struct field exactly (Sova `name` → Go `Name`, Sova `id` → Go `Id`); methods use the mangled symbol name (already a valid Go identifier).
 func (e *CodeEmitter) classMemberLookup(ctx *codegen.EmitContext, sym ir.SymID) (string, bool, bool) {
 	if e.currentTypeDecl == nil || sym == 0 {
 		return "", false, false
 	}
 	for _, field := range e.currentTypeDecl.Fields {
 		if field.Name.Sym == sym {
-			return field.Name.Name, false, true
+			return goExportedName(field.Name.Name), false, true
 		}
 	}
 	for _, m := range e.currentTypeDecl.Methods {

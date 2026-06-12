@@ -92,8 +92,9 @@ type Type struct {
 
 // InterfaceSigInfo describes one method signature required by an interface.
 type InterfaceSigInfo struct {
-	Name    string // Name is the method name in the interface.
-	FuncTyp TypID  // FuncTyp is the resolved function type of the signature.
+	Name     string // Name is the method name in the interface.
+	FuncTyp  TypID  // FuncTyp is the resolved function type of the signature.
+	IsShared bool   // IsShared is true when the contract requires implementations to mark their matching method `shared` so the body emits on both sides. Set explicitly by the `shared` modifier or implicitly when the interface's declaring file is `on shared`.
 }
 
 // StructMethodInfo stores resolved info about a single declared method of a struct.
@@ -103,6 +104,7 @@ type StructMethodInfo struct {
 	FuncTyp            TypID  // FuncTyp is the function type of the method.
 	IsPromoted         bool   // IsPromoted is true when the method was lifted from an embedded type and is not declared on the struct directly.
 	PromotedFromExtern bool   // PromotedFromExtern is true when the source type of the promotion was an extern binding (Go-side name = Sova-side name, no PascalCase coercion).
+	IsShared           bool   // IsShared mirrors the `shared` modifier on the declaring TypeMethodDecl. The interface-conformance check consults it: when an interface method is `IsShared`, every implementing type's matching method must also be `IsShared`.
 }
 
 // StructFieldInfo stores resolved info about a struct field.

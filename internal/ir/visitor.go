@@ -2958,6 +2958,7 @@ func (v *HirVisitor) VisitInterfaceDeclStmt(ctx *parser.InterfaceDeclStmtContext
 
 func (v *HirVisitor) VisitMethodSignature(ctx *parser.MethodSignatureContext) any {
 	sig := &InterfaceMethodSig{node: v.mkNode(ctx)}
+	sig.IsShared = hasModifierChild(ctx, "shared")
 	nameTok := ctx.ID().GetSymbol()
 	sig.Name = NameRef{Name: nameTok.GetText(), Span: v.spanFromTok(nameTok)}
 
@@ -2977,7 +2978,8 @@ func (v *HirVisitor) VisitMethodSignature(ctx *parser.MethodSignatureContext) an
 
 func (v *HirVisitor) VisitMethodDecl(ctx *parser.MethodDeclContext) any {
 	method := &TypeMethodDecl{node: v.mkNode(ctx)}
-	method.Private = hasLiteralChild(ctx, "private")
+	method.Private = hasModifierChild(ctx, "private")
+	method.IsShared = hasModifierChild(ctx, "shared")
 	method.Annotations = v.collectAnnotations(ctx.AllAnnotation())
 
 	fn := &FuncDeclStmt{node: v.mkNode(ctx)}
@@ -3016,6 +3018,7 @@ func (v *HirVisitor) VisitMethodDecl(ctx *parser.MethodDeclContext) any {
 
 func (v *HirVisitor) VisitCtorDecl(ctx *parser.CtorDeclContext) any {
 	ctor := &CtorDecl{node: v.mkNode(ctx)}
+	ctor.IsShared = hasModifierChild(ctx, "shared")
 	ctor.Annotations = v.collectAnnotations(ctx.AllAnnotation())
 
 	if paramListCtx := ctx.FuncParamList(); paramListCtx != nil {
@@ -3034,6 +3037,7 @@ func (v *HirVisitor) VisitCtorDecl(ctx *parser.CtorDeclContext) any {
 
 func (v *HirVisitor) VisitCastDecl(ctx *parser.CastDeclContext) any {
 	decl := &CastDecl{node: v.mkNode(ctx)}
+	decl.IsShared = hasModifierChild(ctx, "shared")
 	decl.Annotations = v.collectAnnotations(ctx.AllAnnotation())
 
 	idNode := ctx.ID()
@@ -3094,6 +3098,25 @@ func hasLiteralChild(ctx antlr.ParserRuleContext, literal string) bool {
 	return false
 }
 
+// hasModifierChild returns true when any of ctx's direct children is a `memberModifier` rule whose terminal text matches `literal`. Mirrors `hasLiteralChild` for the per-member-modifier (`private`, `shared`) grammar shape used inside type members. The grammar wraps each modifier in its own production (`memberModifier : 'private' | 'shared'`) so the terminal-text scan walks one level deeper than `hasLiteralChild`'s direct-child match.
+func hasModifierChild(ctx antlr.ParserRuleContext, literal string) bool {
+	for _, child := range ctx.GetChildren() {
+		ruleCtx, ok := child.(antlr.RuleNode)
+		if !ok {
+			if tn, ok := child.(antlr.TerminalNode); ok && tn.GetSymbol().GetText() == literal {
+				return true
+			}
+			continue
+		}
+		for _, sub := range ruleCtx.GetChildren() {
+			if tn, ok := sub.(antlr.TerminalNode); ok && tn.GetSymbol().GetText() == literal {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (v *HirVisitor) VisitFieldDecl(ctx *parser.FieldDeclContext) any {
 	field := &TypeField{node: v.mkNode(ctx)}
 	field.Annotations = v.collectAnnotations(ctx.AllAnnotation())
@@ -3116,7 +3139,8 @@ func (v *HirVisitor) VisitFieldDecl(ctx *parser.FieldDeclContext) any {
 			field.Default = e
 		}
 	}
-	field.Private = hasLiteralChild(ctx, "private")
+	field.Private = hasModifierChild(ctx, "private")
+	field.IsShared = hasModifierChild(ctx, "shared")
 	return field
 }
 

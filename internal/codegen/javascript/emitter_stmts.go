@@ -358,7 +358,16 @@ func (e *CodeEmitter) emitFrontendWireImpl(ctx *codegen.EmitContext, pkg *ir.Pac
 	if wireName == "" {
 		wireName = s.Name.Name
 	}
-	e.jf.Add(jsgen.Raw(fmt.Sprintf("__sovaRegisterWire(%q, %s);", wireName, funcName)))
+	paramDescs := make([]string, len(s.Params))
+	for i, p := range s.Params {
+		if p != nil && p.Type != nil && p.Type.Typ != 0 {
+			paramDescs[i] = e.buildTypeDescriptorJSLiteral(ctx, p.Type.Typ)
+		} else {
+			paramDescs[i] = `{kind:"any"}`
+		}
+	}
+	descLiteral := "[" + strings.Join(paramDescs, ",") + "]"
+	e.jf.Add(jsgen.Raw(fmt.Sprintf("__sovaRegisterWire(%q, %s, %s);", wireName, funcName, descLiteral)))
 }
 
 func (e *CodeEmitter) emitExternDecl(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.ExternDeclStmt, topLevel bool) {
@@ -1056,6 +1065,7 @@ func (e *CodeEmitter) emitTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 
 	sb.WriteString("}")
 	e.jf.Add(jsgen.Raw(sb.String()))
+	e.emitTypeRegistration(ctx, typeName, s.Fields)
 
 	prevSuppress := e.suppressThisKeyword
 	e.suppressThisKeyword = true
@@ -1429,6 +1439,11 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 		})
 	}
 
+	returnDesc := `{kind:"any"}`
+	if s.ReturnType != nil && s.ReturnType.Typ != 0 {
+		returnDesc = e.buildTypeDescriptorJSLiteral(ctx, s.ReturnType.Typ)
+	}
+
 	if s.Wire.Transport == "ws" {
 		var sb strings.Builder
 		if orig != "" {
@@ -1442,7 +1457,7 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 		sb.WriteString(strings.Join(paramNames, ", "))
 		sb.WriteString(") {\n")
 		sb.WriteString(fmt.Sprintf("  const __r = await __sovaWSCall(%q, [%s]);\n", orig, strings.Join(paramNames, ", ")))
-		sb.WriteString("  return [__r.value, __r.state];\n")
+		sb.WriteString(fmt.Sprintf("  return [__sovaReify(__r.value, %s), __r.state];\n", returnDesc))
 		sb.WriteString("}")
 		e.jf.Add(jsgen.Raw(sb.String()))
 		return
@@ -1508,7 +1523,7 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 
 	sb.WriteString("  if (!__res.ok) { return [null, __res.status === 401 ? 1 : __res.status === 403 ? 2 : __res.status === 404 ? 3 : 4]; }\n")
 	sb.WriteString("  const __data = await __res.json();\n")
-	sb.WriteString("  return [__data.value, __data.state];\n")
+	sb.WriteString(fmt.Sprintf("  return [__sovaReify(__data.value, %s), __data.state];\n", returnDesc))
 	sb.WriteString("}")
 	e.jf.Add(jsgen.Raw(sb.String()))
 }
@@ -1536,6 +1551,11 @@ func (e *CodeEmitter) emitWiredVarStub(ctx *codegen.EmitContext, pkg *ir.Package
 		}
 	}
 
+	varDesc := `{kind:"any"}`
+	if target.TypeAnn != nil && target.TypeAnn.Typ != 0 {
+		varDesc = e.buildTypeDescriptorJSLiteral(ctx, target.TypeAnn.Typ)
+	}
+
 	if isReactive {
 		var sb strings.Builder
 		if orig != "" {
@@ -1546,10 +1566,10 @@ func (e *CodeEmitter) emitWiredVarStub(ctx *codegen.EmitContext, pkg *ir.Package
 		sb.WriteString("  const __base = (typeof process !== 'undefined' && process.env && process.env.WIRE_BACKEND) || (typeof window !== 'undefined' && window.WIRE_BACKEND) || (typeof window !== 'undefined' && window.location && window.location.origin) || '';\n")
 		sb.WriteString(fmt.Sprintf("  try { const __res = await fetch(__base + `%s`, { method: %q, credentials: 'include' });\n", rawPath, method))
 		sb.WriteString("    if (__res.ok) { const __data = await __res.json(); ")
-		sb.WriteString(fmt.Sprintf("%s.value = __data.value; }\n", funcName))
+		sb.WriteString(fmt.Sprintf("%s.value = __sovaReify(__data.value, %s); }\n", funcName, varDesc))
 		sb.WriteString("  } catch (_) {}\n")
 		sb.WriteString("})();\n")
-		sb.WriteString(fmt.Sprintf("if (typeof __sovaOnWireVar === 'function') { __sovaOnWireVar(%q, function(v) { %s.value = v; }); }", orig, funcName))
+		sb.WriteString(fmt.Sprintf("if (typeof __sovaOnWireVar === 'function') { __sovaOnWireVar(%q, function(v) { %s.value = __sovaReify(v, %s); }); }", orig, funcName, varDesc))
 		e.jf.Add(jsgen.Raw(sb.String()))
 		return
 	}
@@ -1564,7 +1584,7 @@ func (e *CodeEmitter) emitWiredVarStub(ctx *codegen.EmitContext, pkg *ir.Package
 	sb.WriteString(fmt.Sprintf("  const __res = await fetch(__url, { method: %q, credentials: 'include' });\n", method))
 	sb.WriteString("  if (!__res.ok) { return [null, __res.status === 401 ? 1 : __res.status === 403 ? 2 : __res.status === 404 ? 3 : 4]; }\n")
 	sb.WriteString("  const __data = await __res.json();\n")
-	sb.WriteString("  return [__data.value, __data.state];\n")
+	sb.WriteString(fmt.Sprintf("  return [__sovaReify(__data.value, %s), __data.state];\n", varDesc))
 	sb.WriteString("}")
 	e.jf.Add(jsgen.Raw(sb.String()))
 }
