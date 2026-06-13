@@ -81,6 +81,9 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 
 		for _, pkg := range ctx.Pkgs {
 			for _, file := range pkg.Files {
+				if file.Hir.Side.Kind == ir.SideSynth {
+					continue
+				}
 				for _, st := range file.Hir.Statements {
 					e.emitStmt(ctx, pkg, file.Hir, block, st, true)
 				}
@@ -90,6 +93,9 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 		// Cross-side TypeDecl emission: when a type lives in a frontend file but carries `shared` members (Stage 3 of the GORM-friendly Sova design), Go needs a struct with the shared subset so the wire layer can JSON-marshal/unmarshal it as a typed value. We only emit the struct shape with its `@structTag` annotations; methods live on the JS side and don't get a Go body.
 		for _, pkg := range ctx.TransPkgs {
 			for _, file := range pkg.Files {
+				if file.Hir.Side.Kind == ir.SideSynth {
+					continue
+				}
 				for _, st := range file.Hir.Statements {
 					td, ok := st.(*ir.TypeDeclStmt)
 					if !ok || td.IsExtern || hasBuiltinAnnotation(td.Annotations) {

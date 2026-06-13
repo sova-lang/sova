@@ -3,6 +3,8 @@ package passes
 import (
 	"sova/internal/diag"
 	"sova/internal/ir"
+	"strconv"
+	"strings"
 )
 
 // PassFoldAnnotations walks every annotation in the package and folds its argument expressions into compile-time constant values. Annotations whose arguments depend on runtime state produce a diagnostic; downstream consumers (Go struct tags, future route hints) only see annotations with ResolvedArgs populated.
@@ -124,6 +126,31 @@ func foldAnnotationExpr(pc *PassContext, e ir.Expr) (ir.AnnotationValue, bool) {
 			return ir.AnnotationValue{}, false
 		}
 		return foldAnnotationExpr(pc, init)
+	case *ir.GroupedExpr:
+		return foldAnnotationExpr(pc, x.Expr)
+	case *ir.StringTemplateExpr:
+		var sb strings.Builder
+		for _, part := range x.Parts {
+			if part.Expr == nil {
+				sb.WriteString(part.Lit)
+				continue
+			}
+			val, ok := foldAnnotationExpr(pc, part.Expr)
+			if !ok {
+				return ir.AnnotationValue{}, false
+			}
+			switch val.Kind {
+			case ir.AnnotationValueString:
+				sb.WriteString(val.Str)
+			case ir.AnnotationValueInt:
+				sb.WriteString(strconv.FormatInt(val.Int, 10))
+			case ir.AnnotationValueBool:
+				sb.WriteString(strconv.FormatBool(val.Bool))
+			default:
+				return ir.AnnotationValue{}, false
+			}
+		}
+		return ir.AnnotationValue{Kind: ir.AnnotationValueString, Str: sb.String()}, true
 	}
 	return ir.AnnotationValue{}, false
 }

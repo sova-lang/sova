@@ -7,6 +7,7 @@ func buildPassManager() *passes.PassManager {
 	pm := passes.NewPassManager()
 	pm.Register(&passes.PassResolveLibs{})
 	pm.Register(&passes.PassCheckImports{})
+	pm.Register(&passes.PassExpandSynths{})
 	pm.Register(&passes.PassInlineMixins{})
 	pm.Register(&passes.PassBindDeclare{})
 	pm.Register(&passes.PassResolveNames{})
@@ -34,6 +35,7 @@ func TestPipeline() []string {
 	return []string{
 		"resolve_libs",
 		"check_imports",
+		"expand_synths",
 		"inline_mixins",
 		"bind_declare",
 		"resolve_names",
@@ -68,6 +70,7 @@ func compilerPipeline() []string {
 	return []string{
 		"resolve_libs",
 		"check_imports",
+		"expand_synths",
 		"inline_mixins",
 		"bind_declare",
 		"resolve_names",
@@ -94,6 +97,7 @@ func checkPipeline() []string {
 	return []string{
 		"resolve_libs",
 		"check_imports",
+		"expand_synths",
 		"inline_mixins",
 		"bind_declare",
 		"resolve_names",

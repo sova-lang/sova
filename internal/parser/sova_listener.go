@@ -239,6 +239,48 @@ type SovaListener interface {
 	// EnterMixinMember is called when entering the mixinMember production.
 	EnterMixinMember(c *MixinMemberContext)
 
+	// EnterSynthDeclStmt is called when entering the synthDeclStmt production.
+	EnterSynthDeclStmt(c *SynthDeclStmtContext)
+
+	// EnterSynthParams is called when entering the synthParams production.
+	EnterSynthParams(c *SynthParamsContext)
+
+	// EnterSynthTarget is called when entering the synthTarget production.
+	EnterSynthTarget(c *SynthTargetContext)
+
+	// EnterSynthTargetKind is called when entering the synthTargetKind production.
+	EnterSynthTargetKind(c *SynthTargetKindContext)
+
+	// EnterSynthBodyItem is called when entering the synthBodyItem production.
+	EnterSynthBodyItem(c *SynthBodyItemContext)
+
+	// EnterSynthEmitOn is called when entering the synthEmitOn production.
+	EnterSynthEmitOn(c *SynthEmitOnContext)
+
+	// EnterSynthEmitAppend is called when entering the synthEmitAppend production.
+	EnterSynthEmitAppend(c *SynthEmitAppendContext)
+
+	// EnterSynthEmitField is called when entering the synthEmitField production.
+	EnterSynthEmitField(c *SynthEmitFieldContext)
+
+	// EnterSynthEmitMethod is called when entering the synthEmitMethod production.
+	EnterSynthEmitMethod(c *SynthEmitMethodContext)
+
+	// EnterSynthEmitCtor is called when entering the synthEmitCtor production.
+	EnterSynthEmitCtor(c *SynthEmitCtorContext)
+
+	// EnterSynthForStmt is called when entering the synthForStmt production.
+	EnterSynthForStmt(c *SynthForStmtContext)
+
+	// EnterSynthIterable is called when entering the synthIterable production.
+	EnterSynthIterable(c *SynthIterableContext)
+
+	// EnterSynthWhere is called when entering the synthWhere production.
+	EnterSynthWhere(c *SynthWhereContext)
+
+	// EnterSynthBoolExpr is called when entering the synthBoolExpr production.
+	EnterSynthBoolExpr(c *SynthBoolExprContext)
+
 	// EnterTypeAliasStmt is called when entering the typeAliasStmt production.
 	EnterTypeAliasStmt(c *TypeAliasStmtContext)
 
@@ -724,6 +766,48 @@ type SovaListener interface {
 
 	// ExitMixinMember is called when exiting the mixinMember production.
 	ExitMixinMember(c *MixinMemberContext)
+
+	// ExitSynthDeclStmt is called when exiting the synthDeclStmt production.
+	ExitSynthDeclStmt(c *SynthDeclStmtContext)
+
+	// ExitSynthParams is called when exiting the synthParams production.
+	ExitSynthParams(c *SynthParamsContext)
+
+	// ExitSynthTarget is called when exiting the synthTarget production.
+	ExitSynthTarget(c *SynthTargetContext)
+
+	// ExitSynthTargetKind is called when exiting the synthTargetKind production.
+	ExitSynthTargetKind(c *SynthTargetKindContext)
+
+	// ExitSynthBodyItem is called when exiting the synthBodyItem production.
+	ExitSynthBodyItem(c *SynthBodyItemContext)
+
+	// ExitSynthEmitOn is called when exiting the synthEmitOn production.
+	ExitSynthEmitOn(c *SynthEmitOnContext)
+
+	// ExitSynthEmitAppend is called when exiting the synthEmitAppend production.
+	ExitSynthEmitAppend(c *SynthEmitAppendContext)
+
+	// ExitSynthEmitField is called when exiting the synthEmitField production.
+	ExitSynthEmitField(c *SynthEmitFieldContext)
+
+	// ExitSynthEmitMethod is called when exiting the synthEmitMethod production.
+	ExitSynthEmitMethod(c *SynthEmitMethodContext)
+
+	// ExitSynthEmitCtor is called when exiting the synthEmitCtor production.
+	ExitSynthEmitCtor(c *SynthEmitCtorContext)
+
+	// ExitSynthForStmt is called when exiting the synthForStmt production.
+	ExitSynthForStmt(c *SynthForStmtContext)
+
+	// ExitSynthIterable is called when exiting the synthIterable production.
+	ExitSynthIterable(c *SynthIterableContext)
+
+	// ExitSynthWhere is called when exiting the synthWhere production.
+	ExitSynthWhere(c *SynthWhereContext)
+
+	// ExitSynthBoolExpr is called when exiting the synthBoolExpr production.
+	ExitSynthBoolExpr(c *SynthBoolExprContext)
 
 	// ExitTypeAliasStmt is called when exiting the typeAliasStmt production.
 	ExitTypeAliasStmt(c *TypeAliasStmtContext)

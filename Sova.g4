@@ -8,13 +8,14 @@ fileHeader : packageDecl? sideDecl
 
 packageDecl : 'package' packagePath;
 packagePath : pkgIdent ('/' pkgIdent)*;
-pkgIdent : ID | SIDE_FRONTEND | SIDE_BACKEND | SIDE_SHARED;
+pkgIdent : ID | SIDE_FRONTEND | SIDE_BACKEND | SIDE_SHARED | SIDE_SYNTH;
 
 sideDecl : 'on' side;
 side : SIDE_FRONTEND
      | SIDE_SHARED
      | SIDE_BACKEND ('(' ID ')')?
      | SIDE_TEST
+     | SIDE_SYNTH
      ;
 
 // --- Statements --- \\
@@ -48,6 +49,7 @@ stmt : block
      | goStmt
      | deferStmt
      | selectStmt
+     | synthDeclStmt
      ;
 
 goStmt : 'go' (exprStmt | block);
@@ -94,7 +96,7 @@ wireSpec : 'wire' (':' ID)? wireOptions?;
 wireOptions : '(' wireOption (',' wireOption)* ')';
 wireOption : ID ':' expr;
 funcParamList : funcParam (',' funcParam)*;
-funcParam : VARARG? ID typeAnnot ('=' expr)?;
+funcParam : annotation* VARARG? ID typeAnnot ('=' expr)?;
 
 externDecl : 'extern' 'default'? STRING_LITERAL? LBRACE externItem* RBRACE;
 externItem : externFunc
@@ -159,6 +161,28 @@ methodSignature : memberModifier* 'func' ID '(' funcParamList? ')' typeAnnot?;
 // Mixin Statements
 mixinDeclStmt : 'mixin' ID LBRACE mixinMember* RBRACE;
 mixinMember : fieldDecl | methodDecl ;
+
+// Custom Annotations (Synth)
+synthDeclStmt : SIDE_SYNTH ID synthParams? 'on' synthTarget LBRACE synthBodyItem* RBRACE;
+synthParams : '(' funcParamList? ')';
+synthTarget : synthTargetKind ID;
+synthTargetKind : 'type' | 'func' | LET | ID;
+synthBodyItem : synthEmitOn
+              | synthEmitAppend
+              | synthEmitField
+              | synthEmitMethod
+              | synthEmitCtor
+              | synthForStmt
+              ;
+synthEmitOn : 'emit' 'on' ID LBRACE annotation* RBRACE;
+synthEmitAppend : 'emit' 'append' 'to' ID LBRACE expr RBRACE;
+synthEmitField : 'emit' fieldDecl;
+synthEmitMethod : 'emit' methodDecl;
+synthEmitCtor : 'emit' ctorDecl;
+synthForStmt : 'for' ID 'in' synthIterable synthWhere? LBRACE synthBodyItem* RBRACE;
+synthIterable : ID '.' ID;
+synthWhere : 'where' synthBoolExpr;
+synthBoolExpr : '!'? ID '.' ID;
 
 // Type alias: transparent name for an existing type, optionally qualified.
 typeAliasStmt : 'using' ID '=' type;
@@ -338,6 +362,7 @@ SIDE_FRONTEND : 'frontend';
 SIDE_BACKEND : 'backend';
 SIDE_SHARED : 'shared';
 SIDE_TEST : 'test';
+SIDE_SYNTH : 'synth';
 PARALLEL : 'parallel';
 
 // Operators

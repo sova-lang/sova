@@ -316,6 +316,62 @@ func (v *BaseSovaVisitor) VisitMixinMember(ctx *MixinMemberContext) interface{} 
 	return v.VisitChildren(ctx)
 }
 
+func (v *BaseSovaVisitor) VisitSynthDeclStmt(ctx *SynthDeclStmtContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitSynthParams(ctx *SynthParamsContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitSynthTarget(ctx *SynthTargetContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitSynthTargetKind(ctx *SynthTargetKindContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitSynthBodyItem(ctx *SynthBodyItemContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitSynthEmitOn(ctx *SynthEmitOnContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitSynthEmitAppend(ctx *SynthEmitAppendContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitSynthEmitField(ctx *SynthEmitFieldContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitSynthEmitMethod(ctx *SynthEmitMethodContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitSynthEmitCtor(ctx *SynthEmitCtorContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitSynthForStmt(ctx *SynthForStmtContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitSynthIterable(ctx *SynthIterableContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitSynthWhere(ctx *SynthWhereContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitSynthBoolExpr(ctx *SynthBoolExprContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
 func (v *BaseSovaVisitor) VisitTypeAliasStmt(ctx *TypeAliasStmtContext) interface{} {
 	return v.VisitChildren(ctx)
 }

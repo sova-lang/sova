@@ -60,6 +60,9 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 	// Pre-register module imports so the emitted JS file starts with an `import` header. We walk all extern decls in user packages and assign each module a local bind name; later `@mod` substitutions reuse the same bind.
 	for _, pkg := range ctx.Pkgs {
 		for _, file := range pkg.Files {
+			if file.Hir.Side.Kind == ir.SideSynth {
+				continue
+			}
 			for _, st := range file.Hir.Statements {
 				ext, ok := st.(*ir.ExternDeclStmt)
 				if !ok || ext.Module == nil || *ext.Module == "" {
@@ -96,6 +99,9 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 	// Emit wired-func stubs from the other side (e.g. backend files): the JS frontend never gets the implementation, but it needs callable fetch stubs so cross-side calls resolve to the gemangelt symbol name. Same loop also emits the shared subset of any cross-side TypeDecl: when a backend type carries `shared` members (Stage 3 of the GORM-friendly Sova design), the JS side gets a parallel class with only the shared fields + methods so the wire layer can hand back real class instances rather than property bags.
 	for _, pkg := range ctx.TransPkgs {
 		for _, file := range pkg.Files {
+			if file.Hir.Side.Kind == ir.SideSynth {
+				continue
+			}
 			for _, st := range file.Hir.Statements {
 				switch v := st.(type) {
 				case *ir.FuncDeclStmt:
@@ -121,6 +127,9 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 	// Emit code
 	for _, pkg := range ctx.Pkgs {
 		for _, file := range pkg.Files {
+			if file.Hir.Side.Kind == ir.SideSynth {
+				continue
+			}
 			for _, st := range file.Hir.Statements {
 				e.emitStmt(ctx, pkg, file.Hir, st, true)
 			}

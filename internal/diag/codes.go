@@ -49,6 +49,13 @@ var (
 	ErrSharedReferencesBackendPackage = templateErr(CategorySemantic, "shared method body of '%s.%s' may not call function '%s' from non-shared package '%s'")
 	ErrSharedSignatureNonTransferable = templateErr(CategorySemantic, "shared member '%s.%s' has a non-transferable type %s in its signature (shared signatures must use primitives, options, lists/maps/tuples of transferable, or other shared types)")
 	ErrInterfaceSharedMethodNotShared = templateErr(CategorySemantic, "type '%s' implements shared interface '%s' but its method '%s' is not marked `shared`; add the `shared` modifier so the method body emits on both sides")
+	ErrSynthDuplicateName             = templateErr(CategorySemantic, "synth '%s' is already declared elsewhere in the build; synth names share a single global namespace, so two `synth %s` declarations cannot coexist")
+	ErrSynthTargetMismatch            = templateErr(CategorySemantic, "synth '%s' applies to %s targets, but it is used on '%s' which is a different kind")
+	ErrSynthArgCountMismatch          = templateErr(CategorySemantic, "synth '%s' expects %d argument(s), got %d")
+	ErrSynthRecursionLimit            = templateErr(CategorySemantic, "synth '%s' expansion exceeded the recursion limit (%d); likely a cycle where a synth emits an annotation that recursively triggers itself")
+	ErrSynthUnknownBind               = templateErr(CategorySemantic, "synth body references unknown bind '%s'; it must be either the synth's target bind or a for-loop iteration variable in scope")
+	ErrSynthUnknownMember             = templateErr(CategorySemantic, "synth `for ... in %s.%s` references a member that does not exist on this kind of bind; known members are `fields`/`methods`/`ctors` (on type) and `params` (on func/method/ctor)")
+	ErrSynthMemberOnNonType           = templateErr(CategorySemantic, "synth `emit %s` can only be used inside a synth declared `on type T` (current target bind '%s' is not a type)")
 
 	ErrTypeMismatch        = templateErr(CategoryType, "Type mismatch: expected %s, got %s")
 	ErrTypeNotIndexable    = templateErr(CategoryType, "Type %s is not indexable")

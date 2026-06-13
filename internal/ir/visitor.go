@@ -406,6 +406,8 @@ func (v *HirVisitor) VisitSide(ctx *parser.SideContext) any {
 		s.Kind = SideShared
 	case ctx.SIDE_TEST() != nil:
 		s.Kind = SideTest
+	case ctx.SIDE_SYNTH() != nil:
+		s.Kind = SideSynth
 	case ctx.SIDE_BACKEND() != nil:
 		s.Kind = SideBackend
 		if id := ctx.ID(); id != nil {
@@ -509,6 +511,9 @@ func (v *HirVisitor) VisitStmt(ctx *parser.StmtContext) any {
 	}
 	if ss := ctx.SelectStmt(); ss != nil {
 		return v.Visit(ss)
+	}
+	if sd := ctx.SynthDeclStmt(); sd != nil {
+		return v.Visit(sd)
 	}
 	return nil
 }
@@ -1058,6 +1063,8 @@ func (v *HirVisitor) VisitFuncParam(ctx *parser.FuncParamContext) any {
 			param.Default = expr
 		}
 	}
+
+	param.Annotations = v.collectAnnotations(ctx.AllAnnotation())
 
 	return param
 }
@@ -3269,4 +3276,199 @@ func (v *HirVisitor) subParseExpr(text string) Expr {
 		return e
 	}
 	return &LitString{Value: ""}
+}
+
+// VisitSynthDeclStmt builds an IR `SynthDeclStmt` from `synth Name(params) on <kind> Bind { body }`. The target-kind token comes from the grammar's `synthTargetKind` production which accepts the keyword tokens (`type`, `func`, `let`) plus a bare ID fallback for `field` and `param` (neither is a Sova-wide reserved word). Unknown kinds produce a diagnostic at parse time so the synth never reaches the expander with an unrecognised target.
+func (v *HirVisitor) VisitSynthDeclStmt(ctx *parser.SynthDeclStmtContext) any {
+	st := &SynthDeclStmt{
+		node:    v.mkNode(ctx),
+		docBase: docBase{doc: v.docCommentBefore(ctx)},
+	}
+	if idTok := ctx.ID(); idTok != nil {
+		t := idTok.GetSymbol()
+		st.Name = NameRef{Name: t.GetText(), Span: v.spanFromTok(t)}
+	}
+	if pl := ctx.SynthParams(); pl != nil {
+		if fpl := pl.FuncParamList(); fpl != nil {
+			for _, paramCtx := range fpl.AllFuncParam() {
+				p := v.Visit(paramCtx).(FuncParam)
+				st.Params = append(st.Params, &p)
+			}
+		}
+	}
+	if tgt := ctx.SynthTarget(); tgt != nil {
+		st.Target = v.parseSynthTarget(tgt)
+	}
+	st.Body = v.collectSynthBody(ctx.AllSynthBodyItem())
+	return st
+}
+
+func (v *HirVisitor) collectSynthBody(items []parser.ISynthBodyItemContext) []SynthBodyItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]SynthBodyItem, 0, len(items))
+	for _, bodyCtx := range items {
+		if emit := bodyCtx.SynthEmitOn(); emit != nil {
+			if e, ok := v.Visit(emit).(*SynthEmitOn); ok {
+				out = append(out, e)
+			}
+			continue
+		}
+		if app := bodyCtx.SynthEmitAppend(); app != nil {
+			if e, ok := v.Visit(app).(*SynthEmitAppend); ok {
+				out = append(out, e)
+			}
+			continue
+		}
+		if fld := bodyCtx.SynthEmitField(); fld != nil {
+			if e, ok := v.Visit(fld).(*SynthEmitField); ok {
+				out = append(out, e)
+			}
+			continue
+		}
+		if mth := bodyCtx.SynthEmitMethod(); mth != nil {
+			if e, ok := v.Visit(mth).(*SynthEmitMethod); ok {
+				out = append(out, e)
+			}
+			continue
+		}
+		if cth := bodyCtx.SynthEmitCtor(); cth != nil {
+			if e, ok := v.Visit(cth).(*SynthEmitCtor); ok {
+				out = append(out, e)
+			}
+			continue
+		}
+		if loop := bodyCtx.SynthForStmt(); loop != nil {
+			if e, ok := v.Visit(loop).(*SynthForStmt); ok {
+				out = append(out, e)
+			}
+			continue
+		}
+	}
+	return out
+}
+
+func (v *HirVisitor) parseSynthTarget(ctx parser.ISynthTargetContext) SynthTarget {
+	out := SynthTarget{Kind: SynthTargetUnknown}
+	kindCtx := ctx.SynthTargetKind()
+	if kindCtx != nil {
+		kindText := strings.TrimSpace(kindCtx.GetText())
+		switch kindText {
+		case "type":
+			out.Kind = SynthTargetType
+		case "field":
+			out.Kind = SynthTargetField
+		case "func":
+			out.Kind = SynthTargetFunc
+		case "param":
+			out.Kind = SynthTargetParam
+		case "let":
+			out.Kind = SynthTargetLet
+		case "method":
+			out.Kind = SynthTargetMethod
+		case "ctor":
+			out.Kind = SynthTargetCtor
+		default:
+			v.diag.Report(diag.ErrUnexpectedToken, v.spanFromCtx(kindCtx), kindText)
+		}
+	}
+	if id := ctx.ID(); id != nil {
+		out.BindName = id.GetText()
+	}
+	return out
+}
+
+// VisitSynthEmitOn builds an `emit on <scope> { @annotation* }` block. The scope is a bare identifier that the interpreter resolves at expansion time against the current bind environment (the synth's outer target, or a for-loop iteration variable).
+func (v *HirVisitor) VisitSynthEmitOn(ctx *parser.SynthEmitOnContext) any {
+	out := &SynthEmitOn{node: v.mkNode(ctx)}
+	if idTok := ctx.ID(); idTok != nil {
+		out.Scope = idTok.GetText()
+	}
+	out.AnnotationEmits = v.collectAnnotations(ctx.AllAnnotation())
+	return out
+}
+
+// VisitSynthEmitAppend builds an `emit append to <registry> { <expr> }` clause. The expression is visited like any other Sova expression so it participates in synth-param substitution before being appended to the registry slice in the compiler cache.
+func (v *HirVisitor) VisitSynthEmitAppend(ctx *parser.SynthEmitAppendContext) any {
+	out := &SynthEmitAppend{node: v.mkNode(ctx)}
+	if idTok := ctx.ID(); idTok != nil {
+		out.Registry = idTok.GetText()
+	}
+	if exCtx := ctx.Expr(); exCtx != nil {
+		if e, ok := v.Visit(exCtx).(Expr); ok {
+			out.Fragment = e
+		}
+	}
+	return out
+}
+
+// VisitSynthForStmt builds a `for <loopVar> in <bind>.<member> [where <pred>] { <body> }` clause. The iterable is parsed as a `<bind>.<member>` pair — interpreted at expansion time, not at parse time — so adding new iterable members later is a one-line interpreter change. The optional `where` predicate is captured for filter-time evaluation.
+func (v *HirVisitor) VisitSynthForStmt(ctx *parser.SynthForStmtContext) any {
+	out := &SynthForStmt{node: v.mkNode(ctx)}
+	if idTok := ctx.ID(); idTok != nil {
+		out.LoopVar = idTok.GetText()
+	}
+	if it := ctx.SynthIterable(); it != nil {
+		itIds := it.AllID()
+		if len(itIds) >= 1 {
+			out.BindName = itIds[0].GetText()
+		}
+		if len(itIds) >= 2 {
+			out.Member = itIds[1].GetText()
+		}
+	}
+	if w := ctx.SynthWhere(); w != nil {
+		if be := w.SynthBoolExpr(); be != nil {
+			out.Where = v.parseSynthBoolExpr(be)
+		}
+	}
+	out.Body = v.collectSynthBody(ctx.AllSynthBodyItem())
+	return out
+}
+
+// VisitSynthEmitField wraps a regular `fieldDecl` parse-tree in a synth body item. We delegate to the existing field visitor so the produced TypeField is structurally identical to a hand-written one — the synth interpreter just clones-and-appends it onto the target type's `Fields` slice.
+func (v *HirVisitor) VisitSynthEmitField(ctx *parser.SynthEmitFieldContext) any {
+	out := &SynthEmitField{node: v.mkNode(ctx)}
+	if fd := ctx.FieldDecl(); fd != nil {
+		if f, ok := v.Visit(fd).(*TypeField); ok {
+			out.Field = f
+		}
+	}
+	return out
+}
+
+// VisitSynthEmitMethod wraps a regular `methodDecl` parse-tree (so the synth author writes `emit func compute(): int { ... }` — same shape as a hand-written method on a type body).
+func (v *HirVisitor) VisitSynthEmitMethod(ctx *parser.SynthEmitMethodContext) any {
+	out := &SynthEmitMethod{node: v.mkNode(ctx)}
+	if md := ctx.MethodDecl(); md != nil {
+		if m, ok := v.Visit(md).(*TypeMethodDecl); ok {
+			out.Method = m
+		}
+	}
+	return out
+}
+
+// VisitSynthEmitCtor wraps a regular `ctorDecl` parse-tree (so the synth author writes `emit new(x: int) { ... }` — same shape as a hand-written ctor on a type body).
+func (v *HirVisitor) VisitSynthEmitCtor(ctx *parser.SynthEmitCtorContext) any {
+	out := &SynthEmitCtor{node: v.mkNode(ctx)}
+	if cd := ctx.CtorDecl(); cd != nil {
+		if c, ok := v.Visit(cd).(*CtorDecl); ok {
+			out.Ctor = c
+		}
+	}
+	return out
+}
+
+func (v *HirVisitor) parseSynthBoolExpr(ctx parser.ISynthBoolExprContext) *SynthBoolExpr {
+	out := &SynthBoolExpr{node: v.mkNode(ctx)}
+	out.Negate = strings.HasPrefix(strings.TrimSpace(ctx.GetText()), "!")
+	ids := ctx.AllID()
+	if len(ids) >= 1 {
+		out.BindName = ids[0].GetText()
+	}
+	if len(ids) >= 2 {
+		out.Property = ids[1].GetText()
+	}
+	return out
 }

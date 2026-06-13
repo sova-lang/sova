@@ -239,6 +239,48 @@ type SovaVisitor interface {
 	// Visit a parse tree produced by SovaParser#mixinMember.
 	VisitMixinMember(ctx *MixinMemberContext) interface{}
 
+	// Visit a parse tree produced by SovaParser#synthDeclStmt.
+	VisitSynthDeclStmt(ctx *SynthDeclStmtContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#synthParams.
+	VisitSynthParams(ctx *SynthParamsContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#synthTarget.
+	VisitSynthTarget(ctx *SynthTargetContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#synthTargetKind.
+	VisitSynthTargetKind(ctx *SynthTargetKindContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#synthBodyItem.
+	VisitSynthBodyItem(ctx *SynthBodyItemContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#synthEmitOn.
+	VisitSynthEmitOn(ctx *SynthEmitOnContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#synthEmitAppend.
+	VisitSynthEmitAppend(ctx *SynthEmitAppendContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#synthEmitField.
+	VisitSynthEmitField(ctx *SynthEmitFieldContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#synthEmitMethod.
+	VisitSynthEmitMethod(ctx *SynthEmitMethodContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#synthEmitCtor.
+	VisitSynthEmitCtor(ctx *SynthEmitCtorContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#synthForStmt.
+	VisitSynthForStmt(ctx *SynthForStmtContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#synthIterable.
+	VisitSynthIterable(ctx *SynthIterableContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#synthWhere.
+	VisitSynthWhere(ctx *SynthWhereContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#synthBoolExpr.
+	VisitSynthBoolExpr(ctx *SynthBoolExprContext) interface{}
+
 	// Visit a parse tree produced by SovaParser#typeAliasStmt.
 	VisitTypeAliasStmt(ctx *TypeAliasStmtContext) interface{}
 

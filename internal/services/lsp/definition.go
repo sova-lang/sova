@@ -33,6 +33,15 @@ func (s *Server) findDefinitionLocations(docURI uri.URI, pos protocol.Position, 
 	if err != nil || c == nil {
 		return nil, nil
 	}
+	if !viaType {
+		if src, ok := snap.ReadFile(docURI); ok {
+			if name, _, ok := annotationAtCursor(src, pos); ok {
+				if loc := synthDefinitionLocation(c, snap, name); loc != nil {
+					return []protocol.Location{*loc}, nil
+				}
+			}
+		}
+	}
 	target := findCursorTarget(c, docURI, pos.Line, pos.Character)
 	if target == nil {
 		return nil, nil

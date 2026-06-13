@@ -9,6 +9,7 @@ import (
 
 	"sova/internal/diag"
 	"sova/internal/ir"
+	"sova/internal/passes"
 	"sova/internal/services/compiler"
 )
 
@@ -45,7 +46,7 @@ func (s *Server) Completion(ctx context.Context, params *protocol.CompletionPara
 	case completionWireOption:
 		items = wireOptionCompletions()
 	case completionAnnotation:
-		items = annotationCompletions()
+		items = annotationCompletions(c)
 	default:
 		items = identifierCompletions(c, pkg, file)
 		items = append(items, localScopeCompletions(c, file, params.Position)...)
@@ -168,8 +169,8 @@ func classifyCompletion(src string, pos protocol.Position) (completionContextKin
 	return completionAfterDot, src[recvStart:recvEnd]
 }
 
-// annotationCompletions returns the static list of `@`-prefixed declaration annotations Sova recognises today. The user has already typed the leading `@` by the time this fires (the `@` is registered as a completion trigger on the server's capabilities), so labels are bare identifier names and the editor's word-replace logic substitutes only the identifier portion. Mirrors the annotation names the visitor + analysis passes accept; extend whenever a new annotation enters the language surface.
-func annotationCompletions() []protocol.CompletionItem {
+// annotationCompletions returns the `@`-prefixed declaration annotations the user can type at the current position. The list is the union of compiler-built-in annotations (`reactive`, `structTag`) and every `synth` declaration registered in the current build — synth-defined custom annotations appear in completion exactly like built-ins, with the synth's own param signature in `detail` and a doc that points at the body it lowers to. The user has already typed the leading `@` by the time this fires (the `@` is a registered completion trigger), so labels are bare identifier names and the editor's word-replace logic substitutes only the identifier portion.
+func annotationCompletions(c *compiler.CompilerContext) []protocol.CompletionItem {
 	type ann struct{ name, detail, doc string }
 	anns := []ann{
 		{
@@ -193,7 +194,98 @@ func annotationCompletions() []protocol.CompletionItem {
 		attachDocToCompletionItem(&item, a.doc)
 		out = append(out, item)
 	}
+	for _, item := range synthAnnotationCompletions(c) {
+		out = append(out, item)
+	}
 	return out
+}
+
+// synthAnnotationCompletions reads the cached synth registry from the compiler and returns one completion item per registered `synth` declaration. Items render as `@<Name>(p: type, ...)` in detail and surface the synth's body shape in markdown doc so the developer knows what they're about to expand. Returns an empty slice when no synths are registered (or the cache hasn't been populated yet, e.g. before the first successful build).
+func synthAnnotationCompletions(c *compiler.CompilerContext) []protocol.CompletionItem {
+	if c == nil {
+		return nil
+	}
+	reg, ok := c.Cache[passes.SynthRegistryCacheKey].(map[string]*ir.SynthDeclStmt)
+	if !ok || len(reg) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(reg))
+	for n := range reg {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]protocol.CompletionItem, 0, len(names))
+	for _, name := range names {
+		sd := reg[name]
+		item := protocol.CompletionItem{
+			Label:  name,
+			Kind:   protocol.CompletionItemKindProperty,
+			Detail: synthSignature(sd),
+		}
+		attachDocToCompletionItem(&item, synthDoc(sd))
+		out = append(out, item)
+	}
+	return out
+}
+
+// synthSignature renders a one-line summary of a synth declaration: `@Name(p: T, ...) (target)`. Used in completion `detail` and hover preambles so the user sees the target kind + param shape at a glance.
+func synthSignature(sd *ir.SynthDeclStmt) string {
+	if sd == nil {
+		return ""
+	}
+	out := "@" + sd.Name.Name
+	if len(sd.Params) > 0 {
+		out += "("
+		for i, p := range sd.Params {
+			if i > 0 {
+				out += ", "
+			}
+			if p == nil {
+				out += "?"
+				continue
+			}
+			out += p.Name.Name
+			if p.Type != nil && p.Type.CustomName != "" {
+				out += ": " + p.Type.CustomName
+			}
+		}
+		out += ")"
+	}
+	out += " (" + sd.Target.Kind.String() + " " + sd.Target.BindName + ")"
+	return out
+}
+
+// synthDoc builds a markdown documentation blob for one synth: the rendered Sova surface (re-derived from the IR) wrapped in a code fence. Lets hover/completion show exactly what `@SynthName` will lower to without the user having to open the synth file.
+func synthDoc(sd *ir.SynthDeclStmt) string {
+	if sd == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Custom annotation. Lowers via the following synth declaration:\n\n```sova\n")
+	b.WriteString("synth ")
+	b.WriteString(sd.Name.Name)
+	if len(sd.Params) > 0 {
+		b.WriteString("(")
+		for i, p := range sd.Params {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			if p != nil {
+				b.WriteString(p.Name.Name)
+				if p.Type != nil && p.Type.CustomName != "" {
+					b.WriteString(": ")
+					b.WriteString(p.Type.CustomName)
+				}
+			}
+		}
+		b.WriteString(")")
+	}
+	b.WriteString(" on ")
+	b.WriteString(sd.Target.Kind.String())
+	b.WriteString(" ")
+	b.WriteString(sd.Target.BindName)
+	b.WriteString(" { ... }\n```")
+	return b.String()
 }
 
 // wireOptionCompletions returns the known option keys accepted by Sova's

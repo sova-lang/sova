@@ -21,6 +21,13 @@ func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (*prot
 	if err != nil || c == nil {
 		return nil, nil
 	}
+	if src, ok := snap.ReadFile(params.TextDocument.URI); ok {
+		if name, rng, ok := annotationAtCursor(src, params.Position); ok {
+			if hov := synthAnnotationHover(c, name, rng); hov != nil {
+				return hov, nil
+			}
+		}
+	}
 	target := findCursorTarget(c, params.TextDocument.URI, params.Position.Line, params.Position.Character)
 	if target == nil {
 		return nil, nil

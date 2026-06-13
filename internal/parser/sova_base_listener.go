@@ -483,6 +483,90 @@ func (s *BaseSovaListener) EnterMixinMember(ctx *MixinMemberContext) {}
 // ExitMixinMember is called when production mixinMember is exited.
 func (s *BaseSovaListener) ExitMixinMember(ctx *MixinMemberContext) {}
 
+// EnterSynthDeclStmt is called when production synthDeclStmt is entered.
+func (s *BaseSovaListener) EnterSynthDeclStmt(ctx *SynthDeclStmtContext) {}
+
+// ExitSynthDeclStmt is called when production synthDeclStmt is exited.
+func (s *BaseSovaListener) ExitSynthDeclStmt(ctx *SynthDeclStmtContext) {}
+
+// EnterSynthParams is called when production synthParams is entered.
+func (s *BaseSovaListener) EnterSynthParams(ctx *SynthParamsContext) {}
+
+// ExitSynthParams is called when production synthParams is exited.
+func (s *BaseSovaListener) ExitSynthParams(ctx *SynthParamsContext) {}
+
+// EnterSynthTarget is called when production synthTarget is entered.
+func (s *BaseSovaListener) EnterSynthTarget(ctx *SynthTargetContext) {}
+
+// ExitSynthTarget is called when production synthTarget is exited.
+func (s *BaseSovaListener) ExitSynthTarget(ctx *SynthTargetContext) {}
+
+// EnterSynthTargetKind is called when production synthTargetKind is entered.
+func (s *BaseSovaListener) EnterSynthTargetKind(ctx *SynthTargetKindContext) {}
+
+// ExitSynthTargetKind is called when production synthTargetKind is exited.
+func (s *BaseSovaListener) ExitSynthTargetKind(ctx *SynthTargetKindContext) {}
+
+// EnterSynthBodyItem is called when production synthBodyItem is entered.
+func (s *BaseSovaListener) EnterSynthBodyItem(ctx *SynthBodyItemContext) {}
+
+// ExitSynthBodyItem is called when production synthBodyItem is exited.
+func (s *BaseSovaListener) ExitSynthBodyItem(ctx *SynthBodyItemContext) {}
+
+// EnterSynthEmitOn is called when production synthEmitOn is entered.
+func (s *BaseSovaListener) EnterSynthEmitOn(ctx *SynthEmitOnContext) {}
+
+// ExitSynthEmitOn is called when production synthEmitOn is exited.
+func (s *BaseSovaListener) ExitSynthEmitOn(ctx *SynthEmitOnContext) {}
+
+// EnterSynthEmitAppend is called when production synthEmitAppend is entered.
+func (s *BaseSovaListener) EnterSynthEmitAppend(ctx *SynthEmitAppendContext) {}
+
+// ExitSynthEmitAppend is called when production synthEmitAppend is exited.
+func (s *BaseSovaListener) ExitSynthEmitAppend(ctx *SynthEmitAppendContext) {}
+
+// EnterSynthEmitField is called when production synthEmitField is entered.
+func (s *BaseSovaListener) EnterSynthEmitField(ctx *SynthEmitFieldContext) {}
+
+// ExitSynthEmitField is called when production synthEmitField is exited.
+func (s *BaseSovaListener) ExitSynthEmitField(ctx *SynthEmitFieldContext) {}
+
+// EnterSynthEmitMethod is called when production synthEmitMethod is entered.
+func (s *BaseSovaListener) EnterSynthEmitMethod(ctx *SynthEmitMethodContext) {}
+
+// ExitSynthEmitMethod is called when production synthEmitMethod is exited.
+func (s *BaseSovaListener) ExitSynthEmitMethod(ctx *SynthEmitMethodContext) {}
+
+// EnterSynthEmitCtor is called when production synthEmitCtor is entered.
+func (s *BaseSovaListener) EnterSynthEmitCtor(ctx *SynthEmitCtorContext) {}
+
+// ExitSynthEmitCtor is called when production synthEmitCtor is exited.
+func (s *BaseSovaListener) ExitSynthEmitCtor(ctx *SynthEmitCtorContext) {}
+
+// EnterSynthForStmt is called when production synthForStmt is entered.
+func (s *BaseSovaListener) EnterSynthForStmt(ctx *SynthForStmtContext) {}
+
+// ExitSynthForStmt is called when production synthForStmt is exited.
+func (s *BaseSovaListener) ExitSynthForStmt(ctx *SynthForStmtContext) {}
+
+// EnterSynthIterable is called when production synthIterable is entered.
+func (s *BaseSovaListener) EnterSynthIterable(ctx *SynthIterableContext) {}
+
+// ExitSynthIterable is called when production synthIterable is exited.
+func (s *BaseSovaListener) ExitSynthIterable(ctx *SynthIterableContext) {}
+
+// EnterSynthWhere is called when production synthWhere is entered.
+func (s *BaseSovaListener) EnterSynthWhere(ctx *SynthWhereContext) {}
+
+// ExitSynthWhere is called when production synthWhere is exited.
+func (s *BaseSovaListener) ExitSynthWhere(ctx *SynthWhereContext) {}
+
+// EnterSynthBoolExpr is called when production synthBoolExpr is entered.
+func (s *BaseSovaListener) EnterSynthBoolExpr(ctx *SynthBoolExprContext) {}
+
+// ExitSynthBoolExpr is called when production synthBoolExpr is exited.
+func (s *BaseSovaListener) ExitSynthBoolExpr(ctx *SynthBoolExprContext) {}
+
 // EnterTypeAliasStmt is called when production typeAliasStmt is entered.
 func (s *BaseSovaListener) EnterTypeAliasStmt(ctx *TypeAliasStmtContext) {}
 

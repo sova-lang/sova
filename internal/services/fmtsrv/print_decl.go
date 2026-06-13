@@ -506,6 +506,8 @@ func sideKindLabel(k ir.SideKind) string {
 		return "shared"
 	case ir.SideTest:
 		return "test"
+	case ir.SideSynth:
+		return "synth"
 	}
 	return "shared"
 }

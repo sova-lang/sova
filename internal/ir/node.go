@@ -46,6 +46,7 @@ const (
 	SideBackend
 	SideShared
 	SideTest
+	SideSynth
 )
 
 // SideSpec represents the specification on which side the code is supposed to run.
@@ -312,10 +313,11 @@ func (*FuncDeclStmt) stmtNode() {}
 
 type FuncParam struct {
 	node
-	IsVariadic bool     // IsVariadic indicates if the parameter is variadic.
-	Name       NameRef  // Name is the name of the parameter.
-	Type       *TypeRef // Type is the type of the parameter.
-	Default    Expr     // Default is the default value of the parameter. May be nil.
+	IsVariadic  bool         // IsVariadic indicates if the parameter is variadic.
+	Name        NameRef      // Name is the name of the parameter.
+	Type        *TypeRef     // Type is the type of the parameter.
+	Default     Expr         // Default is the default value of the parameter. May be nil.
+	Annotations []Annotation // Annotations are the `@name(args)` decorations applied to this parameter (lowered to built-ins by `expand_synths` before any downstream pass sees them).
 }
 
 func (*FuncParam) stmtNode() {}
