@@ -456,6 +456,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					Private:    field.Private,
 					Sym:        field.Name.Sym,
 					IsReactive: hasAnnotation(field.Annotations, "reactive"),
+					IsShared:   field.IsShared,
 				})
 				if field.Name.Sym != 0 {
 					pc.Pkg.Syms.SetType(field.Name.Sym, fieldType)

@@ -25,7 +25,11 @@ func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (*prot
 	if target == nil {
 		return nil, nil
 	}
-	contents := renderHover(c, target)
+	consumerSide := ir.SideShared
+	if _, file, _ := lookupFileByURI(c, params.TextDocument.URI); file != nil {
+		consumerSide = file.Side.Kind
+	}
+	contents := renderHover(c, target, consumerSide)
 	if contents == "" {
 		return nil, nil
 	}
@@ -39,8 +43,8 @@ func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (*prot
 	}, nil
 }
 
-// renderHover assembles the markdown body shown in the hover popup. Builds a `sova`-fenced signature line (`let x: int`, `func foo(a: int): bool`, etc.); returns "" when the target has no symbol we can describe so the LSP returns nil and the editor falls back to its own help.
-func renderHover(c *compiler.CompilerContext, target *cursorTarget) string {
+// renderHover assembles the markdown body shown in the hover popup. Builds a `sova`-fenced signature line (`let x: int`, `func foo(a: int): bool`, etc.); returns "" when the target has no symbol we can describe so the LSP returns nil and the editor falls back to its own help. `consumerSide` is the side of the file the cursor sits in, used by member-resolution to filter out non-shared members of types declared on the opposite side (so a frontend hover on a backend-only field returns nothing rather than misleading IntelliSense).
+func renderHover(c *compiler.CompilerContext, target *cursorTarget, consumerSide ir.SideKind) string {
 	if target == nil {
 		return ""
 	}
@@ -64,7 +68,7 @@ func renderHover(c *compiler.CompilerContext, target *cursorTarget) string {
 		return "```sova\nimport \"" + target.importPath + "\"\n```"
 	}
 	if target.kind == cursorKindMember && target.sym == 0 {
-		if memberSym := findMemberSym(c, target.memberOf, target.fieldName); memberSym != nil {
+		if memberSym := findMemberSym(c, target.memberOf, target.fieldName, consumerSide); memberSym != nil {
 			sig := formatSymbolSignature(c.TypeUniverse, memberSym)
 			body := "```sova\n" + sig + "\n```"
 			if doc := strings.TrimSpace(memberSym.Doc); doc != "" {
@@ -206,8 +210,8 @@ func lookupTypeDeclSymInPkg(pkg *ir.PackageContext, name string) *ir.Symbol {
 	return nil
 }
 
-// findMemberSym resolves a `receiver.name` member access to the declaring `*ir.Symbol` when the receiver's type is a user-defined struct / enum / interface. Methods (struct methods and interface signatures) carry the doc-comment from their declaration site so hover can show it; plain struct fields don't currently store per-field docs in the IR and return nil.
-func findMemberSym(c *compiler.CompilerContext, receiverTyp ir.TypID, name string) *ir.Symbol {
+// findMemberSym resolves a `receiver.name` member access to the declaring `*ir.Symbol` when the receiver's type is a user-defined struct / enum / interface. Methods (struct methods and interface signatures) carry the doc-comment from their declaration site so hover can show it; plain struct fields don't currently store per-field docs in the IR and return nil. `consumerSide` filters out non-shared members when the cursor's file lives on a different side from the type's declaration — symmetric with `typeMemberCompletions`, so the IntelliSense surface (completion + hover) stays consistent: anything not callable on the consumer's side is invisible.
+func findMemberSym(c *compiler.CompilerContext, receiverTyp ir.TypID, name string, consumerSide ir.SideKind) *ir.Symbol {
 	if receiverTyp == 0 || name == "" {
 		return nil
 	}
@@ -215,9 +219,14 @@ func findMemberSym(c *compiler.CompilerContext, receiverTyp ir.TypID, name strin
 	if !ok || ty == nil {
 		return nil
 	}
+	declSide := structTypeDeclSide(c, ty)
+	filterShared := consumerSide != ir.SideShared && declSide != ir.SideShared && consumerSide != declSide
 	switch ty.Kind {
 	case ir.TK_Struct:
 		for _, m := range ty.StructMethods {
+			if filterShared && !m.IsShared {
+				continue
+			}
 			if m.Name == name && m.Sym != 0 {
 				if sym, ok := lookupSymbolGlobally(c, m.Sym); ok {
 					return sym

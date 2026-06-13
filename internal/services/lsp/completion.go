@@ -177,6 +177,11 @@ func annotationCompletions() []protocol.CompletionItem {
 			detail: "@reactive (field | wire let)",
 			doc:    "Marks a field on a `type` or a top-level `wire let` as reactive. Reads tracked inside Strix `effect` / `computed` / `view()` subscribe to the field; writes notify every observer, so views re-render automatically.\n\n```sova\ntype Counter with Composable, Component {\n    @reactive count: int = 0\n\n    func view(): Composable {\n        return H1 { \"count: \" + count }\n    }\n}\n\n@reactive wire let ingameTime: int = 0\n```",
 		},
+		{
+			name:   "structTag",
+			detail: "@structTag(\"<key>\", \"<value>\") (field)",
+			doc:    "Adds a Go struct tag to the Go-side struct field the Sova field compiles to. The first argument is the tag *namespace* (`gorm`, `json`, `validate`, `xml`, ...) — anything the consuming Go library reflects on — and the second is the literal tag value. Multiple `@structTag` entries on the same field stack: same-namespace values are joined with a single space, so two `@structTag(\"gorm\", ...)` annotations produce one `` `gorm:\"...\"` `` tag with both rules.\n\n```sova\ntype User {\n    @structTag(\"gorm\", \"primaryKey;autoIncrement\")\n    @structTag(\"json\", \"id\")\n    id: int = 0\n\n    @structTag(\"gorm\", \"size:200;not null\")\n    @structTag(\"gorm\", \"index\")\n    name: string = \"\"\n}\n```\n\nThe Sova-side `json:\"<fieldname>\"` tag is emitted automatically for every non-`__`-prefixed field; supply your own `@structTag(\"json\", ...)` to override the default. The compiler enforces the exact-two-string-args shape at compile time, so typos surface as clean diagnostics rather than malformed tags.",
+		},
 	}
 	out := make([]protocol.CompletionItem, 0, len(anns))
 	for _, a := range anns {
@@ -668,9 +673,10 @@ func memberCompletions(c *compiler.CompilerContext, file *ir.File, pos protocol.
 	if recvText == "" {
 		return nil
 	}
+	consumerSide := currentFileSide(file)
 	if recvText == "@" {
 		if sessionTyp, ok := c.Cache[compiler.SessionsSessionTypeCacheKey].(ir.TypID); ok && sessionTyp != 0 {
-			return typeMemberCompletions(c, sessionTyp)
+			return typeMemberCompletions(c, sessionTyp, consumerSide)
 		}
 		return nil
 	}
@@ -678,7 +684,7 @@ func memberCompletions(c *compiler.CompilerContext, file *ir.File, pos protocol.
 		dotLine := int(pos.Line) + 1
 		dotCol := int(pos.Character)
 		if typ := findExprTypeEndingAt(file, dotLine, dotCol); typ != 0 {
-			return typeMemberCompletions(c, typ)
+			return typeMemberCompletions(c, typ, consumerSide)
 		}
 		return nil
 	}
@@ -719,7 +725,7 @@ func memberCompletions(c *compiler.CompilerContext, file *ir.File, pos protocol.
 	if t.typ == 0 {
 		return nil
 	}
-	return typeMemberCompletions(c, t.typ)
+	return typeMemberCompletions(c, t.typ, consumerSide)
 }
 
 // findExprTypeEndingAt walks the file's HIR looking for the deepest expression
@@ -915,16 +921,52 @@ func findLocalSymInBlock(b *ir.BlockStmt, name string) ir.SymID {
 	return 0
 }
 
-// typeMemberCompletions emits the appropriate member list for a value of `typ`. Struct → fields + methods; enum → cases + methods; interface → methods; chan → send/recv/close.
-func typeMemberCompletions(c *compiler.CompilerContext, typ ir.TypID) []protocol.CompletionItem {
+// structTypeDeclSide returns the file-side that declares the struct type `ty`. Used by `typeMemberCompletions` to decide whether to filter to the shared subset when the consumer file lives on the opposite side. Falls back to `SideShared` when the type has no in-build declaration (extern struct, synthetic compiler type) so cross-side checks for those types do not accidentally filter.
+func structTypeDeclSide(c *compiler.CompilerContext, ty *ir.Type) ir.SideKind {
+	if c == nil || ty == nil || ty.Kind != ir.TK_Struct {
+		return ir.SideShared
+	}
+	for _, pkg := range c.Packages {
+		if pkg == nil || pkg.Path.String() != ty.PackagePath {
+			continue
+		}
+		for _, f := range pkg.Files {
+			if f == nil || f.Hir == nil {
+				continue
+			}
+			for _, st := range f.Hir.Statements {
+				td, ok := st.(*ir.TypeDeclStmt)
+				if !ok || td.IsExtern || td.Name.Sym == 0 {
+					continue
+				}
+				sym, ok := pkg.Syms.GetByID(td.Name.Sym)
+				if !ok {
+					continue
+				}
+				if structType, ok := c.TypeUniverse.GetByID(sym.Typ); ok && structType == ty {
+					return f.Hir.Side.Kind
+				}
+			}
+		}
+	}
+	return ir.SideShared
+}
+
+// typeMemberCompletions emits the appropriate member list for a value of `typ`. Struct → fields + methods; enum → cases + methods; interface → methods; chan → send/recv/close. When `consumerSide` differs from the side the type was declared on, the returned list is filtered to the shared subset: only fields and methods marked `shared` are visible, mirroring what the codegen actually emits on the consumer's side. The filtering keeps IntelliSense honest — a frontend file accessing a backend-declared `User` only sees the shared fields and methods that the JS bundle actually has.
+func typeMemberCompletions(c *compiler.CompilerContext, typ ir.TypID, consumerSide ir.SideKind) []protocol.CompletionItem {
 	ty, ok := c.TypeUniverse.GetByID(typ)
 	if !ok {
 		return nil
 	}
+	declSide := structTypeDeclSide(c, ty)
+	filterShared := consumerSide != ir.SideShared && declSide != ir.SideShared && consumerSide != declSide
 	var out []protocol.CompletionItem
 	switch ty.Kind {
 	case ir.TK_Struct:
 		for _, f := range ty.StructFields {
+			if filterShared && !f.IsShared {
+				continue
+			}
 			out = append(out, protocol.CompletionItem{
 				Label:  f.Name,
 				Kind:   protocol.CompletionItemKindField,
@@ -932,6 +974,9 @@ func typeMemberCompletions(c *compiler.CompilerContext, typ ir.TypID) []protocol
 			})
 		}
 		for _, m := range ty.StructMethods {
+			if filterShared && !m.IsShared {
+				continue
+			}
 			label := m.Name
 			detail := label
 			if fnTy, ok := c.TypeUniverse.GetByID(m.FuncTyp); ok {

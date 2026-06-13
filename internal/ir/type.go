@@ -116,6 +116,7 @@ type StructFieldInfo struct {
 	IsPromoted         bool   // IsPromoted is true when the field was lifted from an embedded type and is not declared on the struct directly.
 	PromotedFromExtern bool   // PromotedFromExtern is true when the source type of the promotion was an extern binding.
 	IsReactive         bool   // IsReactive is true when the field carries the `@reactive` annotation; codegen generates an observer list, setter, and `observe<Field>` method.
+	IsShared           bool   // IsShared mirrors the `shared` modifier on the declaring TypeField. Used by the LSP to filter cross-side member completion: a frontend file accessing a backend-declared type only sees fields whose IsShared is true.
 }
 
 // StructCtorInfo stores resolved info about a single explicit constructor of a struct.
