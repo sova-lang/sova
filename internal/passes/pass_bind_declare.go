@@ -292,6 +292,9 @@ func (p *PassBindDeclare) bindStmtScopes(pkg *ir.PackageContext, st ir.Stmt, sco
 			if existingSym, found := pkg.Syms.GetByID(existing); found && existingSym.Kind == ir.SK_Package && existingSym.PackagePath == st.Path.String() {
 				return nil
 			}
+			if st.UsingAll {
+				return nil
+			}
 		}
 		sym := pkg.Syms.NewSymbol(ir.SK_Package, alias, scope, 0, st.ID())
 		if pkgSym, ok := pkg.Syms.GetByID(sym); ok {
