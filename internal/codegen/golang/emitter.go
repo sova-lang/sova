@@ -343,6 +343,10 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 
 		e.emitBlock(ctx, pkg, f, block, s.Stmts)
 	case *ir.VarDeclStmt:
+		if s.Embed != nil && topLevel {
+			e.emitEmbeddedVar(ctx, pkg, block, s)
+			return
+		}
 		if s.IsWired && topLevel {
 			e.wiredVars = append(e.wiredVars, s)
 			e.emitWiredVarGetter(ctx, pkg, f, block, s)
@@ -4460,6 +4464,33 @@ func pathWithBraces(p string) string {
 		i++
 	}
 	return out.String()
+}
+
+// emitEmbeddedVar emits a top-level `var <name> <type>` declaration prefixed by a `//go:embed __embeds/<staged>` directive comment. The staged file is copied into place by `build.go` before the Go compiler runs (filename is `<hash>-<basename>`, where `<hash>` is the sha256[:16] computed by `pass_resolve_embeds` and `<basename>` is the embed source's base name). Go's `//go:embed` rules require the variable to be at package scope with no initializer; we emit just `var Name string` (text) or `var Name []byte` (bytes) so the directive populates it.
+func (e *CodeEmitter) emitEmbeddedVar(ctx *codegen.EmitContext, pkg *ir.PackageContext, block *jen.Group, vd *ir.VarDeclStmt) {
+	if vd.Embed == nil || len(vd.Targets) == 0 || vd.Targets[0].Name == nil {
+		return
+	}
+	target := vd.Targets[0]
+	name := symNameWithUnused(ctx, pkg, target.Name.Sym)
+	staged := embedStagedRelPath(vd.Embed)
+	var goType jen.Code
+	switch vd.Embed.Kind {
+	case ir.EmbedKindText:
+		goType = jen.Id("string")
+	case ir.EmbedKindBytes:
+		goType = jen.Index().Id("byte")
+	default:
+		return
+	}
+	block.Add(jen.Comment("//go:embed " + staged))
+	block.Add(jen.Var().Id(name).Add(goType))
+}
+
+// embedStagedRelPath is the relative path the `//go:embed` directive uses, anchored at the Go output directory (`<outputDir>/__embeds/<staged>`). The naming combines the content hash and the source's basename so collisions across embeds of files with the same name still produce distinct staged filenames. Mirrored by `build.go`'s staging step — keep the two in lockstep.
+func embedStagedRelPath(info *ir.EmbedInfo) string {
+	base := filepath.Base(info.SourcePath)
+	return "__embeds/" + info.ContentHash + "-" + base
 }
 
 // emitWiredVarGetter writes a synthetic getter `func <name>() T { return <init> }` for a wired top-level var/const. The init expression is embedded inline; the getter is reachable both from the HTTP handler and from internal backend code. For `@reactive wire let` the emitter switches to a real package-level variable instead so backend mutations update the canonical storage and broadcast naturally.

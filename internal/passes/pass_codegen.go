@@ -18,6 +18,13 @@ type buildPaths struct {
 type buildConfigGetter interface {
 	OutputDirectory() string
 	OutputBaseName() string
+	SourceDirectory() string
+}
+
+// scssConfigGetter is the optional interface a BuildConfig implements to wire the SCSS preprocessor. Kept separate so the BuildConfig type only needs to satisfy it when SCSS support is wanted; the embed resolver falls back to "no SCSS" when the cache value doesn't satisfy this interface.
+type scssConfigGetter interface {
+	SCSSCommandValue() string
+	SCSSDisabledValue() bool
 }
 
 func resolveBuildPaths(pc *PassContext) buildPaths {

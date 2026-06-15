@@ -92,6 +92,25 @@ type VarDeclStmt struct {
 	IsWired     bool         // IsWired marks a top-level declaration as wired: the backend exposes it via a GET endpoint, the frontend gets a fetch-stub.
 	Wire        *WireSpec    // Wire carries the resolved transport metadata for wired vars/const.
 	Annotations []Annotation // Annotations are the `@name(args)` decorations applied to this declaration. `@reactive wire let` triggers the broadcast-on-mutate path; other annotations may be added by libraries.
+	Embed       *EmbedInfo   // Embed is non-nil when this declaration carries `@embed("path")` and has been processed by `pass_resolve_embeds`. The original Init expression is replaced with a placeholder literal at that point; codegen reads the file contents through this struct rather than from Init.
+}
+
+// EmbedKind selects which loader the embed resolver and codegen use for a given `@embed`-decorated const. Inferred from the declared type: `string` → text, `[]u8` / `bytes` → binary. Anything else is a diagnostic in `pass_resolve_embeds`.
+type EmbedKind int
+
+const (
+	EmbedKindUnknown EmbedKind = iota
+	EmbedKindText
+	EmbedKindBytes
+)
+
+// EmbedInfo carries the resolved metadata `pass_resolve_embeds` attaches to every `@embed`-decorated const. The source path is absolute (resolved against the declaring file's directory, not the project root, so libraries embedded under `.sova/deps/<pkg>/` work). The content hash is a sha256 prefix used both for cache invalidation in dev mode and for staged-asset filenames in production output. Once this field is non-nil on a VarDeclStmt, the codegen path reads file contents through here rather than from the var's Init expression — which has been replaced with a placeholder literal of the right type.
+type EmbedInfo struct {
+	SourcePath  string        // Absolute path to the source file on disk.
+	Kind        EmbedKind     // Text or Bytes; controls how codegen materialises the content.
+	ContentHash string        // sha256[:16] of the file contents at resolution time.
+	SizeBytes   int64         // File size in bytes at resolution time; used for the size-cap check.
+	Span        diag.TextSpan // Source span of the `@embed(...)` annotation, used by codegen diagnostics for file-staging failures.
 }
 
 type VarDeclTarget struct {
@@ -628,6 +647,7 @@ type TypeField struct {
 	Default     Expr
 	Private     bool
 	IsShared    bool
+	Embed       *EmbedInfo // Embed is non-nil when this field carries `@embed("path")` and has been processed by `pass_resolve_embeds`. The field's Default is replaced with an inlined literal of the file contents — type fields don't get the `//go:embed` directive path (which only works at package scope) because inlining as a default expression works on both backend and frontend without codegen changes.
 }
 
 // CastDecl represents a `cast(p: SourceT): Self { … }` declaration inside a TypeDeclStmt body. It is the only cast-overloading hook a type exposes: the compiler may automatically insert a call to it where a value of SourceT appears in a position expecting Self. `IsShared` follows the same semantics as `TypeField.IsShared`.

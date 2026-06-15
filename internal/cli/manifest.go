@@ -24,8 +24,9 @@ type manifestProject struct {
 }
 
 type manifestBuild struct {
-	OutputDir  string `toml:"output_dir"`
-	OutputName string `toml:"output_name"`
+	OutputDir  string       `toml:"output_dir"`
+	OutputName string       `toml:"output_name"`
+	SCSS       manifestSCSS `toml:"scss"`
 }
 
 type manifestWire struct {
@@ -41,6 +42,12 @@ type manifestServe struct {
 	Host       string `toml:"host"`
 	Frontend   *bool  `toml:"frontend"`
 	WebDir     string `toml:"web_dir"`
+}
+
+// manifestSCSS is the `[build.scss]` table that opts a project into SCSS preprocessing for `@embed`-loaded `.scss`/`.sass` files. `Command` overrides the auto-discovery (PATH lookup of `sass`, then `dart-sass`); `Enabled = false` short-circuits the feature even when a binary would otherwise be found, which is useful when CI runs on a sandbox that has dart-sass installed but the user wants to forbid its use.
+type manifestSCSS struct {
+	Command string `toml:"command"`
+	Enabled *bool  `toml:"enabled"`
 }
 
 // LoadManifest reads sova.toml from path. Returns the zero manifest and ok=false if the file does not exist; any other I/O or parse error is returned.
@@ -99,5 +106,11 @@ func applyManifest(cfg *BuildConfig, m manifest) {
 	}
 	if m.Serve.WebDir != "" {
 		cfg.ServeWebDir = m.Serve.WebDir
+	}
+	if m.Build.SCSS.Command != "" {
+		cfg.SCSSCommand = m.Build.SCSS.Command
+	}
+	if m.Build.SCSS.Enabled != nil && !*m.Build.SCSS.Enabled {
+		cfg.SCSSDisabled = true
 	}
 }

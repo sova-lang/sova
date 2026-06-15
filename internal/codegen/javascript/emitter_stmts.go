@@ -1,7 +1,10 @@
 package javascript
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"sova/internal/codegen"
@@ -150,6 +153,10 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 }
 
 func (e *CodeEmitter) emitVarDecl(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.VarDeclStmt, topLevel bool) {
+	if s.Embed != nil && topLevel {
+		e.emitEmbeddedVar(ctx, pkg, s)
+		return
+	}
 	if s.IsWired && topLevel {
 		e.emitWiredVarStub(ctx, pkg, f, s)
 		return
@@ -1526,6 +1533,34 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 	sb.WriteString(fmt.Sprintf("  return [__sovaReify(__data.value, %s), __data.state];\n", returnDesc))
 	sb.WriteString("}")
 	e.jf.Add(jsgen.Raw(sb.String()))
+}
+
+// emitEmbeddedVar emits the inlined-literal form of an `@embed`-decorated top-level const. The file contents are read from disk at codegen time (using the absolute SourcePath the resolver already validated) and serialised into a JS literal — a plain JSON string for text embeds, or a `Uint8Array` instantiated from a base64-decoded string for binary embeds. P1 always inlines; P3 will rewrite this to `import X from "./__embeds/...?text"` once esbuild is wired and can dedup duplicate embeds across modules.
+func (e *CodeEmitter) emitEmbeddedVar(ctx *codegen.EmitContext, pkg *ir.PackageContext, s *ir.VarDeclStmt) {
+	if s.Embed == nil || len(s.Targets) == 0 || s.Targets[0].Name == nil {
+		return
+	}
+	target := &s.Targets[0]
+	name := symName(ctx, target.Name.Sym)
+	data, err := os.ReadFile(s.Embed.SourcePath)
+	if err != nil {
+		return
+	}
+	orig := symOrigName(ctx, target.Name.Sym)
+	if orig != "" {
+		e.jf.Add(jsgen.Comment(fmt.Sprintf("@embed %s (%d bytes)", orig, s.Embed.SizeBytes)))
+	}
+	switch s.Embed.Kind {
+	case ir.EmbedKindText:
+		encoded, _ := json.Marshal(string(data))
+		e.jf.Add(jsgen.Raw(fmt.Sprintf("const %s = %s;", name, string(encoded))))
+	case ir.EmbedKindBytes:
+		b64 := base64.StdEncoding.EncodeToString(data)
+		e.jf.Add(jsgen.Raw(fmt.Sprintf(
+			`const %s = Uint8Array.from(atob(%q), c => c.charCodeAt(0));`,
+			name, b64,
+		)))
+	}
 }
 
 // emitWiredVarStub emits a frontend fetch-based stub for a wired top-level var/const declaration. The stub is exposed as an async function returning the [value, state] tuple, matching the backend's GET <route> handler shape. For `@reactive wire let` declarations the emitter instead drops a mutable mirror variable, an async loader that primes it from the same GET endpoint, and an `__sovaOnWireVar` subscription that updates the mirror whenever the backend pushes a new value.

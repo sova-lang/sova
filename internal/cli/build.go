@@ -5,14 +5,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
+	"sova/internal/bundler"
 	"sova/internal/services/compiler"
 	"sova/internal/termui"
 )
 
-// defaultProdShell is the HTML page emitted into the prod binary when the project has no `web/index.html` override. Loads the embedded JS bundle from `/__sova/runtime.js` into a `#app` mount point - matches the dev-mode default shape so frameworks bind to the same DOM ID in either mode.
+// defaultProdShell is the HTML page emitted into the prod binary when the project has no `web/index.html` override. The `__SOVA_RUNTIME__` placeholder is rewritten to the hashed `/__sova/<runtime.[hash].js>` path after bundling so the browser gets the content-addressed filename (cache-bustable for free).
 const defaultProdShell = `<!doctype html>
 <html lang="en">
 <head>
@@ -22,9 +24,12 @@ const defaultProdShell = `<!doctype html>
 </head>
 <body>
 <div id="app"></div>
-<script type="module" src="/__sova/runtime.js"></script>
+<script type="module" src="__SOVA_RUNTIME__"></script>
 </body>
 </html>`
+
+// runtimeScriptSrcRE finds the `<script type="module" src="/__sova/runtime.js">` reference (with arbitrary whitespace + quote style) in the user's `web/index.html` so the build step can rewrite its `src` attribute to the bundler's hashed entry filename. Users that don't include this tag get an injected one before `</body>`.
+var runtimeScriptSrcRE = regexp.MustCompile(`(<script[^>]*?\bsrc\s*=\s*["'])/__sova/runtime\.js(["'])`)
 
 // runBuild is the entry point for `sova build`. It compiles Sova source in production mode (emits embedded asset helpers, no dev gates) and then invokes `go build` once per target, cross-compiling via GOOS/GOARCH.
 func runBuild(cfg BuildConfig, targets []buildTarget, distDir string, stripDebug bool) error {
@@ -54,42 +59,46 @@ func runBuild(cfg BuildConfig, targets []buildTarget, distDir string, stripDebug
 	}
 	termui.Success("compiled")
 
-	emittedJS := filepath.Join(cfg.OutputDir, cfg.OutputName+".js")
-	embedJS := filepath.Join(cfg.OutputDir, "output.js")
-	if _, err := os.Stat(emittedJS); err == nil && emittedJS != embedJS {
-		if data, err := os.ReadFile(emittedJS); err == nil {
-			_ = os.WriteFile(embedJS, data, 0o644)
-		}
-	}
-	if _, err := os.Stat(embedJS); os.IsNotExist(err) {
-		if err := os.WriteFile(embedJS, []byte("// no frontend code\n"), 0o644); err != nil {
-			return err
-		}
-	}
-	emittedMap := emittedJS + ".map"
-	embedMap := embedJS + ".map"
-	if _, err := os.Stat(emittedMap); err == nil && emittedMap != embedMap {
-		if data, err := os.ReadFile(emittedMap); err == nil {
-			_ = os.WriteFile(embedMap, data, 0o644)
-		}
-	}
-	if _, err := os.Stat(embedMap); os.IsNotExist(err) {
-		if err := os.WriteFile(embedMap, []byte(`{"version":3,"sources":[],"names":[],"mappings":""}`), 0o644); err != nil {
-			return err
-		}
+	if err := stageEmbedAssets(c, cfg.OutputDir); err != nil {
+		return fmt.Errorf("stage @embed assets: %w", err)
 	}
 
-	embedHTML := filepath.Join(cfg.OutputDir, "output.html")
+	emittedJS := filepath.Join(cfg.OutputDir, cfg.OutputName+".js")
+	if _, err := os.Stat(emittedJS); os.IsNotExist(err) {
+		stub := filepath.Join(cfg.OutputDir, "output.js")
+		if err := os.WriteFile(stub, []byte("// no frontend code\n"), 0o644); err != nil {
+			return err
+		}
+		emittedJS = stub
+	}
+
+	termui.Step("bundling frontend (esbuild)")
+	bundleResult, err := bundler.Run(bundler.Options{
+		EntryJS:   emittedJS,
+		OutputDir: cfg.OutputDir,
+		Minify:    true,
+		KeepNames: true,
+	})
+	if err != nil {
+		return err
+	}
+	termui.Success(fmt.Sprintf("bundled → assets/%s", bundleResult.EntryJS))
+
+	embedHTML := filepath.Join(bundleResult.AssetsDir, "index.html")
 	webDir := cfg.ServeWebDir
 	if webDir == "" {
 		webDir = "web"
 	}
+	runtimeURL := "/__sova/" + bundleResult.EntryJS
 	userIndex := filepath.Join(cfg.SourceDir, webDir, "index.html")
 	if data, err := os.ReadFile(userIndex); err == nil {
-		_ = os.WriteFile(embedHTML, data, 0o644)
+		if err := os.WriteFile(embedHTML, []byte(rewriteUserShell(string(data), runtimeURL)), 0o644); err != nil {
+			return err
+		}
 		termui.Info(fmt.Sprintf("using %s as prod HTML shell", userIndex))
 	} else {
-		if err := os.WriteFile(embedHTML, []byte(defaultProdShell), 0o644); err != nil {
+		shell := strings.ReplaceAll(defaultProdShell, "__SOVA_RUNTIME__", runtimeURL)
+		if err := os.WriteFile(embedHTML, []byte(shell), 0o644); err != nil {
 			return err
 		}
 	}
@@ -151,6 +160,28 @@ type buildTarget struct {
 
 func (t buildTarget) isHost() bool {
 	return t.OS == runtime.GOOS && t.Arch == runtime.GOARCH
+}
+
+// rewriteUserShell rewrites the user's `web/index.html` to reference the bundler's hashed runtime entry. The user is expected to keep a `<script type="module" src="/__sova/runtime.js"></script>` tag in their shell; we swap the static `runtime.js` for the content-hashed `runtime.[hash].js` produced by the bundler. If the tag is missing entirely we inject one before `</body>` so the page still boots.
+func rewriteUserShell(html, runtimeURL string) string {
+	rewritten, n := replaceFirstRuntimeSrc(html, runtimeURL)
+	if n > 0 {
+		return rewritten
+	}
+	injected := `<script type="module" src="` + runtimeURL + `"></script>`
+	if idx := strings.LastIndex(html, "</body>"); idx >= 0 {
+		return html[:idx] + injected + "\n" + html[idx:]
+	}
+	return html + "\n" + injected + "\n"
+}
+
+func replaceFirstRuntimeSrc(html, runtimeURL string) (string, int) {
+	count := 0
+	rewritten := runtimeScriptSrcRE.ReplaceAllStringFunc(html, func(match string) string {
+		count++
+		return runtimeScriptSrcRE.ReplaceAllString(match, "${1}"+runtimeURL+"${2}")
+	})
+	return rewritten, count
 }
 
 // parseTargets turns a comma-separated --target list into buildTarget structs. Empty input yields the host target.

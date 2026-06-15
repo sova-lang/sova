@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"sova/internal/passes"
 	"sova/internal/services/compiler"
 	"sova/internal/termui"
 
@@ -154,11 +155,15 @@ func runDev(cfg BuildConfig) error {
 
 	termui.Header("sova dev")
 	termui.Step("compiling project")
-	if err := compileOnce(cfg); err != nil {
+	firstCtx, err := compileOnce(cfg)
+	if err != nil {
 		termui.Failure("initial compile failed - fix the diagnostics above and rerun")
 		return err
 	}
 	termui.Success("compiled")
+
+	embedWatch := &embedWatchSet{}
+	embedWatch.Set(embedSourcePaths(firstCtx))
 
 	port, err := resolvePort(cfg.ServeHost, cfg.ServePort, cfg.ServeStrictPort)
 	if err != nil {
@@ -223,10 +228,12 @@ func runDev(cfg BuildConfig) error {
 		}
 		fireTimer = time.AfterFunc(debounce, func() {
 			termui.Step("recompiling")
-			if err := compileOnce(cfg); err != nil {
+			ctx, err := compileOnce(cfg)
+			if err != nil {
 				termui.Failure("compile failed - waiting for the next change")
 				return
 			}
+			embedWatch.Set(embedSourcePaths(ctx))
 			termui.Success("recompiled")
 			if err := mgr.signalReload(); err != nil {
 				termui.WarnMsg(fmt.Sprintf("reload signal failed: %v", err))
@@ -243,7 +250,7 @@ func runDev(cfg BuildConfig) error {
 			if !ok {
 				return nil
 			}
-			if shouldTriggerRecompile(ev, root, cfg.OutputDir) {
+			if shouldTriggerRecompile(ev, root, cfg.OutputDir, embedWatch) {
 				queueRecompile()
 			}
 			if ev.Op&fsnotify.Create != 0 {
@@ -260,10 +267,10 @@ func runDev(cfg BuildConfig) error {
 	}
 }
 
-func compileOnce(cfg BuildConfig) error {
+func compileOnce(cfg BuildConfig) (*compiler.CompilerContext, error) {
 	_, files, err := collectSources(cfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	c := compiler.New()
 	c.SetBuildConfig(CacheKey, cfg)
@@ -274,12 +281,38 @@ func compileOnce(cfg BuildConfig) error {
 	compileErr := c.Compile()
 	c.Diag.Print()
 	if compileErr != nil {
-		return compileErr
+		return c, compileErr
 	}
 	if c.Diag.Errored() {
-		return fmt.Errorf("compilation failed")
+		return c, fmt.Errorf("compilation failed")
 	}
-	return nil
+	if err := stageEmbedAssets(c, cfg.OutputDir); err != nil {
+		return c, fmt.Errorf("stage @embed assets: %w", err)
+	}
+	return c, nil
+}
+
+// embedSourcePaths returns the absolute source paths of every `@embed`-decorated const the build resolved. The dev watcher uses this set to trigger a recompile when an embedded asset's contents change (otherwise the runtime keeps the stale value baked in from the previous build).
+func embedSourcePaths(c *compiler.CompilerContext) []string {
+	if c == nil {
+		return nil
+	}
+	raw, ok := c.Cache[passes.EmbedAssetsCacheKey]
+	if !ok {
+		return nil
+	}
+	records, ok := raw.([]*passes.EmbedRecord)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(records))
+	for _, rec := range records {
+		if rec == nil || rec.Info == nil {
+			continue
+		}
+		out = append(out, rec.Info.SourcePath)
+	}
+	return out
 }
 
 func watchTree(w *fsnotify.Watcher, root string) error {
@@ -298,7 +331,7 @@ func watchTree(w *fsnotify.Watcher, root string) error {
 	})
 }
 
-func shouldTriggerRecompile(ev fsnotify.Event, root, outputDir string) bool {
+func shouldTriggerRecompile(ev fsnotify.Event, root, outputDir string, embeds *embedWatchSet) bool {
 	if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) == 0 {
 		return false
 	}
@@ -312,8 +345,51 @@ func shouldTriggerRecompile(ev fsnotify.Event, root, outputDir string) bool {
 			return false
 		}
 	}
+	if embeds != nil && embeds.Has(abs) {
+		return true
+	}
 	ext := filepath.Ext(ev.Name)
 	return ext == ".sova" || ext == ".toml"
+}
+
+// embedWatchSet is the dev-mode set of absolute paths the watcher should treat as recompile triggers in addition to `.sova` / `.toml`. Populated from `passes.EmbedAssetsCacheKey` after every successful compile; reads + writes are guarded so the watcher goroutine can poll while the compile goroutine swaps the contents.
+type embedWatchSet struct {
+	mu    sync.RWMutex
+	paths map[string]struct{}
+}
+
+func (e *embedWatchSet) Set(paths []string) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(paths) == 0 {
+		e.paths = nil
+		return
+	}
+	out := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		out[abs] = struct{}{}
+	}
+	e.paths = out
+}
+
+func (e *embedWatchSet) Has(absPath string) bool {
+	if e == nil {
+		return false
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.paths == nil {
+		return false
+	}
+	_, ok := e.paths[absPath]
+	return ok
 }
 
 func startsWithDotDot(rel string) bool {

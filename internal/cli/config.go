@@ -17,6 +17,8 @@ type BuildConfig struct {
 	ServeWebDir             string
 	ProdMode                bool
 	TestMode                bool
+	SCSSCommand             string // SCSSCommand pins the `sass` / `dart-sass` binary the embed resolver uses for `.scss`/`.sass` files. Empty enables auto-discovery on PATH (looks for `sass`, then `dart-sass`); set explicitly via `[build.scss] command = "..."` in sova.toml when the binary lives outside PATH or has a non-standard name.
+	SCSSDisabled            bool   // SCSSDisabled short-circuits SCSS preprocessing entirely. Set via `[build.scss] enabled = false`; defaults to false so SCSS works as long as a binary is discoverable. `@embed` on `.scss` with SCSS disabled produces a clear diagnostic.
 }
 
 // DefaultBuildConfig returns a BuildConfig populated with the compiler's built-in defaults.
@@ -59,6 +61,12 @@ func (c BuildConfig) ProdModeValue() bool { return c.ProdMode }
 
 // TestModeValue returns whether this build is a `sova test` run. When true, the codegen pipeline emits a test driver `main()` that walks the discovered TestRegistry instead of the regular wire/dev main, and `on test` files participate in the backend Go output.
 func (c BuildConfig) TestModeValue() bool { return c.TestMode }
+
+// SCSSCommandValue returns the configured `sass` / `dart-sass` command for the embed resolver to invoke when an @embed targets a `.scss` / `.sass` file. Empty means auto-discovery; the embed resolver wraps this in `scss.New` which performs the actual `exec.LookPath` lookup.
+func (c BuildConfig) SCSSCommandValue() string { return c.SCSSCommand }
+
+// SCSSDisabledValue returns true when SCSS preprocessing is explicitly disabled in the manifest. The embed resolver treats `.scss`/`.sass` paths as errors when this is true, even if a binary would otherwise be discoverable.
+func (c BuildConfig) SCSSDisabledValue() bool { return c.SCSSDisabled }
 
 // CacheKey is the key under which the resolved BuildConfig is stored in the pass-manager cache.
 const CacheKey = "build_config"

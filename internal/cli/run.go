@@ -28,7 +28,7 @@ func runOnce(cfg BuildConfig) error {
 		fmt.Fprintf(os.Stderr, "[run] port %d in use, using %d instead\n", cfg.ServePort, port)
 	}
 
-	if err := compileOnce(cfg); err != nil {
+	if _, err := compileOnce(cfg); err != nil {
 		return fmt.Errorf("compile: %w", err)
 	}
 
