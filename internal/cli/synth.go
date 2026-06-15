@@ -321,5 +321,23 @@ func typeRefSummary(t *ir.TypeRef) string {
 		}
 		return t.CustomName
 	}
+	switch t.Kind {
+	case ir.TK_PrimitiveInt:
+		return "int"
+	case ir.TK_PrimitiveFloat:
+		return "float"
+	case ir.TK_PrimitiveBool:
+		return "bool"
+	case ir.TK_PrimitiveString:
+		return "string"
+	case ir.TK_PrimitiveChar:
+		return "char"
+	case ir.TK_PrimitiveByte:
+		return "byte"
+	case ir.TK_PrimitiveAny:
+		return "any"
+	case ir.TK_PrimitiveNone:
+		return "none"
+	}
 	return "?"
 }
