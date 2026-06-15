@@ -41,11 +41,27 @@ func (s *Server) runDiagnostics(ctx context.Context, snap *Snapshot) {
 		root = "."
 	}
 
+	c, _, _ := snap.Compile(s.compileSnapshot)
 	byURI := s.bucketDiagnosticsByURI(root, diags)
 	for u := range snap.overlays {
 		if _, ok := byURI[u]; !ok {
 			byURI[u] = nil
 		}
+	}
+	if c != nil {
+		for u := range byURI {
+			_, file, _ := lookupFileByURI(c, u)
+			if file == nil {
+				continue
+			}
+			if extra := cssClassDiagnostics(c, file); len(extra) > 0 {
+				byURI[u] = append(byURI[u], extra...)
+			}
+		}
+		// Also fire for overlay URIs that didn't have any compiler diagnostics
+		// (the loop above only iterates byURI which is seeded from compile output).
+		// Skipped for now — overlays without diags are already in byURI as nil, so
+		// the previous loop already covered them.
 	}
 
 	s.diagMu.Lock()
@@ -82,6 +98,17 @@ func (s *Server) runDiagnostics(ctx context.Context, snap *Snapshot) {
 	}
 }
 
+// lspBuildConfig is the minimal BuildConfig the LSP installs on every compile so passes that need a project root (`pass_resolve_embeds` is the V1 example, but any future pass with the same dependency picks this up too) can find it. The LSP doesn't reach for the user's real `sova.toml` here — that's `runCompile`'s job — so output/source-base-name fields stay defaulted; only `SourceDirectory()` matters in practice, and only when a pass falls back to the project-root containment check. SCSS preprocessing also stays at its compile-time default (auto-discovery of `sass`/`dart-sass` on PATH), which is the right behavior for the LSP since most editors run with the user's full PATH inherited.
+type lspBuildConfig struct {
+	root string
+}
+
+func (c lspBuildConfig) OutputDirectory() string  { return ".output" }
+func (c lspBuildConfig) OutputBaseName() string   { return "output" }
+func (c lspBuildConfig) SourceDirectory() string  { return c.root }
+func (c lspBuildConfig) SCSSCommandValue() string { return "" }
+func (c lspBuildConfig) SCSSDisabledValue() bool  { return false }
+
 // compileSnapshot is the CompileFunc the LSP installs on every snapshot it creates. Lazily invoked by the first navigation request (or by runDiagnostics) - gathers sources, runs the check pipeline, returns the populated CompilerContext + flat diagnostics list. Cached on the snapshot so a hover + a diagnostics publish for the same snapshot share one compile pass.
 func (s *Server) compileSnapshot(snap *Snapshot) (retCtx *compiler.CompilerContext, retDiags []diag.Diagnostic, retErr error) {
 	root := uriToPath(snap.Root)
@@ -89,6 +116,7 @@ func (s *Server) compileSnapshot(snap *Snapshot) (retCtx *compiler.CompilerConte
 		root = "."
 	}
 	c := compiler.New()
+	c.SetBuildConfig("build_config", lspBuildConfig{root: root})
 	defer func() {
 		if r := recover(); r != nil {
 			retCtx = c

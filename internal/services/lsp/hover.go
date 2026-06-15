@@ -27,6 +27,9 @@ func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (*prot
 				return hov, nil
 			}
 		}
+		if hov := cssClassHover(c, src, params.Position); hov != nil {
+			return hov, nil
+		}
 	}
 	target := findCursorTarget(c, params.TextDocument.URI, params.Position.Line, params.Position.Character)
 	if target == nil {

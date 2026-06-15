@@ -21,6 +21,11 @@ func (s *Server) References(ctx context.Context, params *protocol.ReferenceParam
 	if err != nil || c == nil {
 		return nil, nil
 	}
+	if src, ok := snap.ReadFile(params.TextDocument.URI); ok {
+		if locs := cssClassDefinition(c, src, params.Position); len(locs) > 0 {
+			return locs, nil
+		}
+	}
 	target := findCursorTarget(c, params.TextDocument.URI, params.Position.Line, params.Position.Character)
 	if target == nil || target.sym == 0 {
 		return nil, nil

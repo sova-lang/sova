@@ -40,6 +40,9 @@ func (s *Server) findDefinitionLocations(docURI uri.URI, pos protocol.Position, 
 					return []protocol.Location{*loc}, nil
 				}
 			}
+			if locs := cssClassDefinition(c, src, pos); len(locs) > 0 {
+				return locs, nil
+			}
 		}
 	}
 	target := findCursorTarget(c, docURI, pos.Line, pos.Character)

@@ -46,7 +46,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.InitializePara
 				RetriggerCharacters: []string{",", " ", ")"},
 			},
 			CompletionProvider: &protocol.CompletionOptions{
-				TriggerCharacters: []string{".", "@"},
+				TriggerCharacters: []string{".", "@", "\""},
 				ResolveProvider:   false,
 			},
 			FoldingRangeProvider: true,

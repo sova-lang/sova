@@ -47,6 +47,13 @@ func (s *Server) Completion(ctx context.Context, params *protocol.CompletionPara
 		items = wireOptionCompletions()
 	case completionAnnotation:
 		items = annotationCompletions(c)
+	case completionCSSClass:
+		offset := lspPositionToOffset(src, params.Position)
+		var slot *callContext
+		if ctx, ok := cssClassSlotAt(c, src, offset); ok {
+			slot = &ctx
+		}
+		items = cssClassCompletions(c, slot)
 	default:
 		items = identifierCompletions(c, pkg, file)
 		items = append(items, localScopeCompletions(c, file, params.Position)...)
@@ -74,11 +81,11 @@ func applyWordReplaceRange(items []protocol.CompletionItem, src string, pos prot
 	}
 	offset := lspPositionToOffset(src, pos)
 	wordStart := offset
-	for wordStart > 0 && isIdentChar(src[wordStart-1]) {
+	for wordStart > 0 && isClassCharForKind(src[wordStart-1], kind) {
 		wordStart--
 	}
 	wordEnd := offset
-	for wordEnd < len(src) && isIdentChar(src[wordEnd]) {
+	for wordEnd < len(src) && isClassCharForKind(src[wordEnd], kind) {
 		wordEnd++
 	}
 	startPos := offsetToLSPPosition(src, wordStart)
@@ -124,6 +131,7 @@ const (
 	completionImportPath
 	completionWireOption
 	completionAnnotation
+	completionCSSClass
 )
 
 // classifyCompletion peeks at the raw source just before the cursor and decides whether the user is partway through a member access (`recv.<TAB>`), typing a standalone identifier, or inside an `import "..."` string literal. Returns the receiver text when in dot context.
@@ -137,6 +145,9 @@ func classifyCompletion(src string, pos protocol.Position) (completionContextKin
 	}
 	if isInsideWireOptions(src, offset) {
 		return completionWireOption, ""
+	}
+	if isInsideGenericString(src, offset) {
+		return completionCSSClass, ""
 	}
 	end := offset
 	for end > 0 && isIdentChar(src[end-1]) {
@@ -182,6 +193,11 @@ func annotationCompletions(c *compiler.CompilerContext) []protocol.CompletionIte
 			name:   "structTag",
 			detail: "@structTag(\"<key>\", \"<value>\") (field)",
 			doc:    "Adds a Go struct tag to the Go-side struct field the Sova field compiles to. The first argument is the tag *namespace* (`gorm`, `json`, `validate`, `xml`, ...) — anything the consuming Go library reflects on — and the second is the literal tag value. Multiple `@structTag` entries on the same field stack: same-namespace values are joined with a single space, so two `@structTag(\"gorm\", ...)` annotations produce one `` `gorm:\"...\"` `` tag with both rules.\n\n```sova\ntype User {\n    @structTag(\"gorm\", \"primaryKey;autoIncrement\")\n    @structTag(\"json\", \"id\")\n    id: int = 0\n\n    @structTag(\"gorm\", \"size:200;not null\")\n    @structTag(\"gorm\", \"index\")\n    name: string = \"\"\n}\n```\n\nThe Sova-side `json:\"<fieldname>\"` tag is emitted automatically for every non-`__`-prefixed field; supply your own `@structTag(\"json\", ...)` to override the default. The compiler enforces the exact-two-string-args shape at compile time, so typos surface as clean diagnostics rather than malformed tags.",
+		},
+		{
+			name:   "cssClass",
+			detail: "@cssClass (param)",
+			doc:    "Marks a function parameter as a *CSS class slot* so the LSP knows that string arguments passed at that position are class names from the project's CSS / SCSS files. The compiler treats this annotation as metadata only — it does not affect codegen or runtime behaviour — but the editor uses it to offer precise class-name completion at the call site instead of falling back to the broad in-string heuristic.\n\n```sova\nfunc Element(tag: string, @cssClass class: string): Composable { ... }\n\n// At the call site:\nElement(\"button\", \"prim<cursor>\") // editor suggests `primary`, `btn-large`, ...\n```\n\nUse this on any string-typed param whose value will become a `class` attribute, an element tag the renderer reads as a class, or a CSS selector argument. The annotation may appear on multiple params; each one becomes its own class slot.",
 		},
 	}
 	out := make([]protocol.CompletionItem, 0, len(anns))
@@ -451,8 +467,42 @@ func isInsideImportString(src string, offset int) bool {
 	return strings.HasPrefix(trimmed, "import")
 }
 
+// isInsideGenericString reports whether `offset` sits inside any non-import string literal on the cursor's current line. Single-line scope (newline breaks string detection) — same trade-off `isInsideImportString` makes — so multi-line template strings are not treated as completion contexts, which is intentional: the user's most common class-completion use is `"primary"` style single-line literals inside view-builder calls. Skips escape sequences (`\"`) so backslash-quoted quotes don't confuse the parity check.
+func isInsideGenericString(src string, offset int) bool {
+	lineStart := offset
+	for lineStart > 0 && src[lineStart-1] != '\n' {
+		lineStart--
+	}
+	inDouble := false
+	inSingle := false
+	i := lineStart
+	for i < offset {
+		c := src[i]
+		if c == '\\' && i+1 < offset {
+			i += 2
+			continue
+		}
+		switch {
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+		}
+		i++
+	}
+	return inDouble || inSingle
+}
+
 func isIdentChar(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
+}
+
+// isClassCharForKind matches the character set the editor should treat as part of the "current word" for word-replace ranging. For class completion the `-` is a legal class-name character (`btn-large`), so the range expansion has to grab it too — otherwise typing `"btn-` and accepting `btn-large` would produce `btn-btn-large`. Other completion kinds keep the existing identifier-char rule.
+func isClassCharForKind(b byte, kind completionContextKind) bool {
+	if kind == completionCSSClass && b == '-' {
+		return true
+	}
+	return isIdentChar(b)
 }
 
 // lspPositionToOffset converts a 0-based LSP `(line, character)` to a byte offset into the source. Mirrors the editor's idea of column counts as Unicode-code-unit increments; for ASCII Sova source the byte offset matches.
