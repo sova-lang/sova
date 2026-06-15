@@ -383,6 +383,99 @@ func render(): string {
 	cancel()
 }
 
+// TestCSSClassCompletionPreciseAtTypeCtorNamedArg verifies the Strix-style
+// path: a type with a `@cssClass`-marked field (think `Div`'s `class`
+// field via the `HtmlElement` mixin) called with a named argument
+// (`Div(class: "primary")`) gets the same precise detection as a
+// top-level function with a `@cssClass`-marked param. Type-ctor +
+// named-arg is the actual surface Strix uses today, so this test
+// guards the everyday case.
+func TestCSSClassCompletionPreciseAtTypeCtorNamedArg(t *testing.T) {
+	restore := withTerminate(func(int) {})
+	defer restore()
+
+	tempRoot := t.TempDir()
+	cssPath := filepath.Join(tempRoot, "Button.css")
+	sovaPath := filepath.Join(tempRoot, "main.sova")
+	rootURI := uri.URI("file://" + filepath.ToSlash(tempRoot))
+	sovaURI := uri.URI("file://" + filepath.ToSlash(sovaPath))
+
+	if err := os.WriteFile(cssPath, []byte(`.primary { } .secondary { }`), 0o644); err != nil {
+		t.Fatalf("write css: %v", err)
+	}
+
+	sovaSrc := `package app on frontend
+
+@embed("./Button.css")
+const ButtonCSS: string = ""
+
+type Div {
+    @cssClass
+    class: string = ""
+    id: string = ""
+}
+
+func render() {
+    let _ = new Div(class: "")
+}
+`
+	if err := os.WriteFile(sovaPath, []byte(sovaSrc), 0o644); err != nil {
+		t.Fatalf("write sova: %v", err)
+	}
+
+	clientSide, serverSide := newPipeDuplex()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	go func() { _ = serveStream(ctx, jsonrpc2.NewStream(serverSide), io.Discard) }()
+	cc := jsonrpc2.NewConn(jsonrpc2.NewStream(clientSide))
+	cc.Go(ctx, func(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc2.Request) error {
+		return reply(ctx, nil, nil)
+	})
+
+	var initResult protocol.InitializeResult
+	if _, err := cc.Call(ctx, protocol.MethodInitialize, &protocol.InitializeParams{RootURI: rootURI}, &initResult); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	_ = cc.Notify(ctx, protocol.MethodInitialized, &protocol.InitializedParams{})
+	if err := cc.Notify(ctx, protocol.MethodTextDocumentDidOpen, &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: sovaURI, LanguageID: "sova", Version: 1, Text: sovaSrc},
+	}); err != nil {
+		t.Fatalf("didOpen: %v", err)
+	}
+
+	// `    let _ = new Div(class: "")` is line 12 (0-indexed). The opening
+	// quote of "" sits at column 27, cursor between the quotes is 28.
+	compParams := &protocol.CompletionParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: sovaURI},
+		Position:     protocol.Position{Line: 12, Character: 28},
+	}}
+	var compList protocol.CompletionList
+	if _, err := cc.Call(ctx, protocol.MethodTextDocumentCompletion, compParams, &compList); err != nil {
+		t.Fatalf("completion: %v", err)
+	}
+	labels := completionLabels(compList.Items)
+	for _, want := range []string{"primary", "secondary"} {
+		if !containsString(labels, want) {
+			t.Errorf("completion missing class %q; got %v", want, labels)
+		}
+	}
+
+	primary := findCompletionItem(compList.Items, "primary")
+	if primary == nil {
+		t.Fatalf("primary item missing from completion list")
+	}
+	if !strings.Contains(primary.Detail, "Div") {
+		t.Errorf("detail should mention the type-ctor callee `Div`; got %q", primary.Detail)
+	}
+
+	if _, err := cc.Call(ctx, protocol.MethodShutdown, nil, nil); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	_ = cc.Notify(ctx, protocol.MethodExit, nil)
+	cancel()
+}
+
 // TestCSSClassPartialFollowing verifies P4 SCSS-partial following: a main
 // stylesheet `@use`s a partial; classes defined only in the partial show
 // up in the project index and surface in hover. The LSP probes the four

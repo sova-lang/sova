@@ -376,43 +376,79 @@ func walkExprForClassChecks(c *compiler.CompilerContext, e ir.Expr, known map[st
 	}
 }
 
-// checkCallForClassArgs identifies whether `call`'s callee resolves to a known top-level FuncDeclStmt, and if so walks each `@cssClass`-marked parameter, checks the corresponding actual argument, and emits a warning when the argument is a string literal whose tokens are not all in the known class set.
+// checkCallForClassArgs identifies whether `call`'s callee resolves to a known callable — either a top-level `FuncDeclStmt` whose param has `@cssClass`, or a `TypeDeclStmt` whose field (including a mixin-inlined field like Strix's `HtmlElement.class`) has `@cssClass`. For each matching slot it pulls the actual argument, splits a string literal on whitespace (so `"primary large"` checks two tokens), and emits a warning per unknown token.
 func checkCallForClassArgs(c *compiler.CompilerContext, call *ir.FuncCallExpr, known map[string]struct{}, out *[]protocol.Diagnostic) {
 	calleeName := calleeNameForUnknownClass(call.Callee)
 	if calleeName == "" {
 		return
 	}
-	fn := findFuncByName(c, calleeName)
-	if fn == nil {
-		return
-	}
-	for i, arg := range call.Args {
-		if i >= len(fn.Params) {
-			break
-		}
-		param := fn.Params[i]
-		if param == nil || !paramHasCSSClass(param) {
-			continue
-		}
-		lit, ok := arg.Expr.(*ir.LitString)
-		if !ok {
-			continue
-		}
-		if lit.Value == "" {
-			continue
-		}
-		litSpan := lit.Span()
-		for _, token := range strings.Fields(lit.Value) {
-			if _, ok := known[token]; ok {
+	if fn := findFuncByName(c, calleeName); fn != nil {
+		for i, arg := range call.Args {
+			param := resolveFuncArgParam(fn, arg, i)
+			if param == nil || !paramHasCSSClass(param) {
 				continue
 			}
-			*out = append(*out, protocol.Diagnostic{
-				Severity: protocol.DiagnosticSeverityWarning,
-				Source:   "sova-lsp",
-				Message:  "unknown CSS class `" + token + "` — does not appear in any project stylesheet",
-				Range:    spanToLSPRange(litSpan),
-			})
+			reportUnknownClassesInArg(arg, known, out)
 		}
+		return
+	}
+	if td := findTypeByName(c, calleeName); td != nil {
+		for i, arg := range call.Args {
+			field := resolveTypeArgField(td, arg, i)
+			if field == nil || !fieldHasCSSClass(field) {
+				continue
+			}
+			reportUnknownClassesInArg(arg, known, out)
+		}
+	}
+}
+
+func resolveFuncArgParam(fn *ir.FuncDeclStmt, arg ir.FuncCallArg, i int) *ir.FuncParam {
+	if arg.Name != "" {
+		for _, p := range fn.Params {
+			if p != nil && p.Name.Name == arg.Name {
+				return p
+			}
+		}
+		return nil
+	}
+	if i >= len(fn.Params) {
+		return nil
+	}
+	return fn.Params[i]
+}
+
+func resolveTypeArgField(td *ir.TypeDeclStmt, arg ir.FuncCallArg, i int) *ir.TypeField {
+	if arg.Name != "" {
+		for _, f := range td.Fields {
+			if f != nil && f.Name.Name == arg.Name {
+				return f
+			}
+		}
+		return nil
+	}
+	if i >= len(td.Fields) {
+		return nil
+	}
+	return td.Fields[i]
+}
+
+func reportUnknownClassesInArg(arg ir.FuncCallArg, known map[string]struct{}, out *[]protocol.Diagnostic) {
+	lit, ok := arg.Expr.(*ir.LitString)
+	if !ok || lit.Value == "" {
+		return
+	}
+	litSpan := lit.Span()
+	for _, token := range strings.Fields(lit.Value) {
+		if _, ok := known[token]; ok {
+			continue
+		}
+		*out = append(*out, protocol.Diagnostic{
+			Severity: protocol.DiagnosticSeverityWarning,
+			Source:   "sova-lsp",
+			Message:  "unknown CSS class `" + token + "` — does not appear in any project stylesheet",
+			Range:    spanToLSPRange(litSpan),
+		})
 	}
 }
 
@@ -474,10 +510,11 @@ func readEmbeddedSource(path string) (string, error) {
 	return string(data), nil
 }
 
-// callContext is what the text-back-walker recovers about the function call the cursor is inside: the bare callee identifier (`Element`, `Div`, …), the zero-based argument index the cursor sits in (0 for the first arg, 1 for the second after a `,`, …), and a flag saying whether the recovery succeeded. The "callee" is the longest dotted-identifier chain immediately before the opening `(` (`pkg.Element`, `H1.Button`) so cross-package calls are recognised; the dispatch in cssClassSlotAt strips the package qualifier when resolving against the compiler's symbol table.
+// callContext is what the text-back-walker recovers about the function call the cursor is inside: the bare callee identifier (`Element`, `Div`, …), the zero-based argument index the cursor sits in (0 for the first arg, 1 for the second after a `,`, …), and — when the current arg is a named argument (`name: value` syntax) — the explicit `argName`. The "callee" is the longest dotted-identifier chain immediately before the opening `(` (`pkg.Element`, `H1.Button`) so cross-package calls are recognised; the dispatch in cssClassSlotAt strips the package qualifier when resolving against the compiler's symbol table. `argName` is non-empty when Strix-style ctor calls like `Div(class: "primary")` are being typed — the resolver then matches the field by name rather than by index.
 type callContext struct {
 	callee   string
 	argIndex int
+	argName  string
 }
 
 // findEnclosingCallTextual walks backwards from `offset` through `src` until it finds the opening paren of the innermost enclosing call. Skips strings (matched quotes), comments (line and block), and matched nesting (`()`, `[]`, `{}`) so a `Element("button", foo("nested"))` cursor inside `"nested"` correctly recovers `foo`/`0` rather than `Element`/`1`. Returns ok=false when the walk falls off the start of the buffer without finding an unmatched open paren — that's the "not inside a call" case (top-level expression, assignment, etc.).
@@ -486,6 +523,7 @@ type callContext struct {
 func findEnclosingCallTextual(src string, offset int) (callContext, bool) {
 	depthParen, depthBracket, depthBrace := 0, 0, 0
 	commas := 0
+	argStart := -1
 	i := offset - 1
 	if openQuote, ok := openingQuoteOfEnclosingString(src, offset); ok {
 		i = openQuote - 1
@@ -516,7 +554,11 @@ func findEnclosingCallTextual(src string, offset int) (callContext, bool) {
 			if !ok {
 				return callContext{}, false
 			}
-			return callContext{callee: callee, argIndex: commas}, true
+			if argStart < 0 {
+				argStart = i + 1
+			}
+			argName := readNamedArgPrefix(src, argStart, offset)
+			return callContext{callee: callee, argIndex: commas, argName: argName}, true
 		case '[':
 			if depthBracket > 0 {
 				depthBracket--
@@ -527,6 +569,9 @@ func findEnclosingCallTextual(src string, offset int) (callContext, bool) {
 			}
 		case ',':
 			if depthParen == 0 && depthBracket == 0 && depthBrace == 0 {
+				if argStart < 0 {
+					argStart = i + 1
+				}
 				commas++
 			}
 		case ';', '\n':
@@ -597,7 +642,7 @@ func skipBlockCommentBackward(src string, end int) int {
 	return i
 }
 
-// cssClassSlotAt is the P2 precision check: combines the text-back-walker (to recover the enclosing call's callee name and the cursor's argument index) with a HIR walk (to look up that callee's FuncDeclStmt and inspect the param at the matched index for an `@cssClass` annotation). Returns ok=true when the cursor sits in a string literal that's at a `@cssClass`-marked argument position of a known function. The fallback when ok=false is the V1 broad-string heuristic — class completions still appear, just without the "we KNOW this is a class slot" confidence boost.
+// cssClassSlotAt is the P2 precision check: combines the text-back-walker (to recover the enclosing call's callee name, the cursor's argument index, and, when present, the named-arg key) with a HIR walk (to look up the callee and inspect the parameter or field at the matched position for an `@cssClass` annotation). The callee can be a top-level function (Phase 2 case) or a type — type-ctor calls like `Div(class: "primary")` resolve the field by named-arg key, leveraging the `inline_mixins` pass having already pulled mixin fields into the type's Fields slice. Returns ok=true when the slot matches; falls back to V1's broad string heuristic otherwise.
 func cssClassSlotAt(c *compiler.CompilerContext, src string, offset int) (callContext, bool) {
 	ctx, ok := findEnclosingCallTextual(src, offset)
 	if !ok {
@@ -607,21 +652,86 @@ func cssClassSlotAt(c *compiler.CompilerContext, src string, offset int) (callCo
 	if calleeName == "" {
 		return callContext{}, false
 	}
-	fn := findFuncByName(c, calleeName)
-	if fn == nil {
-		return callContext{}, false
+	if fn := findFuncByName(c, calleeName); fn != nil {
+		if param, ok := lookupFuncParam(fn, ctx); ok && paramHasCSSClass(param) {
+			return ctx, true
+		}
+	}
+	if td := findTypeByName(c, calleeName); td != nil {
+		if field, ok := lookupTypeField(td, ctx); ok && fieldHasCSSClass(field) {
+			return ctx, true
+		}
+	}
+	return callContext{}, false
+}
+
+// lookupFuncParam resolves the call's argument to a `*ir.FuncParam` either by name (when the caller wrote `name: value`) or by index. Named-arg lookup wins when both are possible because a user that explicitly named an arg is being more specific than the positional fallback.
+func lookupFuncParam(fn *ir.FuncDeclStmt, ctx callContext) (*ir.FuncParam, bool) {
+	if ctx.argName != "" {
+		for _, p := range fn.Params {
+			if p != nil && p.Name.Name == ctx.argName {
+				return p, true
+			}
+		}
+		return nil, false
 	}
 	if ctx.argIndex < 0 || ctx.argIndex >= len(fn.Params) {
-		return callContext{}, false
+		return nil, false
 	}
-	param := fn.Params[ctx.argIndex]
-	if param == nil {
-		return callContext{}, false
+	return fn.Params[ctx.argIndex], true
+}
+
+// lookupTypeField does the same as `lookupFuncParam` but for type-ctor calls: the type's Fields slice (which `pass_inline_mixins` has already populated with mixin fields like `class`/`id`/`style` from `HtmlElement`) is the source of truth for "what does this ctor accept". Named-arg lookup again wins over index.
+func lookupTypeField(td *ir.TypeDeclStmt, ctx callContext) (*ir.TypeField, bool) {
+	if ctx.argName != "" {
+		for _, f := range td.Fields {
+			if f != nil && f.Name.Name == ctx.argName {
+				return f, true
+			}
+		}
+		return nil, false
 	}
-	if !paramHasCSSClass(param) {
-		return callContext{}, false
+	if ctx.argIndex < 0 || ctx.argIndex >= len(td.Fields) {
+		return nil, false
 	}
-	return ctx, true
+	return td.Fields[ctx.argIndex], true
+}
+
+// fieldHasCSSClass mirrors `paramHasCSSClass` for type fields. The annotation is purely compile-time metadata; the LSP reads it to know that a string literal flowing into this field at a ctor call site should be treated as a CSS class name.
+func fieldHasCSSClass(f *ir.TypeField) bool {
+	for _, a := range f.Annotations {
+		if a.Name.Name == "cssClass" {
+			return true
+		}
+	}
+	return false
+}
+
+// findTypeByName walks every package's top-level statements and returns the first TypeDeclStmt whose name matches. Mirrors `findFuncByName` for the ctor-call path.
+func findTypeByName(c *compiler.CompilerContext, name string) *ir.TypeDeclStmt {
+	if c == nil || name == "" {
+		return nil
+	}
+	for _, pkg := range c.Packages {
+		if pkg == nil {
+			continue
+		}
+		for _, f := range pkg.Files {
+			if f == nil || f.Hir == nil {
+				continue
+			}
+			for _, st := range f.Hir.Statements {
+				td, ok := st.(*ir.TypeDeclStmt)
+				if !ok {
+					continue
+				}
+				if td.Name.Name == name {
+					return td
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // unqualifiedCallee strips any leading package alias from a dotted-identifier callee so the symbol lookup matches the declared name in any package. `pkg.Element` → `Element`; `H1.Button` → `Button` (which is intentional — V2's lookup is by-name and unscoped because Strix's component helpers ship as bare top-level declarations).
@@ -667,6 +777,29 @@ func paramHasCSSClass(p *ir.FuncParam) bool {
 		}
 	}
 	return false
+}
+
+// readNamedArgPrefix scans forward from `argStart` (the first byte of the current argument, i.e. just after the `(` or the previous `,`) up to `cursor`, looking for a `<ident>:` named-argument prefix. Returns the identifier when found; "" when the arg is positional. Skips leading whitespace so `Div(  class: "primary")` works the same as `Div(class: "primary")`. Stops on string/comment/operator boundaries so a value-position colon (`{key: val}` inside the arg) does not get misread as a named-arg marker.
+func readNamedArgPrefix(src string, argStart, cursor int) string {
+	i := argStart
+	for i < cursor && (src[i] == ' ' || src[i] == '\t' || src[i] == '\n' || src[i] == '\r') {
+		i++
+	}
+	nameStart := i
+	for i < cursor && isIdentChar(src[i]) {
+		i++
+	}
+	if nameStart == i {
+		return ""
+	}
+	j := i
+	for j < cursor && (src[j] == ' ' || src[j] == '\t') {
+		j++
+	}
+	if j >= cursor || src[j] != ':' {
+		return ""
+	}
+	return src[nameStart:i]
 }
 
 // readCalleeBefore grabs the bare identifier (or dotted-identifier chain) immediately before the `(` at position parenIdx. Returns ok=false when there's no identifier — that's the case for `let x = (a + b)` style groupings, `func() { ... }()` IIFEs, and similar non-call parens.
