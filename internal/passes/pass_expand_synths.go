@@ -88,6 +88,8 @@ const (
 )
 
 // synthBind is one entry in the interpreter env: a tagged pointer to an HIR node the synth body is currently aware of. Exactly one of the typed fields is populated, selected by `kind`. Kept as a value type so `env.binds` map updates don't aliasing-leak.
+//
+// `fileSide` is the side of the file the bound declaration lives in (`backend`, `frontend`, `shared`). The site collector populates it once at collection time so the side-constraint check in `expandSite` does not have to walk back up to the enclosing file. Loop-variable binds inside a `for` body inherit this from the enclosing target — the iteration variable's "side" is whatever side the iterated collection lives on.
 type synthBind struct {
 	kind     synthBindKind
 	typeDecl *ir.TypeDeclStmt
@@ -97,6 +99,7 @@ type synthBind struct {
 	ctor     *ir.CtorDecl
 	param    *ir.FuncParam
 	let      *ir.VarDeclStmt
+	fileSide ir.SideKind
 }
 
 func (b synthBind) annotations() *[]ir.Annotation {
@@ -357,24 +360,25 @@ func (e *synthExpander) collectSites() []synthBind {
 			if f == nil || f.Hir == nil || f.Hir.Side.Kind == ir.SideSynth {
 				continue
 			}
+			fs := f.Hir.Side.Kind
 			for _, st := range f.Hir.Statements {
 				switch s := st.(type) {
 				case *ir.TypeDeclStmt:
-					out = append(out, synthBind{kind: bindType, typeDecl: s})
+					out = append(out, synthBind{kind: bindType, typeDecl: s, fileSide: fs})
 					for _, fld := range s.Fields {
 						if fld != nil {
-							out = append(out, synthBind{kind: bindField, field: fld})
+							out = append(out, synthBind{kind: bindField, field: fld, fileSide: fs})
 						}
 					}
 					for _, m := range s.Methods {
 						if m == nil {
 							continue
 						}
-						out = append(out, synthBind{kind: bindMethod, method: m})
+						out = append(out, synthBind{kind: bindMethod, method: m, fileSide: fs})
 						if m.Func != nil {
 							for _, prm := range m.Func.Params {
 								if prm != nil {
-									out = append(out, synthBind{kind: bindParam, param: prm})
+									out = append(out, synthBind{kind: bindParam, param: prm, fileSide: fs})
 								}
 							}
 						}
@@ -383,22 +387,22 @@ func (e *synthExpander) collectSites() []synthBind {
 						if c == nil {
 							continue
 						}
-						out = append(out, synthBind{kind: bindCtor, ctor: c})
+						out = append(out, synthBind{kind: bindCtor, ctor: c, fileSide: fs})
 						for _, prm := range c.Params {
 							if prm != nil {
-								out = append(out, synthBind{kind: bindParam, param: prm})
+								out = append(out, synthBind{kind: bindParam, param: prm, fileSide: fs})
 							}
 						}
 					}
 				case *ir.FuncDeclStmt:
-					out = append(out, synthBind{kind: bindFunc, funcDecl: s})
+					out = append(out, synthBind{kind: bindFunc, funcDecl: s, fileSide: fs})
 					for _, prm := range s.Params {
 						if prm != nil {
-							out = append(out, synthBind{kind: bindParam, param: prm})
+							out = append(out, synthBind{kind: bindParam, param: prm, fileSide: fs})
 						}
 					}
 				case *ir.VarDeclStmt:
-					out = append(out, synthBind{kind: bindLet, let: s})
+					out = append(out, synthBind{kind: bindLet, let: s, fileSide: fs})
 				}
 			}
 		}
@@ -444,6 +448,10 @@ func (e *synthExpander) expandSite(site synthBind, anns *[]ir.Annotation) bool {
 			e.pc.Diag.Report(diag.ErrSynthTargetMismatch, a.Name.Span, a.Name.Name, sd.Target.Kind.String(), site.label())
 			continue
 		}
+		if !sideAllows(sd.RequiredSide, site.fileSide) {
+			e.pc.Diag.Report(diag.ErrSynthSideMismatch, a.Name.Span, a.Name.Name, sideLabel(sd.RequiredSide), sideLabel(site.fileSide))
+			continue
+		}
 		if want, got := len(sd.Params), len(a.Args); want != got {
 			e.pc.Diag.Report(diag.ErrSynthArgCountMismatch, a.Name.Span, a.Name.Name, want, got)
 			continue
@@ -475,6 +483,28 @@ func (e *synthExpander) expandSite(site synthBind, anns *[]ir.Annotation) bool {
 
 // paramSlotKey is reserved for a future change that wants to put synth-param substitutions inside the env itself (instead of a side-table). Kept as a no-op marker today so the rename lands cleanly.
 func paramSlotKey(name string) string { return "@param:" + name }
+
+// sideAllows decides whether a synth declared with `required` may fire at a use site whose enclosing file is on `actual`. The rule that codifies the user-visible model:
+//
+//   - `SideUnknown` required (no `on <side>` clause on the synth): allowed anywhere — preserves the V1 behaviour for synths that opted out of side-constraints.
+//   - `SideBackend` required: backend or shared. A shared file's declarations also live on the backend, so a backend-only synth still applies to them.
+//   - `SideFrontend` required: frontend or shared, mirror of the above.
+//   - `SideShared` required: shared only. A "shared-only" synth says "this must apply to a declaration that lives on both sides" — a backend-only or frontend-only file is rejected because the decoration would silently apply on one side only.
+//
+// Per-member `shared` modifiers on fields/methods are intentionally not considered here: this V1 check is at the file granularity, which catches the high-value mistake (using a frontend synth on a backend file) without taking a stance on the per-member subtleties.
+func sideAllows(required, actual ir.SideKind) bool {
+	if required == ir.SideUnknown {
+		return true
+	}
+	if actual == ir.SideShared {
+		return required != ir.SideUnknown
+	}
+	if required == ir.SideShared {
+		return actual == ir.SideShared
+	}
+	return required == actual
+}
+
 
 // interpretBody runs a synth body in env and returns the annotations that should be spliced onto the use-site's annotation list (those emitted on `outerBindName`). All other emissions — to other targets via `emit on <otherBind>`, or to registries via `emit append to` — happen as side effects on the IR or the cache.
 func (e *synthExpander) interpretBody(items []ir.SynthBodyItem, env *synthEnv, outerBindName string, paramSubs map[string]ir.Expr) []ir.Annotation {

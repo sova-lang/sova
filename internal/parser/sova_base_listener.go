@@ -495,6 +495,12 @@ func (s *BaseSovaListener) EnterSynthParams(ctx *SynthParamsContext) {}
 // ExitSynthParams is called when production synthParams is exited.
 func (s *BaseSovaListener) ExitSynthParams(ctx *SynthParamsContext) {}
 
+// EnterSynthRequiredSide is called when production synthRequiredSide is entered.
+func (s *BaseSovaListener) EnterSynthRequiredSide(ctx *SynthRequiredSideContext) {}
+
+// ExitSynthRequiredSide is called when production synthRequiredSide is exited.
+func (s *BaseSovaListener) ExitSynthRequiredSide(ctx *SynthRequiredSideContext) {}
+
 // EnterSynthTarget is called when production synthTarget is entered.
 func (s *BaseSovaListener) EnterSynthTarget(ctx *SynthTargetContext) {}
 

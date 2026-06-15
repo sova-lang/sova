@@ -2,6 +2,8 @@ package diag
 
 var (
 	ErrPreparsingFailed = templateErr(CategoryInternal, "Preparsing did not return a valid HIR file")
+	ErrVisitorPanic     = templateErr(CategoryInternal, "internal error while building HIR for %s: %s (this usually means the source has a syntax error that confuses the visitor — fix the syntax errors reported above first)")
+	ErrPassPanic        = templateErr(CategoryInternal, "internal error during compiler pass '%s': %s (this usually means a syntax or binding error earlier in the file produced an inconsistent HIR — fix the diagnostics above first)")
 
 	ErrUnexpectedEOF   = templateErr(CategorySyntax, "Unexpected end of file")
 	ErrUnexpectedToken = templateErr(CategorySyntax, "Unexpected token: %s")
@@ -56,6 +58,7 @@ var (
 	ErrSynthUnknownBind               = templateErr(CategorySemantic, "synth body references unknown bind '%s'; it must be either the synth's target bind or a for-loop iteration variable in scope")
 	ErrSynthUnknownMember             = templateErr(CategorySemantic, "synth `for ... in %s.%s` references a member that does not exist on this kind of bind; known members are `fields`/`methods`/`ctors` (on type) and `params` (on func/method/ctor)")
 	ErrSynthMemberOnNonType           = templateErr(CategorySemantic, "synth `emit %s` can only be used inside a synth declared `on type T` (current target bind '%s' is not a type)")
+	ErrSynthSideMismatch              = templateErr(CategorySemantic, "synth '%s' is declared `on %s` and cannot be used in a file on side `%s` (the file's side must match, or be `shared` for backend/frontend-restricted synths)")
 
 	ErrTypeMismatch        = templateErr(CategoryType, "Type mismatch: expected %s, got %s")
 	ErrTypeNotIndexable    = templateErr(CategoryType, "Type %s is not indexable")

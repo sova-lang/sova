@@ -245,6 +245,9 @@ type SovaVisitor interface {
 	// Visit a parse tree produced by SovaParser#synthParams.
 	VisitSynthParams(ctx *SynthParamsContext) interface{}
 
+	// Visit a parse tree produced by SovaParser#synthRequiredSide.
+	VisitSynthRequiredSide(ctx *SynthRequiredSideContext) interface{}
+
 	// Visit a parse tree produced by SovaParser#synthTarget.
 	VisitSynthTarget(ctx *SynthTargetContext) interface{}
 

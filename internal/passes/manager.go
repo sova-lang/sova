@@ -65,11 +65,12 @@ func (pm *PassManager) BuildOrder(selected []string) error {
 }
 
 // Run executes all registered passes in the manager.
-func (pm *PassManager) Run(diag *diag.DiagnosticsBag, pkgs []*ir.PackageContext, types *ir.TypeTable, symAlloc *ir.IdAlloc, scAlloc *ir.IdAlloc, nodeAlloc *ir.IdAlloc, nameMap *ir.NameMap, cache map[string]any) error {
+// Run executes the pre-built pass order. Each individual pass invocation is recovered into a clean error so a panic during one pass (almost always a downstream nil-deref caused by an earlier parse failure that the upstream `NoErrors() && diag.Errored()` gate didn't catch) surfaces as a diagnostic instead of crashing the CLI. The recover converts to an `ErrPassPanic` diagnostic and aborts the pipeline; the diagnostics bag's existing errors still get printed by the caller.
+func (pm *PassManager) Run(bag *diag.DiagnosticsBag, pkgs []*ir.PackageContext, types *ir.TypeTable, symAlloc *ir.IdAlloc, scAlloc *ir.IdAlloc, nodeAlloc *ir.IdAlloc, nameMap *ir.NameMap, cache map[string]any) error {
 	startAll := time.Now()
 	for _, passName := range pm.order {
 		p := pm.passes[passName]
-		if p.NoErrors() && diag.Errored() {
+		if p.NoErrors() && bag.Errored() {
 			return fmt.Errorf("cannot run pass %s: diagnostics bag has errors", passName)
 		}
 
@@ -78,29 +79,42 @@ func (pm *PassManager) Run(diag *diag.DiagnosticsBag, pkgs []*ir.PackageContext,
 		switch p.Scope() {
 		case PerPackage:
 			for _, pkg := range pkgs {
-				pc := &PassContext{Diag: diag, Pkgs: pkgs, Pkg: pkg, Types: types, SymAlloc: symAlloc, ScAlloc: scAlloc, NodeAlloc: nodeAlloc, Names: nameMap, Cache: cache}
-				if err := p.Run(pc); err != nil {
-					return fmt.Errorf("[%s] %w", passName, err)
+				pc := &PassContext{Diag: bag, Pkgs: pkgs, Pkg: pkg, Types: types, SymAlloc: symAlloc, ScAlloc: scAlloc, NodeAlloc: nodeAlloc, Names: nameMap, Cache: cache}
+				if err := runPassWithRecover(p, pc, passName); err != nil {
+					return err
 				}
 			}
 		case PerFile:
 			for _, pkg := range pkgs {
 				for _, f := range pkg.Files {
-					pc := &PassContext{Diag: diag, Pkgs: pkgs, Pkg: pkg, File: f, Types: types, SymAlloc: symAlloc, ScAlloc: scAlloc, NodeAlloc: nodeAlloc, Names: nameMap, Cache: cache}
-					if err := p.Run(pc); err != nil {
-						return fmt.Errorf("[%s] %w", passName, err)
+					pc := &PassContext{Diag: bag, Pkgs: pkgs, Pkg: pkg, File: f, Types: types, SymAlloc: symAlloc, ScAlloc: scAlloc, NodeAlloc: nodeAlloc, Names: nameMap, Cache: cache}
+					if err := runPassWithRecover(p, pc, passName); err != nil {
+						return err
 					}
 				}
 			}
 		case PerBuild:
-			pc := &PassContext{Diag: diag, Pkgs: pkgs, Types: types, SymAlloc: symAlloc, ScAlloc: scAlloc, NodeAlloc: nodeAlloc, Names: nameMap, Cache: cache}
-			if err := p.Run(pc); err != nil {
-				return fmt.Errorf("[%s] %w", passName, err)
+			pc := &PassContext{Diag: bag, Pkgs: pkgs, Types: types, SymAlloc: symAlloc, ScAlloc: scAlloc, NodeAlloc: nodeAlloc, Names: nameMap, Cache: cache}
+			if err := runPassWithRecover(p, pc, passName); err != nil {
+				return err
 			}
 		}
 
 		_ = stepStart
 	}
 	_ = startAll
+	return nil
+}
+
+func runPassWithRecover(p Pass, pc *PassContext, passName string) (out error) {
+	defer func() {
+		if r := recover(); r != nil {
+			pc.Diag.Report(diag.ErrPassPanic, diag.NoSpan, passName, fmt.Sprint(r))
+			out = fmt.Errorf("[%s] panic: %v (a syntax error earlier in the file usually causes this — fix the diagnostics above first)", passName, r)
+		}
+	}()
+	if err := p.Run(pc); err != nil {
+		return fmt.Errorf("[%s] %w", passName, err)
+	}
 	return nil
 }

@@ -245,6 +245,9 @@ type SovaListener interface {
 	// EnterSynthParams is called when entering the synthParams production.
 	EnterSynthParams(c *SynthParamsContext)
 
+	// EnterSynthRequiredSide is called when entering the synthRequiredSide production.
+	EnterSynthRequiredSide(c *SynthRequiredSideContext)
+
 	// EnterSynthTarget is called when entering the synthTarget production.
 	EnterSynthTarget(c *SynthTargetContext)
 
@@ -772,6 +775,9 @@ type SovaListener interface {
 
 	// ExitSynthParams is called when exiting the synthParams production.
 	ExitSynthParams(c *SynthParamsContext)
+
+	// ExitSynthRequiredSide is called when exiting the synthRequiredSide production.
+	ExitSynthRequiredSide(c *SynthRequiredSideContext)
 
 	// ExitSynthTarget is called when exiting the synthTarget production.
 	ExitSynthTarget(c *SynthTargetContext)

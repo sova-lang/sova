@@ -251,8 +251,25 @@ func synthSignature(sd *ir.SynthDeclStmt) string {
 		}
 		out += ")"
 	}
-	out += " (" + sd.Target.Kind.String() + " " + sd.Target.BindName + ")"
+	out += " (on "
+	if side := synthSideLabel(sd.RequiredSide); side != "" {
+		out += side + " "
+	}
+	out += sd.Target.Kind.String() + " " + sd.Target.BindName + ")"
 	return out
+}
+
+// synthSideLabel returns the surface keyword for a synth's required side constraint, or "" when no constraint is declared (so the caller can elide the side from the rendered signature). Mirrors the package-internal label helpers but lives next to the LSP so the doc rendering does not pull a transitive dependency on the passes package.
+func synthSideLabel(s ir.SideKind) string {
+	switch s {
+	case ir.SideFrontend:
+		return "frontend"
+	case ir.SideBackend:
+		return "backend"
+	case ir.SideShared:
+		return "shared"
+	}
+	return ""
 }
 
 // synthDoc builds a markdown documentation blob for one synth: the rendered Sova surface (re-derived from the IR) wrapped in a code fence. Lets hover/completion show exactly what `@SynthName` will lower to without the user having to open the synth file.
@@ -281,6 +298,10 @@ func synthDoc(sd *ir.SynthDeclStmt) string {
 		b.WriteString(")")
 	}
 	b.WriteString(" on ")
+	if side := synthSideLabel(sd.RequiredSide); side != "" {
+		b.WriteString(side)
+		b.WriteString(" ")
+	}
 	b.WriteString(sd.Target.Kind.String())
 	b.WriteString(" ")
 	b.WriteString(sd.Target.BindName)

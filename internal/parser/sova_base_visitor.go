@@ -324,6 +324,10 @@ func (v *BaseSovaVisitor) VisitSynthParams(ctx *SynthParamsContext) interface{} 
 	return v.VisitChildren(ctx)
 }
 
+func (v *BaseSovaVisitor) VisitSynthRequiredSide(ctx *SynthRequiredSideContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
 func (v *BaseSovaVisitor) VisitSynthTarget(ctx *SynthTargetContext) interface{} {
 	return v.VisitChildren(ctx)
 }

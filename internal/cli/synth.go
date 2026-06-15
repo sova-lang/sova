@@ -110,7 +110,7 @@ func runSynthList(cfg BuildConfig) error {
 	sort.Strings(names)
 	for _, n := range names {
 		sd := reg[n]
-		fmt.Fprintf(os.Stdout, "%s%s on %s %s\n", n, formatSynthParams(sd.Params), sd.Target.Kind.String(), sd.Target.BindName)
+		fmt.Fprintf(os.Stdout, "%s%s on %s%s %s\n", n, formatSynthParams(sd.Params), formatSynthSidePrefix(sd.RequiredSide), sd.Target.Kind.String(), sd.Target.BindName)
 	}
 	return nil
 }
@@ -288,6 +288,19 @@ func compileForSynth(cfg BuildConfig) (*compiler.CompilerContext, error) {
 		return c, err
 	}
 	return c, nil
+}
+
+// formatSynthSidePrefix renders the side-constraint keyword + trailing space for `sova synth list` output (so `on backend field F` reads as one chunk). Returns "" when no side constraint applies, which collapses the surrounding `%s%s field F` template back to `on field F`.
+func formatSynthSidePrefix(s ir.SideKind) string {
+	switch s {
+	case ir.SideFrontend:
+		return "frontend "
+	case ir.SideBackend:
+		return "backend "
+	case ir.SideShared:
+		return "shared "
+	}
+	return ""
 }
 
 func formatSynthParams(params []*ir.FuncParam) string {

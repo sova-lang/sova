@@ -572,6 +572,69 @@ type User {
 	}
 }
 
+func TestSynthSideConstraintRejectsWrongSide(t *testing.T) {
+	c := New()
+	c.AddSource("anno.sova", `package myAnno on synth
+
+synth Pk on backend field F {
+    emit on F {
+        @structTag("gorm", "primaryKey")
+    }
+}
+`)
+	c.AddSource("model.sova", `package myApp on frontend
+
+import "myAnno"
+
+type WebUser {
+    @Pk
+    id: int = 0
+}
+`)
+	_ = c.Check()
+	if !c.Diag.Errored() {
+		t.Fatalf("expected side-mismatch diagnostic, got none")
+	}
+	found := false
+	for _, d := range c.Diag.Diagnostics() {
+		if strings.Contains(d.Msg, "declared `on backend`") && strings.Contains(d.Msg, "frontend") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no side-mismatch diagnostic; diags: %+v", c.Diag.Diagnostics())
+	}
+}
+
+func TestSynthSideConstraintAllowsSharedFile(t *testing.T) {
+	c := New()
+	c.AddSource("anno.sova", `package myAnno on synth
+
+synth Pk on backend field F {
+    emit on F {
+        @structTag("gorm", "primaryKey")
+    }
+}
+`)
+	c.AddSource("shared.sova", `package myShared on shared
+
+import "myAnno"
+
+type SharedUser {
+    @Pk
+    id: int = 0
+}
+`)
+	if err := c.Check(); err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if c.Diag.Errored() {
+		c.Diag.Print()
+		t.Fatalf("backend-only synth should fire on shared files; got errors")
+	}
+}
+
 func TestSynthEmitFieldInjectsNewMember(t *testing.T) {
 	c := New()
 	c.AddSource("anno.sova", `package myAnno on synth

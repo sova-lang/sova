@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"fmt"
 	"log"
 	"sort"
 	"sova/internal/diag"
@@ -47,8 +48,8 @@ func (c *CompilerContext) SetBuildConfig(key string, value any) {
 	c.Cache[key] = value
 }
 
-// preparse takes the source code and converts it into a high-level intermediate representation (HIR).
-func (c *CompilerContext) preparse(file *ir.PreparsedFile) bool {
+// preparse takes the source code and converts it into a high-level intermediate representation (HIR). Visitor panics — almost always triggered by syntax errors that confused the parser into producing a partial tree with nil children — are recovered into a clean diagnostic so the CLI surfaces a useful message instead of a Go stack trace. The ANTLR error listener has typically already reported the underlying syntax problem; this recover just keeps the process alive long enough to print it.
+func (c *CompilerContext) preparse(file *ir.PreparsedFile) (ok bool) {
 	is := antlr.NewInputStream(file.Content)
 	lexer := parser.NewSovaLexer(is)
 	lexer.RemoveErrorListeners()
@@ -59,13 +60,19 @@ func (c *CompilerContext) preparse(file *ir.PreparsedFile) bool {
 	p.AddErrorListener(diag.NewAntlrErrorListener(file.Filename, c.Diag))
 	visitor := ir.NewVisitor(file.Filename, c.NodeAlloc, c.Diag)
 	visitor.SetTokenStream(cts)
+	defer func() {
+		if r := recover(); r != nil {
+			c.Diag.Report(diag.ErrVisitorPanic, diag.NoSpan, file.Filename, fmt.Sprint(r))
+			ok = false
+		}
+	}()
 	rawHir := visitor.Visit(p.File())
 	if rawHir == nil {
 		log.Printf("Failed to parse file %s\n", file.Filename)
 		return false
 	}
-	hir, ok := rawHir.(*ir.File)
-	if !ok {
+	hir, hok := rawHir.(*ir.File)
+	if !hok {
 		log.Printf("Unexpected type for HIR: %T in file %s\n", rawHir, file.Filename)
 		return false
 	}

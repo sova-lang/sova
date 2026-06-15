@@ -163,8 +163,9 @@ mixinDeclStmt : 'mixin' ID LBRACE mixinMember* RBRACE;
 mixinMember : fieldDecl | methodDecl ;
 
 // Custom Annotations (Synth)
-synthDeclStmt : SIDE_SYNTH ID synthParams? 'on' synthTarget LBRACE synthBodyItem* RBRACE;
+synthDeclStmt : SIDE_SYNTH ID synthParams? 'on' synthRequiredSide? synthTarget LBRACE synthBodyItem* RBRACE;
 synthParams : '(' funcParamList? ')';
+synthRequiredSide : SIDE_FRONTEND | SIDE_BACKEND | SIDE_SHARED;
 synthTarget : synthTargetKind ID;
 synthTargetKind : 'type' | 'func' | LET | ID;
 synthBodyItem : synthEmitOn

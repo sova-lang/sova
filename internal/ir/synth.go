@@ -35,14 +35,17 @@ func (k SynthTargetKind) String() string {
 	return "?"
 }
 
-// SynthDeclStmt is the top-level declaration of a custom annotation: `synth Name(params) on <kind> Bind { ... body ... }`. Lives only in `on synth` files. The expander reads every SynthDeclStmt across the build into a global registry keyed by Name, then walks every annotation use-site in the regular HIR; matching annotations are expanded by evaluating the synth body against the use-site as the target. The body is a list of `SynthBodyItem` values (`emit on`, `emit append to`, `for ... in ...`), interpreted by `expand_synths` against a bind environment seeded with the synth's target.
+// SynthDeclStmt is the top-level declaration of a custom annotation: `synth Name(params) on [side] <kind> Bind { ... body ... }`. Lives only in `on synth` files. The expander reads every SynthDeclStmt across the build into a global registry keyed by Name, then walks every annotation use-site in the regular HIR; matching annotations are expanded by evaluating the synth body against the use-site as the target. The body is a list of `SynthBodyItem` values (`emit on`, `emit append to`, `for ... in ...`), interpreted by `expand_synths` against a bind environment seeded with the synth's target.
+//
+// `RequiredSide` is the optional side-constraint between `on` and the target kind: `synth Pk on backend field F { ... }` only fires when the use-site file is `on backend` or `on shared` (shared declarations live on both sides, so a backend-only synth still applies to them). `frontend` mirrors the rule. `shared` requires the use site to be in a shared file. `SideUnknown` (no constraint declared) means the synth fires anywhere — preserves the V1 behaviour for callers that haven't opted in.
 type SynthDeclStmt struct {
 	node
 	docBase
-	Name   NameRef
-	Params []*FuncParam
-	Target SynthTarget
-	Body   []SynthBodyItem
+	Name         NameRef
+	Params       []*FuncParam
+	RequiredSide SideKind
+	Target       SynthTarget
+	Body         []SynthBodyItem
 }
 
 func (*SynthDeclStmt) stmtNode() {}

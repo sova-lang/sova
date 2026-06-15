@@ -1863,7 +1863,14 @@ func (v *HirVisitor) VisitFuncCallExprStmt(ctx *parser.FuncCallExprStmtContext) 
 			if argCtx.ID() != nil {
 				argName = argCtx.ID().GetText()
 			}
-			argExpr := v.Visit(argCtx.Expr()).(Expr)
+			exprCtx := argCtx.Expr()
+			if exprCtx == nil {
+				continue
+			}
+			argExpr, ok := v.Visit(exprCtx).(Expr)
+			if !ok || argExpr == nil {
+				continue
+			}
 			fc.Args = append(fc.Args, FuncCallArg{
 				Name: argName,
 				Expr: argExpr,
@@ -3294,6 +3301,16 @@ func (v *HirVisitor) VisitSynthDeclStmt(ctx *parser.SynthDeclStmtContext) any {
 				p := v.Visit(paramCtx).(FuncParam)
 				st.Params = append(st.Params, &p)
 			}
+		}
+	}
+	if rs := ctx.SynthRequiredSide(); rs != nil {
+		switch {
+		case rs.SIDE_FRONTEND() != nil:
+			st.RequiredSide = SideFrontend
+		case rs.SIDE_BACKEND() != nil:
+			st.RequiredSide = SideBackend
+		case rs.SIDE_SHARED() != nil:
+			st.RequiredSide = SideShared
 		}
 	}
 	if tgt := ctx.SynthTarget(); tgt != nil {
