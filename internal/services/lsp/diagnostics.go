@@ -13,6 +13,7 @@ import (
 
 	"sova/internal/diag"
 	"sova/internal/services/compiler"
+	"sova/internal/services/loader"
 )
 
 // scheduleDiagnostics kicks off an async recompute against `snap`. Each scheduled job is keyed by the snapshot ID; if a newer snapshot supersedes this one before the recompute starts, the older job exits early so we don't churn on rapid keystrokes. No debouncing yet - that's a v6 polish item; the snapshot-supersede check is sufficient for the typical "edit, pause, edit, pause" cadence.
@@ -117,6 +118,33 @@ func (s *Server) compileSnapshot(snap *Snapshot) (retCtx *compiler.CompilerConte
 	}
 	c := compiler.New()
 	c.SetBuildConfig("build_config", lspBuildConfig{root: root})
+	if root != "" {
+		// Match the CLI's resolution strategy so `import "strix"`,
+		// `import "gorm"`, and any other `[dependencies] path = ...`
+		// entry resolve in the editor the same way they do at
+		// `sova build`. Without this, every external dep silently
+		// failed to load and cascaded into hundreds of "undefined"
+		// diagnostics for symbols that DO exist when the compiler
+		// is invoked through the CLI.
+		//
+		// Std imports are skipped on purpose: `loadStdPackage` is
+		// always invoked first by `resolveImports`, and if its
+		// search-path scan (binary-adjacent / SOVA_HOME / cwd)
+		// turns up nothing — typical in `go test` runs where the
+		// test binary lives in a tmp dir — we want the SAME silent
+		// "no-op" outcome we had pre-fix instead of a hard error
+		// that short-circuits the whole import resolution loop and
+		// blocks every user package after the synthetic
+		// `import "std/__globals__"` injection. The CLI's own
+		// loader has the same behavior; we just keep it explicit.
+		realLoader := loader.New(root)
+		c.Loader = func(cc *compiler.CompilerContext, pkgPath string) error {
+			if compiler.IsStdImport(pkgPath) {
+				return nil
+			}
+			return realLoader(cc, pkgPath)
+		}
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			retCtx = c
