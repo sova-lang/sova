@@ -4590,8 +4590,52 @@ func resolveWireMaxBody(spec *ir.WireSpec) int64 {
 	return 1 << 20
 }
 
+// emitRawWiredHandler writes the thin `func(w http.ResponseWriter, r *http.Request)` wrapper for a `wire(transport: "raw")` function. Auth gating, role checks, body capping, and JSON encoding are all skipped — `wire(authn: true)` on a raw wire has no effect because there's no JSON envelope to slot a `WireStateUnauthorized` response into. Raw wires are expected to handle their own auth (typically by reading a cookie via `std/http.cookie` and rejecting via `std/http.setStatus(res, 401)`); if a project wants the standard auth envelope it should use the regular transport.
+//
+// The user's Sova signature is `func name(req: http.Request, res: http.Response)`, which compiles to `func name(req *http_Request, res *http_Response)` on the Go side. To bridge the typed Sova wrappers and the raw `net/http` values the runtime hands us, the handler constructs `&http_Request{Raw: r}` and `&http_Response{Raw: w}` from the live `*http.Request` and `http.ResponseWriter` and passes those wrapped values to the user function. The wrapped values' `Raw any` slots are what the `std/http` extern helpers cast back into the concrete `net/http` types — so the user only ever sees the typed handles, never the bare `any`.
+func (e *CodeEmitter) emitRawWiredHandler(ctx *codegen.EmitContext, pkg *ir.PackageContext, block *jen.Group, fn *ir.FuncDeclStmt) {
+	handlerName := symName(ctx, fn.Name.Sym) + "__wireHandler"
+	implName := symName(ctx, fn.Name.Sym)
+
+	reqStruct := lookupRawHttpStructName(ctx, pkg, fn.Params[0].Type, "Request")
+	resStruct := lookupRawHttpStructName(ctx, pkg, fn.Params[1].Type, "Response")
+	rawField := goExportedName("raw")
+
+	block.Add(jen.Func().Id(handlerName).Params(
+		jen.Id("w").Qual("net/http", "ResponseWriter"),
+		jen.Id("r").Op("*").Qual("net/http", "Request"),
+	).Block(
+		jen.Id("__req").Op(":=").Op("&").Id(reqStruct).Values(jen.Dict{jen.Id(rawField): jen.Id("r")}),
+		jen.Id("__res").Op(":=").Op("&").Id(resStruct).Values(jen.Dict{jen.Id(rawField): jen.Id("w")}),
+		jen.Id(implName).Call(jen.Id("__req"), jen.Id("__res")),
+	))
+}
+
+// lookupRawHttpStructName resolves the mangled Go struct name for a `std/http` wrapper type (Request or Response) at codegen time. The TypeRef has been bound + type-resolved by earlier passes, so `t.Typ` already points at the concrete struct in the TypeTable; we walk through to its package path + struct name and ask `findTypeSymbolAcrossPkgs` for the SymID so `symName` returns the same mangled identifier the std/http package itself was emitted under. Falls back to the literal `http_<name>` form if the type lookup fails — analyze_wire would already have rejected mismatched types before codegen runs, so a fallback here only fires on internal inconsistency.
+func lookupRawHttpStructName(ctx *codegen.EmitContext, pkg *ir.PackageContext, ref *ir.TypeRef, name string) string {
+	fallback := "http_" + name
+	if ref == nil || ctx == nil || ctx.Types == nil {
+		return fallback
+	}
+	ty, ok := ctx.Types.GetByID(ref.Typ)
+	if !ok || ty == nil {
+		return fallback
+	}
+	sym := findTypeSymbolAcrossPkgs(ctx, pkg, ty.PackagePath, ty.StructName)
+	if sym == 0 {
+		return fallback
+	}
+	return symName(ctx, sym)
+}
+
 // emitWiredHandler writes a Go HTTP handler for a wired function: it decodes path/query/body arguments, calls the implementation, and JSON-encodes the {value, state} response. The implementation function itself is emitted as a regular Go function via the standard FuncDeclStmt path.
+//
+// `wire(transport: "raw")` short-circuits the whole JSON wrapping. The raw-mode handler is a thin `func(w http.ResponseWriter, r *http.Request)` that constructs `&http_Request{Raw: r}` + `&http_Response{Raw: w}` wrapper values and passes them to the user's `func name(req: http.Request, res: http.Response)`. The user's function pulls request data and writes the response through `std/http` helpers; nothing in this emitter inspects its return value (analyze_wire already enforces void).
 func (e *CodeEmitter) emitWiredHandler(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, block *jen.Group, fn *ir.FuncDeclStmt) {
+	if fn.Wire != nil && fn.Wire.Transport == "raw" {
+		e.emitRawWiredHandler(ctx, pkg, block, fn)
+		return
+	}
 	handlerName := symName(ctx, fn.Name.Sym) + "__wireHandler"
 	implName := symName(ctx, fn.Name.Sym)
 

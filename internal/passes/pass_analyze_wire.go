@@ -106,6 +106,9 @@ func (p *PassAnalyzeWire) Run(pc *PassContext) error {
 					if fn.Wire != nil && (fn.Wire.Transport == "ws" || fn.Wire.Transport == "sse") {
 						needsManager = true
 					}
+					if fn.Wire != nil && fn.Wire.Transport == "raw" {
+						p.validateRawWireSignature(pc, fn)
+					}
 					if fn.Wire != nil && fn.Wire.Method != "" && fn.Wire.Path != "" && effSide != ir.SideFrontend {
 						key := endpoint{method: fn.Wire.Method, path: fn.Wire.Path}
 						if owner, taken := seen[key]; taken {
@@ -408,6 +411,39 @@ func (p *PassAnalyzeWire) walkOffSessionExpr(pc *PassContext, e ir.Expr, fronten
 	}
 }
 
+// validateRawWireSignature checks that a `wire(transport: "raw")` handler matches the one shape the raw-mode Go codegen can emit: exactly two parameters typed `http.Request` and `http.Response` (in that order; names are user-chosen) and a void return. The codegen wraps the underlying `*http.Request` / `http.ResponseWriter` values into those typed handles before invoking the user function — using typed wrappers instead of bare `any` means the compiler catches accidental swaps and mis-typed handler shapes at compile time, instead of letting bad casts blow up at request time. Reports a diagnostic at the function's name span when the signature mismatches.
+func (p *PassAnalyzeWire) validateRawWireSignature(pc *PassContext, fn *ir.FuncDeclStmt) {
+	if fn == nil {
+		return
+	}
+	if len(fn.Params) != 2 {
+		pc.Diag.Report(diag.ErrWireRawBadSignature, fn.Name.Span, fn.Name.Name, len(fn.Params))
+		return
+	}
+	if !isRawHttpType(fn.Params[0].Type, "Request") || !isRawHttpType(fn.Params[1].Type, "Response") {
+		pc.Diag.Report(diag.ErrWireRawBadParamType, fn.Name.Span, fn.Name.Name)
+		return
+	}
+	if fn.ReturnType != nil && fn.ReturnType.Kind != ir.TK_PrimitiveNone {
+		pc.Diag.Report(diag.ErrWireRawBadReturn, fn.Name.Span, fn.Name.Name)
+	}
+}
+
+// isRawHttpType matches a TypeRef against `http.<name>` from the `std/http` package. The qualifier check accepts both `http` (the post-import alias the user actually wrote) and `std/http` (the fully-qualified form should anyone reach for it). Returns true on a clean name match; everything else is a signature error.
+func isRawHttpType(t *ir.TypeRef, name string) bool {
+	if t == nil {
+		return false
+	}
+	if t.CustomName != name {
+		return false
+	}
+	switch t.CustomQualifier {
+	case "http", "std/http", "":
+		return true
+	}
+	return false
+}
+
 // resolveWireTransport reads `wire(transport: "...")` off a wire-func declaration, validates it against the allowed set, and rejects combinations that don't make sense for the wire's side (backend wires can use "http" or "ws"; frontend wires can use "ws" or "sse"). The resolved transport ends up on WireSpec.Transport - empty string means "use side default" and downstream codegen falls back to the existing per-side behaviour.
 func (p *PassAnalyzeWire) resolveWireTransport(pc *PassContext, fn *ir.FuncDeclStmt, effSide ir.SideKind) {
 	if fn == nil || fn.Wire == nil || fn.Wire.Options == nil {
@@ -419,7 +455,7 @@ func (p *PassAnalyzeWire) resolveWireTransport(pc *PassContext, fn *ir.FuncDeclS
 	}
 	transport := strings.ToLower(opt.Str)
 	switch transport {
-	case "http", "ws", "sse":
+	case "http", "ws", "sse", "raw":
 	default:
 		pc.Diag.Report(diag.ErrWireInvalidTransport, fn.Name.Span, opt.Str, fn.Name.Name)
 		return
@@ -428,7 +464,7 @@ func (p *PassAnalyzeWire) resolveWireTransport(pc *PassContext, fn *ir.FuncDeclS
 	sideLabel := "backend"
 	if effSide == ir.SideFrontend {
 		sideLabel = "frontend"
-		if transport == "http" {
+		if transport == "http" || transport == "raw" {
 			sideOK = false
 		}
 	} else {

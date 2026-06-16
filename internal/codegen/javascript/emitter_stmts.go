@@ -1423,7 +1423,12 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 }
 
 // emitWiredStub emits the frontend fetch-based stub for a wired function. The stub builds the URL from the WireSpec path (substituting :name placeholders), serializes non-path arguments either as a query string (GET/DELETE) or a JSON body (POST/PUT/PATCH), awaits the response, and returns the [value, state] tuple.
+//
+// `wire(transport: "raw")` handlers are skipped here: they live exclusively on the backend (analyze_wire rejects raw on frontend), they have no JSON contract to generate a stub against, and they are reached either via a browser navigation (OAuth redirects, form posts) or via a hand-written `fetch` from the frontend. Emitting a stub would produce a function nothing can sensibly call.
 func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.FuncDeclStmt) {
+	if s.Wire != nil && s.Wire.Transport == "raw" {
+		return
+	}
 	funcName := symName(ctx, s.Name.Sym)
 	orig := symOrigName(ctx, s.Name.Sym)
 

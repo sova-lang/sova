@@ -8,6 +8,7 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1
 	github.com/dave/jennifer v1.7.1
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
+	github.com/evanw/esbuild v0.28.1
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-rod/rod v0.116.2
 	github.com/spf13/cobra v1.10.2
@@ -20,7 +21,6 @@ require (
 
 require (
 	github.com/dlclark/regexp2 v1.11.4 // indirect
-	github.com/evanw/esbuild v0.28.1 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
