@@ -158,7 +158,7 @@ methodName : softId
 opSymbol : PLUS | MINUS | MULT | DIV | MOD | EQUAL;
 
 // Interface Statements
-interfaceDeclStmt : 'interface' ID LBRACE methodSignature* RBRACE;
+interfaceDeclStmt : 'interface' ID genericParams? LBRACE methodSignature* RBRACE;
 methodSignature : memberModifier* 'func' softId '(' funcParamList? ')' typeAnnot?;
 
 // Mixin Statements

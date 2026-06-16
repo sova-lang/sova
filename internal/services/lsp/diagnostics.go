@@ -183,10 +183,24 @@ func (s *Server) collectSources(snap *Snapshot, root string) map[string]string {
 			}
 		}
 	}
+	rootAbs := ""
+	if root != "" {
+		if abs, err := filepath.Abs(root); err == nil {
+			rootAbs = abs
+		}
+	}
 	for u, text := range snap.overlays {
 		p := uriToPath(u)
 		if p == "" {
 			continue
+		}
+		if rootAbs != "" {
+			if pAbs, err := filepath.Abs(p); err == nil {
+				rel, err := filepath.Rel(rootAbs, pAbs)
+				if err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "../") {
+					continue
+				}
+			}
 		}
 		out[p] = text
 	}

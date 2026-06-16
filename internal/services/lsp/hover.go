@@ -459,6 +459,12 @@ func formatSymbolSignature(tt *ir.TypeTable, sym *ir.Symbol) string {
 	}
 	switch sym.Kind {
 	case ir.SK_Function:
+		if ty, ok := tt.GetByID(sym.Typ); ok {
+			switch ty.Kind {
+			case ir.TK_Struct, ir.TK_Interface, ir.TK_Enum:
+				return "type " + sym.Name + formatTypeParams(ty.TypeParams)
+			}
+		}
 		if typeStr != "" {
 			if ty, ok := tt.GetByID(sym.Typ); ok && ty.Kind == ir.TK_Function && ty.IsAsync {
 				prefix = "async func"
@@ -473,6 +479,16 @@ func formatSymbolSignature(tt *ir.TypeTable, sym *ir.Symbol) string {
 		return fmt.Sprintf("%s %s: %s", prefix, sym.Name, typeStr)
 	}
 	return prefix + " " + sym.Name
+}
+
+// formatTypeParams renders a struct/interface/enum's type-param list as
+// `<T, U>` for hover display. Returns "" when the list is empty so
+// non-generic types render as plain `type Name`.
+func formatTypeParams(params []string) string {
+	if len(params) == 0 {
+		return ""
+	}
+	return "<" + strings.Join(params, ", ") + ">"
 }
 
 func keywordFor(sym *ir.Symbol) string {

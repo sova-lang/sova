@@ -39,9 +39,16 @@ func (v *HirVisitor) SetTokenStream(ts *antlr.CommonTokenStream) {
 // the token immediately starting `ctx`, or "" when no doc comments precede
 // it. Walks the hidden token stream backwards from the rule's start,
 // gathering DOC_COMMENT (`///`) lines and DOC_BLOCK_COMMENT (`/** */`)
-// blocks. Stops at the first non-comment token (i.e. anything other than
-// whitespace / `;` / a doc-comment token) - that's how we enforce the
-// "no blank line between comment and decl" rule.
+// blocks. Enforces the "no blank line between comment and decl" rule
+// (and the "no blank line between consecutive doc comments" rule) by
+// comparing line numbers — the lexer drops whitespace via `-> skip`,
+// so there are no WS tokens we could inspect for newline counts.
+//
+// Gap detection: each iteration computes the END line of the current
+// comment (`startLine + count('\n', text)` so block comments measure
+// correctly) and compares it against the previous anchor's start line.
+// A gap > 1 means there's at least one blank line in between → the
+// current comment is NOT part of this doc-comment chain and we stop.
 func (v *HirVisitor) docCommentBefore(ctx antlr.ParserRuleContext) string {
 	if v.tokens == nil {
 		return ""
@@ -64,31 +71,24 @@ func (v *HirVisitor) docCommentBefore(ctx antlr.ParserRuleContext) string {
 		kind int
 	}
 	var collected []tok
-	prevLine := start.GetLine()
+	prevStartLine := start.GetLine()
 	for i := startIdx - 1; i >= 0; i-- {
 		t := allTokens[i]
 		ttype := t.GetTokenType()
 		text := t.GetText()
 		isDocLine := ttype == parser.SovaLexerDOC_COMMENT
 		isDocBlock := ttype == parser.SovaLexerDOC_BLOCK_COMMENT
-		isWhitespace := strings.TrimSpace(text) == ""
-		if isDocLine || isDocBlock {
-			collected = append(collected, tok{text: text, line: t.GetLine(), kind: ttype})
-			prevLine = t.GetLine()
-			continue
+		if !isDocLine && !isDocBlock {
+			break
 		}
-		if isWhitespace {
-			// Tolerate whitespace between comment and decl as long as the
-			// blank-line count is at most one (i.e. the comment is on the
-			// line immediately above the decl).
-			if strings.Count(text, "\n") > 1 {
-				break
-			}
-			continue
+		tStart := t.GetLine()
+		tEnd := tStart + strings.Count(text, "\n")
+		if prevStartLine-tEnd > 1 {
+			break
 		}
-		break
+		collected = append(collected, tok{text: text, line: tStart, kind: ttype})
+		prevStartLine = tStart
 	}
-	_ = prevLine
 	if len(collected) == 0 {
 		return ""
 	}
@@ -2984,6 +2984,12 @@ func (v *HirVisitor) VisitInterfaceDeclStmt(ctx *parser.InterfaceDeclStmtContext
 	st := &InterfaceDeclStmt{node: v.mkNode(ctx), docBase: docBase{doc: v.docCommentBefore(ctx)}}
 	nameTok := ctx.ID().GetSymbol()
 	st.Name = NameRef{Name: nameTok.GetText(), Span: v.spanFromTok(nameTok)}
+
+	if gp := ctx.GenericParams(); gp != nil {
+		for _, p := range gp.AllGenericParam() {
+			st.TypeParams = append(st.TypeParams, v.buildGenericParamDecl(p))
+		}
+	}
 
 	for _, sigCtx := range ctx.AllMethodSignature() {
 		if sig, ok := v.Visit(sigCtx).(*InterfaceMethodSig); ok {

@@ -37,13 +37,23 @@ func walkStmt(t *cursorTarget, s ir.Stmt, p position) bool {
 			setSymTarget(t, n.Receiver.Sym, n.Receiver.Span, cursorKindSymbol)
 			return true
 		}
+		recvTyp := ir.TypID(0)
+		if t.pkg != nil && n.Receiver.Sym != 0 {
+			if recvSym, ok := t.pkg.Syms.GetByID(n.Receiver.Sym); ok {
+				recvTyp = recvSym.Typ
+			}
+		}
+		cur := recvTyp
 		for _, fld := range n.Fields {
 			if p.inSpan(fld.Span) {
 				t.kind = cursorKindMember
 				t.span = fld.Span
 				t.fieldName = fld.Name
+				t.memberOf = cur
+				t.typ = fieldTypeOnStruct(t.pkg, cur, fld.Name)
 				return true
 			}
+			cur = fieldTypeOnStruct(t.pkg, cur, fld.Name)
 		}
 		if walkExpr(t, n.Value, p) {
 			return true
@@ -537,4 +547,33 @@ func walkTypeRef(t *cursorTarget, tr *ir.TypeRef, p position) bool {
 		}
 	}
 	return false
+}
+
+// fieldTypeOnStruct returns the TypID of `fieldName` on `recvTyp` when the
+// receiver is a struct-like type. Walks the type's `StructFields` plus its
+// `StructMethods` (so `u.name` on a field and `u.touch` on a method both
+// hover correctly). Returns 0 when the type isn't a struct or the field
+// isn't found — the caller treats 0 as "unknown" and shows just the field
+// name without a type annotation.
+func fieldTypeOnStruct(pkg *ir.PackageContext, recvTyp ir.TypID, fieldName string) ir.TypID {
+	if pkg == nil || recvTyp == 0 || fieldName == "" {
+		return 0
+	}
+	ty, ok := pkg.Types.GetByID(recvTyp)
+	if !ok || ty == nil {
+		return 0
+	}
+	if ty.Kind == ir.TK_Struct {
+		for _, f := range ty.StructFields {
+			if f.Name == fieldName {
+				return f.Type
+			}
+		}
+		for _, m := range ty.StructMethods {
+			if m.Name == fieldName {
+				return m.FuncTyp
+			}
+		}
+	}
+	return 0
 }

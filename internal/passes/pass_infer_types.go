@@ -32,9 +32,39 @@ func (p *PassInferTypes) Run(pc *PassContext) error {
 		p.preComputeStructFields(pc, f.Hir.Statements)
 	}
 	for _, f := range pc.Pkg.Files {
+		p.preComputeStructCtors(pc, f.Hir.Statements)
+	}
+	for _, f := range pc.Pkg.Files {
 		p.resolveStmts(pc, f.Hir.Statements)
 	}
 	return nil
+}
+
+// preComputeStructCtors walks every top-level TypeDeclStmt across all files in the package and stamps each struct type's `StructCtors` from the constructor parameter annotations alone (no body resolution). Without this, a method `iter()` declared on `type A<T>` that returns `new B<T>(...)` would see `B`'s `StructCtors` slice still nil when `B` is declared later in the same file — the ctor-match loop sees zero candidates and the user gets `Function parameter type mismatch; found func constructor but failed on: B`. Mirrors `preComputeStructFields` / `preComputeFuncSignatures`: per-method body resolution needs cross-type ctor signatures to be visible up front. The main resolveStmts loop will overwrite `StructCtors` later with a value that's identical at the signature level (we only changed timing, not content).
+func (p *PassInferTypes) preComputeStructCtors(pc *PassContext, stmts []ir.Stmt) {
+	for _, st := range stmts {
+		if ir.IsNilStmt(st) {
+			continue
+		}
+		td, ok := st.(*ir.TypeDeclStmt)
+		if !ok || td.Name.Sym == 0 {
+			continue
+		}
+		sym, ok := pc.Pkg.Syms.GetByID(td.Name.Sym)
+		if !ok || sym.Typ == 0 {
+			continue
+		}
+		structTy, ok := pc.Types.GetByID(sym.Typ)
+		if !ok || structTy.Kind != ir.TK_Struct {
+			continue
+		}
+		ctorInfos := make([]ir.StructCtorInfo, 0, len(td.Ctors))
+		for _, ctor := range td.Ctors {
+			funcTyp := pc.Types.FuncOf(ctor.Params, sym.Typ)
+			ctorInfos = append(ctorInfos, ir.StructCtorInfo{Sym: ctor.Sym, FuncTyp: funcTyp})
+		}
+		structTy.StructCtors = ctorInfos
+	}
 }
 
 // preComputeStructFields walks every top-level TypeDeclStmt across all files in the package and stamps each struct type's `StructFields` from the field annotations alone (no default-expression inference, no embedded-mixin field promotion — those still happen in the main `resolveStmts` loop). Without this, a file that's alphabetically earlier than the file declaring `type T { x: int }` would resolve a `tval.x` field access against a type whose `StructFields` slice is still nil — the field lookup misses and the user sees `type T has no field 'x'`. Same root-cause pattern as `preComputeTopLevelVarSignatures` / `preComputeFuncSignatures`: per-file body resolution needs cross-file declaration types to be visible up front.

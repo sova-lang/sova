@@ -603,6 +603,7 @@ type InterfaceDeclStmt struct {
 	node
 	docBase
 	Name         NameRef
+	TypeParams   []TypeParamDecl // TypeParams are the generic type parameters declared by the interface (`interface Iterable<T> { ... }` → `[{Name: "T"}]`). Empty when the interface isn't generic.
 	Methods      []*InterfaceMethodSig
 	IsExtern     bool
 	ExternModule string
