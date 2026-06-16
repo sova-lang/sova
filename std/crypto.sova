@@ -1,5 +1,125 @@
 package std/crypto on shared
 
+/// RsaKeyPair holds an RSA key pair as PEM-encoded strings. The PEM
+/// format is the canonical interchange shape — both backend (Go) and
+/// frontend (browser) sides parse them via standard `crypto/x509` /
+/// WebCrypto routines, so a key generated on one side round-trips
+/// to the other unchanged.
+///
+/// `privateKey` is PKCS#1 RSA-PRIVATE-KEY PEM. `publicKey` is
+/// SubjectPublicKeyInfo (SPKI) PEM. Treat `privateKey` as a secret —
+/// never expose it to the frontend bundle.
+type RsaKeyPair {
+    privateKey: string = ""
+    publicKey: string = ""
+}
+
+/// Ed25519KeyPair holds an Ed25519 key pair as base64-encoded
+/// PKCS#8 (private) and SPKI (public) blobs. Ed25519's underlying
+/// keys are tiny (32 + 32 bytes), but we wrap them in PKCS#8/SPKI
+/// so WebCrypto on the frontend can import them unchanged. Backend
+/// helpers unwrap automatically.
+///
+/// **Browser support note**: Ed25519 WebCrypto landed in Chrome 113
+/// (May 2023), Firefox 130 (Sep 2024), Safari 17.4 (Mar 2024). On
+/// older browsers the sign/verify calls will throw; document a
+/// browser-floor for clients that need this.
+type Ed25519KeyPair {
+    privateKey: string = ""
+    publicKey: string = ""
+}
+
+/// rsaGenerate creates a fresh RSA key pair with the given modulus
+/// size. Recommended floor: 2048 bits (use 3072 or 4096 when stronger
+/// guarantees are needed; key gen takes seconds at 4096). Returns
+/// a `RsaKeyPair` with PEM-encoded fields.
+func rsaGenerate(bits: int): RsaKeyPair {
+    let priv = __rsaGenerate(bits)
+    let pub = __rsaPublicKeyOf(priv)
+    let kp = new RsaKeyPair()
+    kp.privateKey = priv
+    kp.publicKey = pub
+    return kp
+}
+
+/// rsaEncrypt encrypts `plaintext` using RSA-OAEP with SHA-256. The
+/// public key is PEM (SPKI) — typically `RsaKeyPair.publicKey`.
+/// Plaintext is limited to roughly `keyBytes - 66` (about 190 bytes
+/// for a 2048-bit key); for larger payloads, encrypt a random AES
+/// key with RSA and the data with AES (hybrid encryption).
+func rsaEncrypt(publicKey: string, plaintext: []byte): []byte {
+    return __rsaEncrypt(publicKey, plaintext)
+}
+
+/// rsaDecrypt is the inverse of `rsaEncrypt`. Returns an empty slice
+/// on failure (wrong key, tampered ciphertext, padding error).
+func rsaDecrypt(privateKey: string, ciphertext: []byte): []byte {
+    return __rsaDecrypt(privateKey, ciphertext)
+}
+
+/// rsaSign signs `data` with RSA-PSS + SHA-256. The result is the
+/// raw signature bytes. Use for authenticating messages where you
+/// want the receiver to verify integrity + origin without being able
+/// to forge a new signature.
+func rsaSign(privateKey: string, data: []byte): []byte {
+    return __rsaSign(privateKey, data)
+}
+
+/// rsaVerify checks an RSA-PSS / SHA-256 signature against `data`.
+/// Returns true iff the signature is genuine.
+func rsaVerify(publicKey: string, data: []byte, signature: []byte): bool {
+    return __rsaVerify(publicKey, data, signature)
+}
+
+/// ed25519Generate creates a fresh Ed25519 key pair. Ed25519 is the
+/// modern signing curve — fast, small keys (32 bytes), strong
+/// security. Use this over RSA for new signing applications unless
+/// you specifically need RSA for interop.
+func ed25519Generate(): Ed25519KeyPair {
+    let priv = __ed25519Generate()
+    let pub = __ed25519PublicKeyOf(priv)
+    let kp = new Ed25519KeyPair()
+    kp.privateKey = priv
+    kp.publicKey = pub
+    return kp
+}
+
+/// ed25519Sign signs `data` with Ed25519. Returns the 64-byte
+/// signature. Cheap on both sides (microseconds, not milliseconds
+/// like RSA).
+func ed25519Sign(privateKey: string, data: []byte): []byte {
+    return __ed25519Sign(privateKey, data)
+}
+
+/// ed25519Verify checks an Ed25519 signature against `data`.
+/// Returns true iff the signature is genuine.
+func ed25519Verify(publicKey: string, data: []byte, signature: []byte): bool {
+    return __ed25519Verify(publicKey, data, signature)
+}
+
+/// aesEncrypt encrypts `plaintext` with AES-GCM. The `key` length
+/// determines the variant: 16 bytes → AES-128, 32 bytes → AES-256
+/// (24 bytes / AES-192 is also accepted but rarely used).
+///
+/// The returned blob is `nonce(12) || ciphertext(N) || tag(16)`
+/// concatenated. Pass it back to `aesDecrypt` unchanged — the
+/// helper slices the nonce off the front. Nonces are drawn from
+/// the CSPRNG per call, so encrypting the same plaintext twice
+/// yields different blobs (which is exactly what you want).
+///
+/// Returns an empty slice when the key length is invalid.
+func aesEncrypt(key: []byte, plaintext: []byte): []byte {
+    return __aesEncrypt(key, plaintext)
+}
+
+/// aesDecrypt is the inverse of `aesEncrypt`. Returns an empty slice
+/// when the blob is malformed, the key is wrong, or the ciphertext
+/// has been tampered with (GCM detects modification via its
+/// authentication tag).
+func aesDecrypt(key: []byte, blob: []byte): []byte {
+    return __aesDecrypt(key, blob)
+}
+
 extern {
     /// Computes the SHA-256 digest of `data` and returns it as a 64-character
     /// lower-case hex string.
@@ -61,5 +181,81 @@ extern {
     async func randomBytes(n: int): string = {
         frontend: "async (n) => { const b = new Uint8Array(n); crypto.getRandomValues(b); return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }",
         backend("crypto/rand"): "func(n int64) string { b := make([]byte, n); _, _ = rand.Read(b); const hexd = \"0123456789abcdef\"; out := make([]byte, n*2); for i, v := range b { out[i*2] = hexd[v>>4]; out[i*2+1] = hexd[v&0x0f] }; return string(out) }"
+    }
+
+    /// __aesEncrypt and __aesDecrypt are the bottom-half of the AES-GCM
+    /// helpers above. Both sides bake the random nonce into the output blob
+    /// so callers don't have to manage it. AES-GCM is authenticated, so
+    /// any tampering with the blob between encrypt and decrypt surfaces
+    /// as a decryption failure (empty slice on the Sova side).
+    async func __aesEncrypt(key: []byte, plaintext: []byte): []byte = {
+        frontend: "async (k, p) => { try { const ck = await crypto.subtle.importKey('raw', new Uint8Array(k), {name: 'AES-GCM'}, false, ['encrypt']); const nonce = crypto.getRandomValues(new Uint8Array(12)); const ct = await crypto.subtle.encrypt({name: 'AES-GCM', iv: nonce}, ck, new Uint8Array(p)); const out = new Uint8Array(nonce.length + ct.byteLength); out.set(nonce); out.set(new Uint8Array(ct), nonce.length); return Array.from(out); } catch (e) { return []; } }",
+        backend("crypto/aes"): "func(key []byte, plain []byte) []byte { block, err := aes.NewCipher(key); if err != nil { return []byte{} }; gcm, err := cipher.NewGCM(block); if err != nil { return []byte{} }; nonce := make([]byte, gcm.NonceSize()); if _, err := rand.Read(nonce); err != nil { return []byte{} }; ct := gcm.Seal(nil, nonce, plain, nil); out := make([]byte, 0, len(nonce)+len(ct)); out = append(out, nonce...); out = append(out, ct...); return out }"
+    }
+
+    async func __aesDecrypt(key: []byte, blob: []byte): []byte = {
+        frontend: "async (k, b) => { try { const buf = new Uint8Array(b); if (buf.length < 12) return []; const nonce = buf.slice(0, 12); const ct = buf.slice(12); const ck = await crypto.subtle.importKey('raw', new Uint8Array(k), {name: 'AES-GCM'}, false, ['decrypt']); const pt = await crypto.subtle.decrypt({name: 'AES-GCM', iv: nonce}, ck, ct); return Array.from(new Uint8Array(pt)); } catch (e) { return []; } }",
+        backend("crypto/aes"): "func(key []byte, blob []byte) []byte { block, err := aes.NewCipher(key); if err != nil { return []byte{} }; gcm, err := cipher.NewGCM(block); if err != nil { return []byte{} }; ns := gcm.NonceSize(); if len(blob) < ns { return []byte{} }; nonce := blob[:ns]; ct := blob[ns:]; pt, err := gcm.Open(nil, nonce, ct, nil); if err != nil { return []byte{} }; return pt }"
+    }
+
+    /// __rsaGenerate creates a fresh RSA private key and returns it as
+    /// PKCS#1 PEM. Frontend uses WebCrypto's `generateKey` with RSA-OAEP
+    /// flags; we then export PKCS#8 DER, base64-encode it, and wrap in
+    /// PEM armor lines so the output shape matches the backend.
+    async func __rsaGenerate(bits: int): string = {
+        frontend: "async (bits) => { const kp = await crypto.subtle.generateKey({name: 'RSA-OAEP', modulusLength: Number(bits), publicExponent: new Uint8Array([1,0,1]), hash: 'SHA-256'}, true, ['encrypt', 'decrypt']); const der = await crypto.subtle.exportKey('pkcs8', kp.privateKey); const b64 = btoa(String.fromCharCode(...new Uint8Array(der))); const lines = b64.match(/.{1,64}/g).join('\\n'); return '-----BEGIN PRIVATE KEY-----\\n' + lines + '\\n-----END PRIVATE KEY-----\\n'; }",
+        backend("crypto/rsa"): "func(bits int64) string { key, err := rsa.GenerateKey(rand.Reader, int(bits)); if err != nil { return \"\" }; der := x509.MarshalPKCS1PrivateKey(key); blk := &pem.Block{Type: \"RSA PRIVATE KEY\", Bytes: der}; return string(pem.EncodeToMemory(blk)) }"
+    }
+
+    /// __rsaPublicKeyOf extracts the SPKI-PEM public key matching a
+    /// PKCS#1 or PKCS#8 private-key PEM. Both sides accept either input
+    /// shape so a key generated by one side can be fed back into the
+    /// other.
+    async func __rsaPublicKeyOf(privatePem: string): string = {
+        frontend: "async (privPem) => { const b64 = privPem.replace(/-----[^-]+-----/g, '').replace(/\\s+/g, ''); const der = Uint8Array.from(atob(b64), c => c.charCodeAt(0)); const priv = await crypto.subtle.importKey('pkcs8', der, {name: 'RSA-OAEP', hash: 'SHA-256'}, true, ['decrypt']); const jwk = await crypto.subtle.exportKey('jwk', priv); const pubJwk = {kty: jwk.kty, n: jwk.n, e: jwk.e, alg: 'RSA-OAEP-256', ext: true}; const pub = await crypto.subtle.importKey('jwk', pubJwk, {name: 'RSA-OAEP', hash: 'SHA-256'}, true, ['encrypt']); const spki = await crypto.subtle.exportKey('spki', pub); const out = btoa(String.fromCharCode(...new Uint8Array(spki))); const lines = out.match(/.{1,64}/g).join('\\n'); return '-----BEGIN PUBLIC KEY-----\\n' + lines + '\\n-----END PUBLIC KEY-----\\n'; }",
+        backend("crypto/rsa"): "func(privPem string) string { blk, _ := pem.Decode([]byte(privPem)); if blk == nil { return \"\" }; var priv *rsa.PrivateKey; if k, err := x509.ParsePKCS1PrivateKey(blk.Bytes); err == nil { priv = k } else if k, err := x509.ParsePKCS8PrivateKey(blk.Bytes); err == nil { rk, ok := k.(*rsa.PrivateKey); if !ok { return \"\" }; priv = rk } else { return \"\" }; der, err := x509.MarshalPKIXPublicKey(&priv.PublicKey); if err != nil { return \"\" }; return string(pem.EncodeToMemory(&pem.Block{Type: \"PUBLIC KEY\", Bytes: der})) }"
+    }
+
+    async func __rsaEncrypt(publicPem: string, plain: []byte): []byte = {
+        frontend: "async (pubPem, plain) => { try { const b64 = pubPem.replace(/-----[^-]+-----/g, '').replace(/\\s+/g, ''); const der = Uint8Array.from(atob(b64), c => c.charCodeAt(0)); const pub = await crypto.subtle.importKey('spki', der, {name: 'RSA-OAEP', hash: 'SHA-256'}, false, ['encrypt']); const ct = await crypto.subtle.encrypt({name: 'RSA-OAEP'}, pub, new Uint8Array(plain)); return Array.from(new Uint8Array(ct)); } catch (e) { return []; } }",
+        backend("crypto/rsa"): "func(pubPem string, plain []byte) []byte { blk, _ := pem.Decode([]byte(pubPem)); if blk == nil { return []byte{} }; pubAny, err := x509.ParsePKIXPublicKey(blk.Bytes); if err != nil { return []byte{} }; pub, ok := pubAny.(*rsa.PublicKey); if !ok { return []byte{} }; ct, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pub, plain, nil); if err != nil { return []byte{} }; return ct }"
+    }
+
+    async func __rsaDecrypt(privatePem: string, ciphertext: []byte): []byte = {
+        frontend: "async (privPem, ct) => { try { const b64 = privPem.replace(/-----[^-]+-----/g, '').replace(/\\s+/g, ''); const der = Uint8Array.from(atob(b64), c => c.charCodeAt(0)); const priv = await crypto.subtle.importKey('pkcs8', der, {name: 'RSA-OAEP', hash: 'SHA-256'}, false, ['decrypt']); const pt = await crypto.subtle.decrypt({name: 'RSA-OAEP'}, priv, new Uint8Array(ct)); return Array.from(new Uint8Array(pt)); } catch (e) { return []; } }",
+        backend("crypto/rsa"): "func(privPem string, ct []byte) []byte { blk, _ := pem.Decode([]byte(privPem)); if blk == nil { return []byte{} }; var priv *rsa.PrivateKey; if k, err := x509.ParsePKCS1PrivateKey(blk.Bytes); err == nil { priv = k } else if k, err := x509.ParsePKCS8PrivateKey(blk.Bytes); err == nil { rk, ok := k.(*rsa.PrivateKey); if !ok { return []byte{} }; priv = rk } else { return []byte{} }; pt, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, priv, ct, nil); if err != nil { return []byte{} }; return pt }"
+    }
+
+    async func __rsaSign(privatePem: string, data: []byte): []byte = {
+        frontend: "async (privPem, data) => { try { const b64 = privPem.replace(/-----[^-]+-----/g, '').replace(/\\s+/g, ''); const der = Uint8Array.from(atob(b64), c => c.charCodeAt(0)); const priv = await crypto.subtle.importKey('pkcs8', der, {name: 'RSA-PSS', hash: 'SHA-256'}, false, ['sign']); const sig = await crypto.subtle.sign({name: 'RSA-PSS', saltLength: 32}, priv, new Uint8Array(data)); return Array.from(new Uint8Array(sig)); } catch (e) { return []; } }",
+        backend("crypto/rsa"): "func(privPem string, data []byte) []byte { blk, _ := pem.Decode([]byte(privPem)); if blk == nil { return []byte{} }; var priv *rsa.PrivateKey; if k, err := x509.ParsePKCS1PrivateKey(blk.Bytes); err == nil { priv = k } else if k, err := x509.ParsePKCS8PrivateKey(blk.Bytes); err == nil { rk, ok := k.(*rsa.PrivateKey); if !ok { return []byte{} }; priv = rk } else { return []byte{} }; h := sha256.Sum256(data); sig, err := rsa.SignPSS(rand.Reader, priv, crypto.SHA256, h[:], &rsa.PSSOptions{SaltLength: 32}); if err != nil { return []byte{} }; return sig }"
+    }
+
+    async func __rsaVerify(publicPem: string, data: []byte, signature: []byte): bool = {
+        frontend: "async (pubPem, data, sig) => { try { const b64 = pubPem.replace(/-----[^-]+-----/g, '').replace(/\\s+/g, ''); const der = Uint8Array.from(atob(b64), c => c.charCodeAt(0)); const pub = await crypto.subtle.importKey('spki', der, {name: 'RSA-PSS', hash: 'SHA-256'}, false, ['verify']); return await crypto.subtle.verify({name: 'RSA-PSS', saltLength: 32}, pub, new Uint8Array(sig), new Uint8Array(data)); } catch (e) { return false; } }",
+        backend("crypto/rsa"): "func(pubPem string, data []byte, sig []byte) bool { blk, _ := pem.Decode([]byte(pubPem)); if blk == nil { return false }; pubAny, err := x509.ParsePKIXPublicKey(blk.Bytes); if err != nil { return false }; pub, ok := pubAny.(*rsa.PublicKey); if !ok { return false }; h := sha256.Sum256(data); return rsa.VerifyPSS(pub, crypto.SHA256, h[:], sig, &rsa.PSSOptions{SaltLength: 32}) == nil }"
+    }
+
+    /// __ed25519Generate produces a base64-encoded PKCS#8 private key.
+    /// We use PKCS#8 wrapping so the same blob can be re-imported by
+    /// WebCrypto on the frontend without an additional unwrap step.
+    async func __ed25519Generate(): string = {
+        frontend: "async () => { const kp = await crypto.subtle.generateKey({name: 'Ed25519'}, true, ['sign', 'verify']); const der = await crypto.subtle.exportKey('pkcs8', kp.privateKey); return btoa(String.fromCharCode(...new Uint8Array(der))); }",
+        backend("crypto/ed25519"): "func() string { _, priv, err := ed25519.GenerateKey(rand.Reader); if err != nil { return \"\" }; der, err := x509.MarshalPKCS8PrivateKey(priv); if err != nil { return \"\" }; return base64.StdEncoding.EncodeToString(der) }"
+    }
+
+    async func __ed25519PublicKeyOf(privateB64: string): string = {
+        frontend: "async (privB64) => { const der = Uint8Array.from(atob(privB64), c => c.charCodeAt(0)); const priv = await crypto.subtle.importKey('pkcs8', der, {name: 'Ed25519'}, true, ['sign']); const jwk = await crypto.subtle.exportKey('jwk', priv); const pubJwk = {kty: jwk.kty, crv: jwk.crv, x: jwk.x, ext: true}; const pub = await crypto.subtle.importKey('jwk', pubJwk, {name: 'Ed25519'}, true, ['verify']); const spki = await crypto.subtle.exportKey('spki', pub); return btoa(String.fromCharCode(...new Uint8Array(spki))); }",
+        backend("crypto/ed25519"): "func(privB64 string) string { der, err := base64.StdEncoding.DecodeString(privB64); if err != nil { return \"\" }; k, err := x509.ParsePKCS8PrivateKey(der); if err != nil { return \"\" }; priv, ok := k.(ed25519.PrivateKey); if !ok { return \"\" }; spki, err := x509.MarshalPKIXPublicKey(priv.Public()); if err != nil { return \"\" }; return base64.StdEncoding.EncodeToString(spki) }"
+    }
+
+    async func __ed25519Sign(privateB64: string, data: []byte): []byte = {
+        frontend: "async (privB64, data) => { try { const der = Uint8Array.from(atob(privB64), c => c.charCodeAt(0)); const priv = await crypto.subtle.importKey('pkcs8', der, {name: 'Ed25519'}, false, ['sign']); const sig = await crypto.subtle.sign({name: 'Ed25519'}, priv, new Uint8Array(data)); return Array.from(new Uint8Array(sig)); } catch (e) { return []; } }",
+        backend("crypto/ed25519"): "func(privB64 string, data []byte) []byte { der, err := base64.StdEncoding.DecodeString(privB64); if err != nil { return []byte{} }; k, err := x509.ParsePKCS8PrivateKey(der); if err != nil { return []byte{} }; priv, ok := k.(ed25519.PrivateKey); if !ok { return []byte{} }; return ed25519.Sign(priv, data) }"
+    }
+
+    async func __ed25519Verify(publicB64: string, data: []byte, signature: []byte): bool = {
+        frontend: "async (pubB64, data, sig) => { try { const der = Uint8Array.from(atob(pubB64), c => c.charCodeAt(0)); const pub = await crypto.subtle.importKey('spki', der, {name: 'Ed25519'}, false, ['verify']); return await crypto.subtle.verify({name: 'Ed25519'}, pub, new Uint8Array(sig), new Uint8Array(data)); } catch (e) { return false; } }",
+        backend("crypto/ed25519"): "func(pubB64 string, data []byte, sig []byte) bool { der, err := base64.StdEncoding.DecodeString(pubB64); if err != nil { return false }; pubAny, err := x509.ParsePKIXPublicKey(der); if err != nil { return false }; pub, ok := pubAny.(ed25519.PublicKey); if !ok { return false }; return ed25519.Verify(pub, data, sig) }"
     }
 }

@@ -1,0 +1,105 @@
+package std/zip on backend
+
+/// std/zip wraps Go's `archive/zip` for the common
+/// build-or-parse-an-archive-in-memory case. Backend-only because
+/// the frontend doesn't ship a built-in ZIP implementation — bundling
+/// a JS ZIP library (JSZip, fflate, etc.) would add a non-trivial
+/// chunk to every page just to satisfy `import "std/zip"`. When you
+/// need to deliver a ZIP to the browser, build it server-side via
+/// a raw wire and stream the bytes; the browser side just downloads
+/// the blob.
+///
+/// Two operations: `create(entries) []byte` packs a list of named
+/// byte blobs into a ZIP archive, and `extract(archive) []ZipEntry`
+/// is the inverse. Both work fully in memory — no temp files, no
+/// streaming. Fine for archives up to a handful of MB; for larger
+/// payloads (multi-GB), drop down to `archive/zip` directly via a
+/// raw extern.
+///
+/// ```sova
+/// import "std/zip"
+///
+/// // Build an archive in memory.
+/// let entries: []zip.ZipEntry = []
+/// let readme = new zip.ZipEntry()
+/// readme.name = "README.md"
+/// readme.data = "# hello\n" as []byte   // illustrative
+/// entries = entries + [readme]
+/// let blob = zip.create(entries)
+///
+/// // Parse it back.
+/// let parsed = zip.extract(blob)
+/// for e in parsed {
+///     println(e.name)
+/// }
+/// ```
+
+/// ZipEntry is one file inside a ZIP archive. `name` is the entry's
+/// path inside the archive (forward-slash separators per spec, even
+/// on Windows). `data` is the uncompressed file contents. Directory
+/// markers (entries whose name ends with `/` and whose data is empty)
+/// are accepted both ways.
+type ZipEntry {
+    name: string = ""
+    data: []byte = []
+}
+
+/// create packs `entries` into a ZIP archive and returns the raw
+/// bytes. Uses the default Deflate compression. Order of entries in
+/// the output matches the input order. Returns an empty slice on
+/// any internal error.
+func create(entries: []ZipEntry): []byte {
+    let names: []string = []
+    let datas: [][]byte = []
+    for e in entries {
+        names = names + [e.name]
+        datas = datas + [e.data]
+    }
+    return __zipCreate(names, datas)
+}
+
+/// extract parses `archive` and returns its entries in archive
+/// order. Each entry's `data` is the fully decompressed file
+/// contents. Returns an empty list when the input isn't a valid
+/// ZIP archive.
+func extract(archive: []byte): []ZipEntry {
+    let names = __zipNames(archive)
+    let datas = __zipDatas(archive)
+    let out: []ZipEntry = []
+    let i = 0
+    while i < len(names) {
+        let e = new ZipEntry()
+        e.name = names[i]
+        e.data = datas[i]
+        out = out + [e]
+        i = i + 1
+    }
+    return out
+}
+
+extern {
+    /// __zipCreate walks parallel `names` / `datas` slices and writes
+    /// each as a ZIP entry. Default compression (Deflate). On any
+    /// I/O or compression error returns an empty slice — the high-
+    /// level `create` already documents that contract.
+    func __zipCreate(names: []string, datas: [][]byte): []byte = {
+        backend("archive/zip"): "func(names []string, datas [][]byte) []byte { var buf bytes.Buffer; w := zip.NewWriter(&buf); for i, n := range names { f, err := w.Create(n); if err != nil { return []byte{} }; if i < len(datas) { if _, err := f.Write(datas[i]); err != nil { return []byte{} } } }; if err := w.Close(); err != nil { return []byte{} }; return buf.Bytes() }"
+    }
+
+    /// __zipNames returns the entry names in archive order. Empty
+    /// slice when the archive doesn't parse. Two-pass design (names
+    /// then datas) keeps the extern signatures primitive-only — the
+    /// Sova wrapper re-zips them into `[]ZipEntry`. Re-parses the
+    /// archive on each call; trivial cost for typical sizes.
+    func __zipNames(archive: []byte): []string = {
+        backend("archive/zip"): "func(archive []byte) []string { r, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive))); if err != nil { return []string{} }; out := make([]string, 0, len(r.File)); for _, f := range r.File { out = append(out, f.Name) }; return out }"
+    }
+
+    /// __zipDatas returns each entry's uncompressed contents in
+    /// archive order. Entries that fail to open or decompress are
+    /// emitted as empty slices so the index alignment with
+    /// `__zipNames` stays intact.
+    func __zipDatas(archive: []byte): [][]byte = {
+        backend("archive/zip"): "func(archive []byte) [][]byte { r, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive))); if err != nil { return [][]byte{} }; out := make([][]byte, 0, len(r.File)); for _, f := range r.File { rc, err := f.Open(); if err != nil { out = append(out, []byte{}); continue }; data, err := io.ReadAll(rc); rc.Close(); if err != nil { out = append(out, []byte{}); continue }; out = append(out, data) }; return out }"
+    }
+}

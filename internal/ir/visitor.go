@@ -2731,12 +2731,19 @@ func (v *HirVisitor) VisitOptionType(ctx *parser.OptionTypeContext) any {
 }
 
 func (v *HirVisitor) VisitSliceType(ctx *parser.SliceTypeContext) any {
-	inner := v.Visit(ctx.Type_()).(*TypeRef)
-	return &TypeRef{
-		node: v.mkNode(ctx),
-		Kind: TK_Slice,
-		Elem: inner,
+	pairs := len(ctx.AllLBRACK())
+	if pairs < 1 {
+		pairs = 1
 	}
+	tr := v.Visit(ctx.Type_()).(*TypeRef)
+	for i := 0; i < pairs; i++ {
+		tr = &TypeRef{
+			node: v.mkNode(ctx),
+			Kind: TK_Slice,
+			Elem: tr,
+		}
+	}
+	return tr
 }
 
 func (v *HirVisitor) VisitArrayType(ctx *parser.ArrayTypeContext) any {
