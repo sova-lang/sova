@@ -185,6 +185,14 @@ func (v *HirVisitor) mkNode(ctx antlr.ParserRuleContext) node {
 	return node{id: v.nid(), span: v.spanFromCtx(ctx)}
 }
 
+// softIdNameAndSpan extracts the identifier text and its source span from a `softId` parser context. softId admits both a real `ID` token and the synth-soft-reserved keyword tokens (`where`, `to`, `append`) wherever an identifier is grammatically expected — see grammar comment + BUGS.md #20. Callers that previously held a `TerminalNode` from `ctx.ID()` should switch to this helper since the underlying token may now be any of the alternatives.
+func (v *HirVisitor) softIdNameAndSpan(ctx parser.ISoftIdContext) (string, diag.TextSpan) {
+	if ctx == nil {
+		return "", diag.TextSpan{File: v.filename}
+	}
+	return ctx.GetText(), v.spanFromCtx(ctx)
+}
+
 func (v *HirVisitor) mkNodeFromTok(t antlr.Token) node {
 	return node{id: v.nid(), span: v.spanFromTok(t)}
 }
@@ -938,13 +946,9 @@ func (v *HirVisitor) VisitVarDeclTarget(ctx *parser.VarDeclTargetContext) any {
 	// Check if this is a discard '_'
 	if ctx.GetText() == "_" {
 		target.Name = nil
-	} else if idTok := ctx.ID(); idTok != nil {
-		nameRef := &NameRef{
-			Name: idTok.GetText(),
-			Sym:  0,
-			Span: v.spanFromTok(idTok.GetSymbol()),
-		}
-		target.Name = nameRef
+	} else if soft := ctx.SoftId(); soft != nil {
+		name, span := v.softIdNameAndSpan(soft)
+		target.Name = &NameRef{Name: name, Sym: 0, Span: span}
 
 		if ta := ctx.TypeAnnot(); ta != nil {
 			if tr, ok := v.Visit(ta).(*TypeRef); ok {
@@ -998,12 +1002,8 @@ func (v *HirVisitor) VisitFuncDeclStmt(ctx *parser.FuncDeclStmtContext) any {
 	}
 
 	// Name
-	nameTok := ctx.ID().GetSymbol()
-	st.Name = NameRef{
-		Name: nameTok.GetText(),
-		Sym:  0,
-		Span: v.spanFromTok(nameTok),
-	}
+	name, span := v.softIdNameAndSpan(ctx.SoftId())
+	st.Name = NameRef{Name: name, Sym: 0, Span: span}
 
 	// Generic type parameters
 	if gp := ctx.GenericParams(); gp != nil {
@@ -1043,12 +1043,8 @@ func (v *HirVisitor) VisitFuncParam(ctx *parser.FuncParamContext) any {
 	}
 
 	// Name
-	nameTok := ctx.ID().GetSymbol()
-	param.Name = NameRef{
-		Span: v.spanFromTok(nameTok),
-		Name: nameTok.GetText(),
-		Sym:  0,
-	}
+	pname, pspan := v.softIdNameAndSpan(ctx.SoftId())
+	param.Name = NameRef{Span: pspan, Name: pname, Sym: 0}
 
 	// Type
 	if ctx.TypeAnnot() != nil {
@@ -1138,15 +1134,11 @@ func (v *HirVisitor) VisitExternFunc(ctx *parser.ExternFuncContext) any {
 		IsAsync: strings.HasPrefix(ctx.GetText(), "async"),
 	}
 
-	if ctx.ID() == nil {
+	if ctx.SoftId() == nil {
 		return fn
 	}
-	nameTok := ctx.ID().GetSymbol()
-	fn.Name = NameRef{
-		Name: nameTok.GetText(),
-		Sym:  0,
-		Span: v.spanFromTok(nameTok),
-	}
+	fname, fspan := v.softIdNameAndSpan(ctx.SoftId())
+	fn.Name = NameRef{Name: fname, Sym: 0, Span: fspan}
 
 	if gp := ctx.GenericParams(); gp != nil {
 		for _, p := range gp.AllGenericParam() {
@@ -1183,12 +1175,8 @@ func (v *HirVisitor) VisitExternVar(ctx *parser.ExternVarContext) any {
 		IsConst: ctx.CONST() != nil,
 	}
 
-	nameTok := ctx.ID().GetSymbol()
-	ev.Name = NameRef{
-		Name: nameTok.GetText(),
-		Sym:  0,
-		Span: v.spanFromTok(nameTok),
-	}
+	evname, evspan := v.softIdNameAndSpan(ctx.SoftId())
+	ev.Name = NameRef{Name: evname, Sym: 0, Span: evspan}
 
 	if ctx.TypeAnnot() != nil {
 		if tr, ok := v.Visit(ctx.TypeAnnot()).(*TypeRef); ok {
@@ -1385,12 +1373,8 @@ func (v *HirVisitor) VisitEnumMethod(ctx *parser.EnumMethodContext) any {
 		node: v.mkNode(ctx),
 	}
 
-	nameTok := ctx.ID().GetSymbol()
-	st.Name = NameRef{
-		Name: nameTok.GetText(),
-		Sym:  0,
-		Span: v.spanFromTok(nameTok),
-	}
+	mname, mspan := v.softIdNameAndSpan(ctx.SoftId())
+	st.Name = NameRef{Name: mname, Sym: 0, Span: mspan}
 
 	if ctx.FuncParamList() != nil {
 		for _, paramCtx := range ctx.FuncParamList().AllFuncParam() {
@@ -1701,7 +1685,7 @@ func (v *HirVisitor) VisitPrefixUnaryExprStmt(ctx *parser.PrefixUnaryExprStmtCon
 		return nil
 	}
 
-	t := ctx.ID().GetSymbol()
+	name, span := v.softIdNameAndSpan(ctx.SoftId())
 	expr := &PrefixUnaryExpr{
 		node:     v.mkNode(ctx),
 		exprBase: exprBase{},
@@ -1709,11 +1693,7 @@ func (v *HirVisitor) VisitPrefixUnaryExprStmt(ctx *parser.PrefixUnaryExprStmtCon
 		Expr: &VarRef{
 			node:     v.mkNode(ctx),
 			exprBase: exprBase{},
-			Ref: NameRef{
-				Name: t.GetText(),
-				Sym:  0,
-				Span: v.spanFromTok(t),
-			},
+			Ref:      NameRef{Name: name, Sym: 0, Span: span},
 		},
 	}
 
@@ -1734,7 +1714,7 @@ func (v *HirVisitor) VisitPostfixUnaryExprStmt(ctx *parser.PostfixUnaryExprStmtC
 		return nil
 	}
 
-	t := ctx.ID().GetSymbol()
+	name, span := v.softIdNameAndSpan(ctx.SoftId())
 	expr := &PostfixUnaryExpr{
 		node:     v.mkNode(ctx),
 		exprBase: exprBase{},
@@ -1742,11 +1722,7 @@ func (v *HirVisitor) VisitPostfixUnaryExprStmt(ctx *parser.PostfixUnaryExprStmtC
 		Expr: &VarRef{
 			node:     v.mkNode(ctx),
 			exprBase: exprBase{},
-			Ref: NameRef{
-				Name: t.GetText(),
-				Sym:  0,
-				Span: v.spanFromTok(t),
-			},
+			Ref:      NameRef{Name: name, Sym: 0, Span: span},
 		},
 	}
 
@@ -1764,22 +1740,22 @@ func (v *HirVisitor) VisitFieldAssignmentExprStmt(ctx *parser.FieldAssignmentExp
 		return nil
 	}
 
-	ids := ctx.AllID()
+	ids := ctx.AllSoftId()
 	if len(ids) < 2 {
 		v.diag.Report(diag.ErrUnexpectedToken, v.spanFromCtx(ctx), ctx.GetText())
 		return nil
 	}
 
-	recvTok := ids[0].GetSymbol()
+	recvName, recvSpan := v.softIdNameAndSpan(ids[0])
 	stmt := &FieldAssignmentStmt{
 		node:     v.mkNode(ctx),
-		Receiver: NameRef{Name: recvTok.GetText(), Span: v.spanFromTok(recvTok)},
+		Receiver: NameRef{Name: recvName, Span: recvSpan},
 		Op:       op,
 		Value:    v.Visit(ctx.Expr()).(Expr),
 	}
 	for _, idNode := range ids[1:] {
-		tok := idNode.GetSymbol()
-		stmt.Fields = append(stmt.Fields, FieldName{Name: tok.GetText(), Span: v.spanFromTok(tok)})
+		fname, fspan := v.softIdNameAndSpan(idNode)
+		stmt.Fields = append(stmt.Fields, FieldName{Name: fname, Span: fspan})
 	}
 	return stmt
 }
@@ -1792,22 +1768,46 @@ func (v *HirVisitor) VisitAssignmentExprStmt(ctx *parser.AssignmentExprStmtConte
 		return nil
 	}
 
-	t := ctx.ID().GetSymbol()
+	name, span := v.softIdNameAndSpan(ctx.SoftId())
 	expr := &AssignmentExpr{
 		node:     v.mkNode(ctx),
 		exprBase: exprBase{},
-		Left: NameRef{
-			Name: t.GetText(),
-			Sym:  0,
-			Span: v.spanFromTok(t),
-		},
-		Op:    op,
-		Right: v.Visit(ctx.Expr()).(Expr),
+		Left:     NameRef{Name: name, Sym: 0, Span: span},
+		Op:       op,
+		Right:    v.Visit(ctx.Expr()).(Expr),
 	}
 
 	return &ExprStmt{
 		node: v.mkNode(ctx),
 		Expr: expr,
+	}
+}
+
+// VisitIndexAssignmentExprStmt lowers `recv[idx] = value` (and the compound `recv[idx] += value` forms) to an IndexAssignmentStmt. The three sub-expressions (receiver, index, value) are pulled off the rule's `Expr(N)` accessors in declaration order — receiver first, then index inside the brackets, then the right-hand side after the assignment operator.
+func (v *HirVisitor) VisitIndexAssignmentExprStmt(ctx *parser.IndexAssignmentExprStmtContext) any {
+	opStr := ctx.AssignmentOp().GetText()
+	op, ok := v.parseOp(opStr)
+	if !ok {
+		v.diag.Report(diag.ErrInvalidOperator, v.spanFromCtx(ctx.AssignmentOp()), opStr)
+		return nil
+	}
+
+	exprs := ctx.AllExpr()
+	if len(exprs) != 3 {
+		v.diag.Report(diag.ErrUnexpectedToken, v.spanFromCtx(ctx), ctx.GetText())
+		return nil
+	}
+
+	recv, _ := v.Visit(exprs[0]).(Expr)
+	idx, _ := v.Visit(exprs[1]).(Expr)
+	val, _ := v.Visit(exprs[2]).(Expr)
+
+	return &IndexAssignmentStmt{
+		node:     v.mkNode(ctx),
+		Receiver: recv,
+		Index:    idx,
+		Op:       op,
+		Value:    val,
 	}
 }
 
@@ -1833,13 +1833,9 @@ func (v *HirVisitor) VisitAssignmentTarget(ctx *parser.AssignmentTargetContext) 
 
 	if ctx.GetText() == "_" {
 		target.Name = nil
-	} else if idTok := ctx.ID(); idTok != nil {
-		nameRef := &NameRef{
-			Name: idTok.GetText(),
-			Sym:  0,
-			Span: v.spanFromTok(idTok.GetSymbol()),
-		}
-		target.Name = nameRef
+	} else if soft := ctx.SoftId(); soft != nil {
+		name, span := v.softIdNameAndSpan(soft)
+		target.Name = &NameRef{Name: name, Sym: 0, Span: span}
 	}
 
 	return target
@@ -1860,8 +1856,8 @@ func (v *HirVisitor) VisitFuncCallExprStmt(ctx *parser.FuncCallExprStmtContext) 
 	if ctx.FuncArgList() != nil {
 		for _, argCtx := range ctx.FuncArgList().AllFuncArg() {
 			var argName string
-			if argCtx.ID() != nil {
-				argName = argCtx.ID().GetText()
+			if argCtx.SoftId() != nil {
+				argName = argCtx.SoftId().GetText()
 			}
 			exprCtx := argCtx.Expr()
 			if exprCtx == nil {
@@ -2115,15 +2111,48 @@ func (v *HirVisitor) VisitIndexExpr(ctx *parser.IndexExprContext) any {
 	}
 }
 
+// VisitSliceRangeExpr lowers `expr[low?:high?]`. Either bound may be absent (`s[:5]`, `s[5:]`, `s[:]`); the corresponding IR field stays `nil` and codegen substitutes 0 / `len(expr)` on the target side.
+func (v *HirVisitor) VisitSliceRangeExpr(ctx *parser.SliceRangeExprContext) any {
+	exprs := ctx.AllExpr()
+	base, _ := v.Visit(exprs[0]).(Expr)
+	out := &SliceRangeExpr{node: v.mkNode(ctx), exprBase: exprBase{}, Expr: base}
+
+	sawLow := false
+	sawHigh := false
+	pastColon := false
+	for _, child := range ctx.GetChildren() {
+		switch n := child.(type) {
+		case antlr.TerminalNode:
+			tokText := n.GetText()
+			if tokText == ":" {
+				pastColon = true
+			}
+		case parser.IExprContext:
+			if n == exprs[0] {
+				continue
+			}
+			val, _ := v.Visit(n).(Expr)
+			if pastColon {
+				out.High = val
+				sawHigh = true
+			} else {
+				out.Low = val
+				sawLow = true
+			}
+		}
+	}
+	_ = sawLow
+	_ = sawHigh
+	return out
+}
+
 func (v *HirVisitor) VisitFieldAccessExpr(ctx *parser.FieldAccessExprContext) any {
 	base := v.Visit(ctx.Expr()).(Expr)
-	fields := make([]FieldName, 0, len(ctx.AllID()))
-	for _, id := range ctx.AllID() {
-		t := id.GetSymbol()
-		fields = append(fields, FieldName{
-			Name: t.GetText(),
-			Span: v.spanFromTok(t),
-		})
+	softs := ctx.AllSoftId()
+	fields := make([]FieldName, 0, len(softs))
+	for _, soft := range softs {
+		fname, fspan := v.softIdNameAndSpan(soft)
+		fields = append(fields, FieldName{Name: fname, Span: fspan})
 	}
 	return &FieldAccessExpr{node: v.mkNode(ctx), Expr: base, Fields: fields}
 }
@@ -2170,8 +2199,8 @@ func (v *HirVisitor) VisitFuncCallExpr(ctx *parser.FuncCallExprContext) any {
 	if ctx.FuncArgList() != nil {
 		for _, argCtx := range ctx.FuncArgList().AllFuncArg() {
 			var argName string
-			if argCtx.ID() != nil {
-				argName = argCtx.ID().GetText()
+			if argCtx.SoftId() != nil {
+				argName = argCtx.SoftId().GetText()
 			}
 			argExpr := v.Visit(argCtx.Expr()).(Expr)
 			fc.Args = append(fc.Args, FuncCallArg{
@@ -2185,13 +2214,10 @@ func (v *HirVisitor) VisitFuncCallExpr(ctx *parser.FuncCallExprContext) any {
 }
 
 func (v *HirVisitor) VisitGenericFuncCallExpr(ctx *parser.GenericFuncCallExprContext) any {
-	nameTok := ctx.ID().GetSymbol()
+	name, span := v.softIdNameAndSpan(ctx.SoftId())
 	callee := &VarRef{
 		node: v.mkNode(ctx),
-		Ref: NameRef{
-			Name: nameTok.GetText(),
-			Span: v.spanFromTok(nameTok),
-		},
+		Ref:  NameRef{Name: name, Span: span},
 	}
 	fc := &FuncCallExpr{
 		node:     v.mkNode(ctx),
@@ -2208,8 +2234,8 @@ func (v *HirVisitor) VisitGenericFuncCallExpr(ctx *parser.GenericFuncCallExprCon
 	if ctx.FuncArgList() != nil {
 		for _, argCtx := range ctx.FuncArgList().AllFuncArg() {
 			var argName string
-			if argCtx.ID() != nil {
-				argName = argCtx.ID().GetText()
+			if argCtx.SoftId() != nil {
+				argName = argCtx.SoftId().GetText()
 			}
 			argExpr := v.Visit(argCtx.Expr()).(Expr)
 			fc.Args = append(fc.Args, FuncCallArg{
@@ -2222,13 +2248,10 @@ func (v *HirVisitor) VisitGenericFuncCallExpr(ctx *parser.GenericFuncCallExprCon
 }
 
 func (v *HirVisitor) VisitGenericFuncCallExprStmt(ctx *parser.GenericFuncCallExprStmtContext) any {
-	nameTok := ctx.ID().GetSymbol()
+	name, span := v.softIdNameAndSpan(ctx.SoftId())
 	callee := &VarRef{
 		node: v.mkNode(ctx),
-		Ref: NameRef{
-			Name: nameTok.GetText(),
-			Span: v.spanFromTok(nameTok),
-		},
+		Ref:  NameRef{Name: name, Span: span},
 	}
 	fc := &FuncCallExpr{
 		node:     v.mkNode(ctx),
@@ -2245,8 +2268,8 @@ func (v *HirVisitor) VisitGenericFuncCallExprStmt(ctx *parser.GenericFuncCallExp
 	if ctx.FuncArgList() != nil {
 		for _, argCtx := range ctx.FuncArgList().AllFuncArg() {
 			var argName string
-			if argCtx.ID() != nil {
-				argName = argCtx.ID().GetText()
+			if argCtx.SoftId() != nil {
+				argName = argCtx.SoftId().GetText()
 			}
 			argExpr := v.Visit(argCtx.Expr()).(Expr)
 			fc.Args = append(fc.Args, FuncCallArg{
@@ -2307,7 +2330,7 @@ func (v *HirVisitor) buildGenericParamDecl(ctx parser.IGenericParamContext) Type
 				hadColon = false
 			}
 		case parser.IQualifiedRefContext:
-			ids := tok.AllID()
+			ids := tok.AllSoftId()
 			ref := NameRef{}
 			if len(ids) >= 2 {
 				ref.Qualifier = ids[0].GetText()
@@ -2335,8 +2358,8 @@ func (v *HirVisitor) VisitComposableCallExpr(ctx *parser.ComposableCallExprConte
 	if ctx.FuncArgList() != nil {
 		for _, argCtx := range ctx.FuncArgList().AllFuncArg() {
 			var argName string
-			if argCtx.ID() != nil {
-				argName = argCtx.ID().GetText()
+			if argCtx.SoftId() != nil {
+				argName = argCtx.SoftId().GetText()
 			}
 			argExpr := v.Visit(argCtx.Expr()).(Expr)
 			cc.Args = append(cc.Args, FuncCallArg{Name: argName, Expr: argExpr})
@@ -2355,19 +2378,19 @@ func (v *HirVisitor) VisitComposableCallExpr(ctx *parser.ComposableCallExprConte
 func (v *HirVisitor) buildComposableChild(ctx parser.IComposableChildContext) (ComposableChild, bool) {
 	switch c := ctx.(type) {
 	case *parser.ComposableBareChildContext:
-		ids := c.AllID()
+		ids := c.AllSoftId()
 		if len(ids) == 0 {
 			return ComposableChild{}, false
 		}
-		var qualifier string
-		var nameTok antlr.Token
+		var qualifier, calleeName string
+		var calleeSpan diag.TextSpan
 		if len(ids) >= 2 {
 			qualifier = ids[0].GetText()
-			nameTok = ids[1].GetSymbol()
+			calleeName, calleeSpan = v.softIdNameAndSpan(ids[1])
 		} else {
-			nameTok = ids[0].GetSymbol()
+			calleeName, calleeSpan = v.softIdNameAndSpan(ids[0])
 		}
-		callee := buildBareComposableCallee(v, c, qualifier, nameTok)
+		callee := buildBareComposableCallee(v, c, qualifier, calleeName, calleeSpan)
 		cc := &ComposableCallExpr{
 			node:     v.mkNode(c),
 			exprBase: exprBase{},
@@ -2416,20 +2439,20 @@ func (v *HirVisitor) buildComposableChild(ctx parser.IComposableChildContext) (C
 	return ComposableChild{}, false
 }
 
-// buildBareComposableCallee constructs the callee expression for the bare composable form `Type { ... }` (no parenthesised argument list). The callee is rendered as either a plain IdExpr (`H1`) or a FieldAccessExpr (`dom.H1`) so that downstream name resolution and synthesisableComposableCallType treat it identically to the parenthesised form.
-func buildBareComposableCallee(v *HirVisitor, ctx antlr.ParserRuleContext, qualifier string, nameTok antlr.Token) Expr {
-	nameRef := NameRef{Name: nameTok.GetText(), Span: v.spanFromTok(nameTok)}
+// buildBareComposableCallee constructs the callee expression for the bare composable form `Type { ... }` (no parenthesised argument list). The callee is rendered as either a plain IdExpr (`H1`) or a FieldAccessExpr (`dom.H1`) so that downstream name resolution and synthesisableComposableCallType treat it identically to the parenthesised form. Takes pre-extracted name+span (rather than an `antlr.Token`) because the softId grammar rule may match a keyword-like token whose `TerminalNode` accessor returns nil.
+func buildBareComposableCallee(v *HirVisitor, ctx antlr.ParserRuleContext, qualifier, name string, span diag.TextSpan) Expr {
+	nameRef := NameRef{Name: name, Span: span}
 	if qualifier == "" {
 		return &VarRef{
-			node:     node{id: v.nid(), span: nameRef.Span},
+			node:     node{id: v.nid(), span: span},
 			exprBase: exprBase{},
 			Ref:      nameRef,
 		}
 	}
 	return &VarRef{
-		node:     node{id: v.nid(), span: nameRef.Span},
+		node:     node{id: v.nid(), span: span},
 		exprBase: exprBase{},
-		Ref:      NameRef{Name: nameTok.GetText(), Qualifier: qualifier, Span: nameRef.Span},
+		Ref:      NameRef{Name: name, Qualifier: qualifier, Span: span},
 	}
 }
 
@@ -2441,10 +2464,10 @@ func (v *HirVisitor) VisitNewInstanceExpr(ctx *parser.NewInstanceExprContext) an
 	expr := &NewExpr{node: v.mkNode(ctx), exprBase: exprBase{}}
 
 	head := ctx.PkgIdent()
-	if tail := ctx.ID(); tail != nil {
+	if tail := ctx.SoftId(); tail != nil {
 		expr.Qualifier = head.GetText()
-		tok := tail.GetSymbol()
-		expr.TypeName = NameRef{Name: tok.GetText(), Span: v.spanFromTok(tok)}
+		tname, tspan := v.softIdNameAndSpan(tail)
+		expr.TypeName = NameRef{Name: tname, Span: tspan}
 	} else {
 		expr.TypeName = NameRef{Name: head.GetText(), Span: v.spanFromCtx(head)}
 	}
@@ -2460,8 +2483,8 @@ func (v *HirVisitor) VisitNewInstanceExpr(ctx *parser.NewInstanceExprContext) an
 	if ctx.FuncArgList() != nil {
 		for _, argCtx := range ctx.FuncArgList().AllFuncArg() {
 			var argName string
-			if argCtx.ID() != nil {
-				argName = argCtx.ID().GetText()
+			if argCtx.SoftId() != nil {
+				argName = argCtx.SoftId().GetText()
 			}
 			argExpr := v.Visit(argCtx.Expr()).(Expr)
 			expr.Args = append(expr.Args, FuncCallArg{Name: argName, Expr: argExpr})
@@ -2850,7 +2873,7 @@ func (v *HirVisitor) VisitTypeDeclStmt(ctx *parser.TypeDeclStmtContext) any {
 		}
 		if with := clauseCtx.WithClause(); with != nil {
 			for _, qr := range with.AllQualifiedRef() {
-				ids := qr.AllID()
+				ids := qr.AllSoftId()
 				if len(ids) == 0 {
 					continue
 				}
@@ -2973,8 +2996,8 @@ func (v *HirVisitor) VisitInterfaceDeclStmt(ctx *parser.InterfaceDeclStmtContext
 func (v *HirVisitor) VisitMethodSignature(ctx *parser.MethodSignatureContext) any {
 	sig := &InterfaceMethodSig{node: v.mkNode(ctx)}
 	sig.IsShared = hasModifierChild(ctx, "shared")
-	nameTok := ctx.ID().GetSymbol()
-	sig.Name = NameRef{Name: nameTok.GetText(), Span: v.spanFromTok(nameTok)}
+	sname, sspan := v.softIdNameAndSpan(ctx.SoftId())
+	sig.Name = NameRef{Name: sname, Span: sspan}
 
 	if paramListCtx := ctx.FuncParamList(); paramListCtx != nil {
 		for _, paramCtx := range paramListCtx.AllFuncParam() {
@@ -3000,10 +3023,8 @@ func (v *HirVisitor) VisitMethodDecl(ctx *parser.MethodDeclContext) any {
 	nameCtx := ctx.MethodName()
 	var nameText string
 	var nameSpan diag.TextSpan
-	if idNode := nameCtx.ID(); idNode != nil {
-		tok := idNode.GetSymbol()
-		nameText = tok.GetText()
-		nameSpan = v.spanFromTok(tok)
+	if soft := nameCtx.SoftId(); soft != nil {
+		nameText, nameSpan = v.softIdNameAndSpan(soft)
 	} else if opSym := nameCtx.OpSymbol(); opSym != nil {
 		nameText = "op" + opSym.GetText()
 		nameSpan = v.spanFromCtx(nameCtx)
@@ -3135,13 +3156,13 @@ func (v *HirVisitor) VisitFieldDecl(ctx *parser.FieldDeclContext) any {
 	field := &TypeField{node: v.mkNode(ctx)}
 	field.Annotations = v.collectAnnotations(ctx.AllAnnotation())
 
-	idNode := ctx.ID()
-	if idNode == nil {
+	soft := ctx.SoftId()
+	if soft == nil {
 		v.diag.Report(diag.ErrUnexpectedToken, v.spanFromCtx(ctx), ctx.GetText())
 		return field
 	}
-	nameTok := idNode.GetSymbol()
-	field.Name = NameRef{Name: nameTok.GetText(), Span: v.spanFromTok(nameTok)}
+	fname, fspan := v.softIdNameAndSpan(soft)
+	field.Name = NameRef{Name: fname, Span: fspan}
 
 	if ctx.TypeAnnot() != nil {
 		if tr, ok := v.Visit(ctx.TypeAnnot()).(*TypeRef); ok {

@@ -128,6 +128,10 @@ func (p *PassResolveNames) resolveStmtNames(pc *PassContext, s ir.Stmt, pkg *ir.
 			pc.Diag.Report(diag.ErrUndeclaredSymbol, v.Receiver.Span, v.Receiver.Name)
 		}
 		p.resolveExprNames(pc, v.Value, pkg)
+	case *ir.IndexAssignmentStmt:
+		p.resolveExprNames(pc, v.Receiver, pkg)
+		p.resolveExprNames(pc, v.Index, pkg)
+		p.resolveExprNames(pc, v.Value, pkg)
 	case *ir.MultiAssignmentStmt:
 		scope, _ := pkg.Scopes.EnclosingScope(v.ID())
 		for i := range v.Targets {
@@ -403,6 +407,14 @@ func (p *PassResolveNames) resolveExprNames(pc *PassContext, expr ir.Expr, pkg *
 	case *ir.IndexExpr:
 		p.resolveExprNames(pc, x.Expr, pkg)
 		p.resolveExprNames(pc, x.Index, pkg)
+	case *ir.SliceRangeExpr:
+		p.resolveExprNames(pc, x.Expr, pkg)
+		if x.Low != nil {
+			p.resolveExprNames(pc, x.Low, pkg)
+		}
+		if x.High != nil {
+			p.resolveExprNames(pc, x.High, pkg)
+		}
 	case *ir.FieldAccessExpr:
 		p.resolveExprNames(pc, x.Expr, pkg)
 	case *ir.VarRef:

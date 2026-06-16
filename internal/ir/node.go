@@ -138,6 +138,17 @@ type FieldAssignmentStmt struct {
 
 func (*FieldAssignmentStmt) stmtNode() {}
 
+// IndexAssignmentStmt represents `recv[idx] = value` — including the compound `recv[idx] += value` form via `Op`. Used for both map writes (`m["k"] = v`) and slice writes (`xs[2] = v`); the codegen layer disambiguates by the receiver's type. Sova's `map<K, V>` type previously had no surface assignment syntax — callers had to reach for an extern shim (see BUGS.md #13).
+type IndexAssignmentStmt struct {
+	node
+	Receiver Expr // Receiver is the indexable expression (map, slice, or array) being written to.
+	Index    Expr // Index is the key (map) or position (slice/array).
+	Op       Op   // Op is the assignment operator (`=`, `+=`, `-=`, …). The compound forms read-modify-write the existing entry.
+	Value    Expr // Value is the right-hand-side expression assigned into `Receiver[Index]`.
+}
+
+func (*IndexAssignmentStmt) stmtNode() {}
+
 type MultiAssignmentStmt struct {
 	node
 	Targets []AssignmentTarget // Left-hand side targets (can include discard '_')
@@ -306,6 +317,7 @@ type WireSpec struct {
 	RequiredRoles []string                // RequiredRoles lists role names the session must hold; missing roles produce 403 Forbidden.
 	Ruleset       string                  // Ruleset is the optional named ruleset reference; resolved by analyze_wire.
 	Transport     string                  // Transport is "http", "ws", or "sse" (resolved from `wire(transport: ...)`). Empty means use the side-default ("http" for backend wires, "ws" for frontend wires). Validated by analyze_wire; an invalid value produces a diagnostic.
+	UsesSession   bool                    // UsesSession is true when the handler body references `@` (the session expression). Tracked separately from RequireAuthN because raw wires opt into session access by *using* it — there's no `authn:` switch for the raw transport. Codegen reads this flag to decide whether to prepend a `__session` parameter on a raw wire's user function (same trick regular wires use) and to wire the cookie-extract path in the handler wrapper.
 }
 
 // WireOptValue is the resolved value of a single wire(...) option. Only the field that matches the literal kind is set.
@@ -887,6 +899,17 @@ type IndexExpr struct {
 }
 
 func (*IndexExpr) exprNode() {}
+
+// SliceRangeExpr is the surface `s[a:b]` form. Both `Low` and `High` are optional — `s[:n]` leaves Low nil, `s[a:]` leaves High nil, `s[:]` leaves both nil (a full-copy slice). Backed by Go's slice expression on the backend; on the frontend we lower string-typed receivers to `String.prototype.slice` and slice-typed receivers to `Array.prototype.slice` so the two-platform semantics line up.
+type SliceRangeExpr struct {
+	node
+	exprBase
+	Expr Expr // Expr is the slice/string being sliced.
+	Low  Expr // Low is the inclusive lower bound. nil = 0 (start of receiver).
+	High Expr // High is the exclusive upper bound. nil = `len(Expr)` (end of receiver).
+}
+
+func (*SliceRangeExpr) exprNode() {}
 
 type FieldName struct {
 	Name string

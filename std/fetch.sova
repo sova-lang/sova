@@ -1,0 +1,224 @@
+package std/fetch on shared
+
+import "std/json"
+
+/// std/fetch is the **outbound** HTTP API — the side of the
+/// boundary that *initiates* requests. The package is `on shared`
+/// so the same surface works in backend code (compiled through
+/// Go's `net/http`) and in frontend code (compiled through the
+/// browser's `fetch` API).
+///
+/// This is intentionally separate from `std/http`, which models
+/// the **inbound** side: the typed `http.Request` / `http.Response`
+/// handles a `wire(transport: "raw")` handler receives from the
+/// server runtime. The two packages own distinct concepts —
+/// inbound vs outbound — even though both involve HTTP. Same-name
+/// types (`Request`, `Response`) live in different namespaces and
+/// have different fields/methods.
+///
+/// Failure mode is by-value, not exception. Transport errors (DNS,
+/// refused, TLS handshake, timeout) surface as a `Response` with
+/// `status = 0` and the error description in `body`. Callers
+/// distinguish "transport down" from "4xx/5xx" by checking
+/// `status == 0`. There are no panics here — Sova doesn't do
+/// panics (see env.sova for the same design choice).
+
+/// Response is the wire-shape of every call here. Identical fields
+/// across backend (translated from `http.Response`) and frontend
+/// (translated from the `fetch` Response). `bodyBytes` is filled
+/// on the backend side; the frontend leaves it empty unless the
+/// caller explicitly read the body as binary (a follow-up API
+/// addition). `headers` is a single-value-per-key map — repeated
+/// headers (`Set-Cookie`) only surface their last value.
+type Response {
+    status: int = 0
+    body: string = ""
+    bodyBytes: []byte = []
+    headers: map<string, string> = __newHeaderMap()
+
+    /// ok reports whether the response is a 2xx success. Convenience
+    /// for the common `if !r.ok() { handle error }` pattern; same
+    /// shape as the browser-side `Response.ok` property.
+    func ok(): bool {
+        return this.status >= 200 && this.status < 300
+    }
+}
+
+/// Request is a builder. Construct via `fetch.request(method,
+/// url)`, chain setters, then call `send()` to fire it and get
+/// back a `Response`. Builder beats positional args once you have
+/// headers + a body + a timeout to set.
+type Request {
+    method: string = "GET"
+    url: string = ""
+    body: string = ""
+    headers: map<string, string> = __newHeaderMap()
+    timeoutMs: int = 30000
+
+    /// header sets a single request header. Replaces any prior
+    /// value for the same key. Returns the same builder so calls
+    /// chain.
+    func header(name: string, value: string): Request {
+        __headerSet(this.headers, name, value)
+        return this
+    }
+
+    /// bearer sets `Authorization: Bearer <token>`. Convenience
+    /// for the most common OAuth-call shape.
+    func bearer(token: string): Request {
+        return this.header("Authorization", "Bearer " + token)
+    }
+
+    /// withBody attaches a raw request body + Content-Type.
+    /// Returns the same builder.
+    func withBody(body: string, contentType: string): Request {
+        this.body = body
+        return this.header("Content-Type", contentType)
+    }
+
+    /// withJson serialises `value` as JSON and sets Content-Type
+    /// to `application/json`. Wraps `std/json.encode`.
+    func withJson(value: any): Request {
+        this.body = json.encode(value)
+        return this.header("Content-Type", "application/json")
+    }
+
+    /// timeout sets a per-request timeout in milliseconds. Default
+    /// 30s. A value <= 0 disables the timeout — use sparingly,
+    /// browser `AbortController` and Go `http.Client.Timeout`
+    /// behave subtly differently when "no timeout" is requested.
+    func timeout(ms: int): Request {
+        this.timeoutMs = ms
+        return this
+    }
+
+    /// send fires the request and resolves to the Response.
+    /// On the frontend the underlying `fetch` call is genuinely
+    /// async (returns a Promise); on the backend `http.Client.Do`
+    /// blocks. Sova auto-lifts the async chain (see BUGS #5 /
+    /// `pass_propagate_async`) so callers don't need to mark
+    /// themselves `async` or write explicit `await` on either side.
+    func send(): Response {
+        let raw = __doRequest(this.method, this.url, this.body, this.headers, this.timeoutMs)
+        let r = new Response()
+        r.status = __resStatus(raw)
+        r.body = __resBody(raw)
+        r.bodyBytes = __resBodyBytes(raw)
+        r.headers = __resHeaders(raw)
+        return r
+    }
+}
+
+/// request mints a fresh `Request` builder. Most callers don't
+/// touch the builder beyond a header or two and reach for
+/// `get`/`post` instead.
+func request(method: string, url: string): Request {
+    let r = new Request()
+    r.method = method
+    r.url = url
+    return r
+}
+
+/// get fires a one-shot GET and returns the Response.
+func get(url: string): Response {
+    return request("GET", url).send()
+}
+
+/// post fires a one-shot POST with `body` + `contentType`. For
+/// JSON bodies prefer `postJson`; for form posts prefer
+/// `postForm`.
+func post(url: string, body: string, contentType: string): Response {
+    return request("POST", url).withBody(body, contentType).send()
+}
+
+/// postForm fires a POST with body `data` (already URL-encoded —
+/// see `urlEncode` below) and Content-Type
+/// `application/x-www-form-urlencoded`. The canonical OAuth
+/// token-exchange shape.
+func postForm(url: string, body: string): Response {
+    return request("POST", url).withBody(body, "application/x-www-form-urlencoded").send()
+}
+
+/// postJson fires a POST with `value` JSON-encoded. Content-Type
+/// is set to `application/json` automatically.
+func postJson(url: string, value: any): Response {
+    return request("POST", url).withJson(value).send()
+}
+
+/// urlEncode percent-encodes `value` per RFC 3986 form-encoding
+/// rules. Use to build query strings or form bodies safely.
+/// Backend: `url.QueryEscape`. Frontend: `encodeURIComponent`.
+func urlEncode(value: string): string {
+    return __urlEncode(value)
+}
+
+extern {
+    /// __newHeaderMap returns a fresh empty `map<string, string>`.
+    /// Sova has no map-literal syntax (see BUGS #13).
+    func __newHeaderMap(): map<string, string> = {
+        backend: "func() map[string]string { return map[string]string{} }",
+        frontend: "() => ({})"
+    }
+
+    /// __headerSet inserts/replaces an entry in the header map.
+    func __headerSet(m: map<string, string>, key: string, value: string) = {
+        backend: "func(m map[string]string, k string, v string) { m[k] = v }",
+        frontend: "(m, k, v) => { m[k] = v }"
+    }
+
+    /// __urlEncode percent-encodes a single value. Backend uses
+    /// `url.QueryEscape` (RFC 3986 form-encoding). Frontend uses
+    /// `encodeURIComponent` which is almost the same — differs on
+    /// a handful of characters (`!`, `'`, `(`, `)`, `*`) — but
+    /// close enough for query-string and form-body building.
+    func __urlEncode(value: string): string = {
+        backend("net/url"): "func(v string) string { return url.QueryEscape(v) }",
+        frontend: "(v) => encodeURIComponent(String(v))"
+    }
+
+    /// __doRequest is the transport call. Returns an opaque handle
+    /// the Sova `send()` wrapper unpacks via `__resStatus` /
+    /// `__resBody` / `__resBodyBytes` / `__resHeaders`. Two-level
+    /// indirection because Sova-mangled struct names can't be
+    /// referenced from inline-extern Go/JS bodies.
+    ///
+    /// Backend: builds an `http.Request`, runs it through a per-
+    /// call client with the requested timeout, copies the response
+    /// into a Go map. Frontend: calls `fetch(url, {method, body,
+    /// headers, signal})` with an `AbortController` for the
+    /// timeout, awaits text, collects headers via the iterator.
+    /// Both flavours synthesise a `{status: 0, body: errMsg,
+    /// headers: {}}` shape on transport failure so the Sova-side
+    /// helpers never see a null/undefined handle.
+    async func __doRequest(method: string, url: string, body: string, headers: map<string, string>, timeoutMs: int): any = {
+        backend("net/http"): "func(method string, url string, body string, headers map[string]string, timeoutMs int64) any { type httpResult struct { Status int64; Body string; BodyBytes []byte; Headers map[string]string }; httpReq, err := http.NewRequest(method, url, strings.NewReader(body)); if err != nil { return &httpResult{Status: 0, Body: err.Error(), Headers: map[string]string{}} }; for k, v := range headers { httpReq.Header.Set(k, v) }; timeout := time.Duration(timeoutMs) * time.Millisecond; if timeoutMs <= 0 { timeout = 0 }; client := &http.Client{Timeout: timeout}; resp, err := client.Do(httpReq); if err != nil { return &httpResult{Status: 0, Body: err.Error(), Headers: map[string]string{}} }; defer resp.Body.Close(); bodyBytes, _ := io.ReadAll(resp.Body); outHeaders := map[string]string{}; for k, vs := range resp.Header { if len(vs) > 0 { outHeaders[k] = vs[len(vs)-1] } }; return &httpResult{Status: int64(resp.StatusCode), Body: string(bodyBytes), BodyBytes: bodyBytes, Headers: outHeaders} }",
+        frontend: "async (method, url, body, headers, timeoutMs) => { const ctrl = new AbortController(); let t = null; if (timeoutMs > 0) { t = setTimeout(() => ctrl.abort(), timeoutMs); } try { const init = { method, headers, signal: ctrl.signal }; if (method !== 'GET' && method !== 'HEAD' && body) { init.body = body; } const resp = await fetch(url, init); const text = await resp.text(); const outHeaders = {}; resp.headers.forEach((v, k) => { outHeaders[k] = v; }); return { Status: resp.status, Body: text, BodyBytes: [], Headers: outHeaders }; } catch (err) { return { Status: 0, Body: (err && err.message) ? err.message : String(err), BodyBytes: [], Headers: {} }; } finally { if (t !== null) clearTimeout(t); } }"
+    }
+
+    /// __resStatus / __resBody / __resBodyBytes / __resHeaders
+    /// pull individual fields off the opaque `__doRequest` handle.
+    /// Backend uses reflection because the anonymous struct shape
+    /// inside `__doRequest` isn't named (and the alternative —
+    /// referencing the Sova-mangled `*Response` type — isn't
+    /// available from inline-extern Go). Frontend just reads JS
+    /// object properties.
+    func __resStatus(handle: any): int = {
+        backend("reflect"): "func(h any) int64 { v := reflect.ValueOf(h).Elem().FieldByName(\"Status\"); return v.Int() }",
+        frontend: "(h) => (h && typeof h.Status === 'number') ? h.Status : 0"
+    }
+
+    func __resBody(handle: any): string = {
+        backend("reflect"): "func(h any) string { v := reflect.ValueOf(h).Elem().FieldByName(\"Body\"); return v.String() }",
+        frontend: "(h) => (h && typeof h.Body === 'string') ? h.Body : ''"
+    }
+
+    func __resBodyBytes(handle: any): []byte = {
+        backend("reflect"): "func(h any) []byte { v := reflect.ValueOf(h).Elem().FieldByName(\"BodyBytes\"); return v.Bytes() }",
+        frontend: "(h) => (h && Array.isArray(h.BodyBytes)) ? h.BodyBytes : []"
+    }
+
+    func __resHeaders(handle: any): map<string, string> = {
+        backend("reflect"): "func(h any) map[string]string { v := reflect.ValueOf(h).Elem().FieldByName(\"Headers\"); return v.Interface().(map[string]string) }",
+        frontend: "(h) => (h && h.Headers && typeof h.Headers === 'object') ? h.Headers : {}"
+    }
+}

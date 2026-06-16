@@ -28,6 +28,10 @@ func (v *BaseSovaVisitor) VisitPkgIdent(ctx *PkgIdentContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 
+func (v *BaseSovaVisitor) VisitSoftId(ctx *SoftIdContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
 func (v *BaseSovaVisitor) VisitSideDecl(ctx *SideDeclContext) interface{} {
 	return v.VisitChildren(ctx)
 }
@@ -480,6 +484,10 @@ func (v *BaseSovaVisitor) VisitMultiAssignmentExprStmt(ctx *MultiAssignmentExprS
 	return v.VisitChildren(ctx)
 }
 
+func (v *BaseSovaVisitor) VisitIndexAssignmentExprStmt(ctx *IndexAssignmentExprStmtContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
 func (v *BaseSovaVisitor) VisitAssignmentExprStmt(ctx *AssignmentExprStmtContext) interface{} {
 	return v.VisitChildren(ctx)
 }
@@ -517,6 +525,10 @@ func (v *BaseSovaVisitor) VisitIndexExpr(ctx *IndexExprContext) interface{} {
 }
 
 func (v *BaseSovaVisitor) VisitCmpBinaryExpr(ctx *CmpBinaryExprContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitSliceRangeExpr(ctx *SliceRangeExprContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 

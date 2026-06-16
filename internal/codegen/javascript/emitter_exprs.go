@@ -133,6 +133,19 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		index := e.buildExpr(ctx, pkg, f, x.Index)
 		return base.Index(index)
 
+	case *ir.SliceRangeExpr:
+		base := e.buildExpr(ctx, pkg, f, x.Expr)
+		args := []*jsgen.Statement{}
+		if x.Low != nil {
+			args = append(args, e.buildExpr(ctx, pkg, f, x.Low))
+		} else {
+			args = append(args, jsgen.Id("0"))
+		}
+		if x.High != nil {
+			args = append(args, e.buildExpr(ctx, pkg, f, x.High))
+		}
+		return base.Dot("slice").Call(args...)
+
 	case *ir.FieldAccessExpr:
 		if x.ResolvedSym != 0 {
 			return jsgen.Id(symName(ctx, x.ResolvedSym))

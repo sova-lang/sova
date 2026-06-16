@@ -306,7 +306,7 @@ func (p *PassAnalyzeSharedMembers) checkSymReference(pc *PassContext, td *ir.Typ
 	if ref.Name == "this" || ref.Name == "" {
 		return
 	}
-	sym, ok := pc.Pkg.Syms.GetByID(ref.Sym)
+	sym, ok := lookupSymGlobal(pc, ref.Sym)
 	if !ok {
 		pc.Diag.Report(diag.ErrSharedReferencesBackendSymbol, ref.Span, td.Name.Name, methodName, ref.Name)
 		return
@@ -400,8 +400,26 @@ func isTransferableType(pc *PassContext, t ir.TypID) bool {
 		return true
 	case ir.TK_Struct, ir.TK_Enum:
 		return true
+	case ir.TK_TypeParam:
+		return true
 	}
 	return false
+}
+
+// lookupSymGlobal resolves a SymID against the current package's symbol table first, then falls back to every other package's symbol table. SymIDs are allocated globally but the per-package `Syms` slot only stores symbols declared in that package, so cross-package references (built-ins from `std/__globals__`, helpers from another stdlib package) require this two-stage lookup.
+func lookupSymGlobal(pc *PassContext, symID ir.SymID) (*ir.Symbol, bool) {
+	if sym, ok := pc.Pkg.Syms.GetByID(symID); ok {
+		return sym, true
+	}
+	for _, pkg := range pc.Pkgs {
+		if pkg == pc.Pkg {
+			continue
+		}
+		if sym, ok := pkg.Syms.GetByID(symID); ok {
+			return sym, true
+		}
+	}
+	return nil, false
 }
 
 // formatTypeShort renders a TypID as a short human-readable label suitable for diagnostic messages. Mirrors the wire analyser's formatting so the two surfaces stay visually aligned.

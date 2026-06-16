@@ -23,6 +23,9 @@ type SovaListener interface {
 	// EnterPkgIdent is called when entering the pkgIdent production.
 	EnterPkgIdent(c *PkgIdentContext)
 
+	// EnterSoftId is called when entering the softId production.
+	EnterSoftId(c *SoftIdContext)
+
 	// EnterSideDecl is called when entering the sideDecl production.
 	EnterSideDecl(c *SideDeclContext)
 
@@ -362,6 +365,9 @@ type SovaListener interface {
 	// EnterMultiAssignmentExprStmt is called when entering the MultiAssignmentExprStmt production.
 	EnterMultiAssignmentExprStmt(c *MultiAssignmentExprStmtContext)
 
+	// EnterIndexAssignmentExprStmt is called when entering the IndexAssignmentExprStmt production.
+	EnterIndexAssignmentExprStmt(c *IndexAssignmentExprStmtContext)
+
 	// EnterAssignmentExprStmt is called when entering the AssignmentExprStmt production.
 	EnterAssignmentExprStmt(c *AssignmentExprStmtContext)
 
@@ -391,6 +397,9 @@ type SovaListener interface {
 
 	// EnterCmpBinaryExpr is called when entering the CmpBinaryExpr production.
 	EnterCmpBinaryExpr(c *CmpBinaryExprContext)
+
+	// EnterSliceRangeExpr is called when entering the SliceRangeExpr production.
+	EnterSliceRangeExpr(c *SliceRangeExprContext)
 
 	// EnterComposableCallExpr is called when entering the ComposableCallExpr production.
 	EnterComposableCallExpr(c *ComposableCallExprContext)
@@ -553,6 +562,9 @@ type SovaListener interface {
 
 	// ExitPkgIdent is called when exiting the pkgIdent production.
 	ExitPkgIdent(c *PkgIdentContext)
+
+	// ExitSoftId is called when exiting the softId production.
+	ExitSoftId(c *SoftIdContext)
 
 	// ExitSideDecl is called when exiting the sideDecl production.
 	ExitSideDecl(c *SideDeclContext)
@@ -893,6 +905,9 @@ type SovaListener interface {
 	// ExitMultiAssignmentExprStmt is called when exiting the MultiAssignmentExprStmt production.
 	ExitMultiAssignmentExprStmt(c *MultiAssignmentExprStmtContext)
 
+	// ExitIndexAssignmentExprStmt is called when exiting the IndexAssignmentExprStmt production.
+	ExitIndexAssignmentExprStmt(c *IndexAssignmentExprStmtContext)
+
 	// ExitAssignmentExprStmt is called when exiting the AssignmentExprStmt production.
 	ExitAssignmentExprStmt(c *AssignmentExprStmtContext)
 
@@ -922,6 +937,9 @@ type SovaListener interface {
 
 	// ExitCmpBinaryExpr is called when exiting the CmpBinaryExpr production.
 	ExitCmpBinaryExpr(c *CmpBinaryExprContext)
+
+	// ExitSliceRangeExpr is called when exiting the SliceRangeExpr production.
+	ExitSliceRangeExpr(c *SliceRangeExprContext)
 
 	// ExitComposableCallExpr is called when exiting the ComposableCallExpr production.
 	ExitComposableCallExpr(c *ComposableCallExprContext)

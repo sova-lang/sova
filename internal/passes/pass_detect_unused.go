@@ -242,9 +242,19 @@ func (p *PassDetectUnused) trackUsageExpr(pc *PassContext, expr ir.Expr) {
 		p.trackUsageExpr(pc, e.Right)
 	case *ir.AsExpr:
 		p.trackUsageExpr(pc, e.Expr)
+	case *ir.OptionUnwrapExpr:
+		p.trackUsageExpr(pc, e.Expr)
 	case *ir.IndexExpr:
 		p.trackUsageExpr(pc, e.Expr)
 		p.trackUsageExpr(pc, e.Index)
+	case *ir.SliceRangeExpr:
+		p.trackUsageExpr(pc, e.Expr)
+		if e.Low != nil {
+			p.trackUsageExpr(pc, e.Low)
+		}
+		if e.High != nil {
+			p.trackUsageExpr(pc, e.High)
+		}
 	case *ir.FieldAccessExpr:
 		if e.ResolvedSym != 0 {
 			clearUnused(pc, e.ResolvedSym)

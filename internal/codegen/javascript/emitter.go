@@ -83,6 +83,10 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 		e.jf.Add(jsgen.Raw(importLine))
 	}
 
+	if envInit := dotenvSovaEnvJS(ctx); envInit != "" {
+		e.jf.Add(jsgen.Raw(envInit))
+	}
+
 	e.jf.Add(jsgen.Raw(sovaReifyRuntime))
 	if v, ok := ctx.Cache["needs_session_manager"].(bool); ok && v {
 		e.jf.Add(jsgen.Raw(sovaWSClientRuntime))

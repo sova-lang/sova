@@ -8,7 +8,10 @@ fileHeader : packageDecl? sideDecl
 
 packageDecl : 'package' packagePath;
 packagePath : pkgIdent ('/' pkgIdent)*;
-pkgIdent : ID | SIDE_FRONTEND | SIDE_BACKEND | SIDE_SHARED | SIDE_SYNTH;
+pkgIdent : softId | SIDE_FRONTEND | SIDE_BACKEND | SIDE_SHARED | SIDE_SYNTH;
+
+// softId admits both real identifiers AND the synth-only soft-reserved keywords (`where`, `to`, `append`) wherever an identifier is grammatically expected. The synth grammar's parser rules still expect these as literal tokens in their own positions (`emit append to ID`, `for ... where ...`) — the alternative-branch trick lets user code freely use the same words as function/field/method/variable names without colliding with the synth keywords. See Faithbook BUGS.md #20 for the motivation.
+softId : ID | 'where' | 'to' | 'append';
 
 sideDecl : 'on' side;
 side : SIDE_FRONTEND
@@ -85,18 +88,18 @@ block : LBRACE stmt* RBRACE;
 
 // Decl Statements
 varDeclStmt : annotation* wireSpec? (LET|CONST) varDeclTarget (',' varDeclTarget)* '=' expr;
-varDeclTarget : ID typeAnnot?
+varDeclTarget : softId typeAnnot?
               | '_'
               ;
 
-funcDeclStmt : annotation* wireSpec? 'func' ID genericParams? '(' funcParamList? ')' typeAnnot? sideDecl? block;
+funcDeclStmt : annotation* wireSpec? 'func' softId genericParams? '(' funcParamList? ')' typeAnnot? sideDecl? block;
 genericParams : LT genericParam (',' genericParam)* GT;
 genericParam : ID (':' qualifiedRef ('+' qualifiedRef)*)? ('with' qualifiedRef ('+' qualifiedRef)*)?;
 wireSpec : 'wire' (':' ID)? wireOptions?;
 wireOptions : '(' wireOption (',' wireOption)* ')';
 wireOption : ID ':' expr;
 funcParamList : funcParam (',' funcParam)*;
-funcParam : annotation* VARARG? ID typeAnnot ('=' expr)?;
+funcParam : annotation* VARARG? softId typeAnnot ('=' expr)?;
 
 externDecl : 'extern' 'default'? STRING_LITERAL? LBRACE externItem* RBRACE;
 externItem : externFunc
@@ -104,8 +107,8 @@ externItem : externFunc
            | typeDeclStmt
            | interfaceDeclStmt
            ;
-externFunc : 'async'? 'func' ID genericParams? '(' funcParamList? ')' typeAnnot? '=' externMapping;
-externVar : (LET|CONST) ID typeAnnot '=' externMapping;
+externFunc : 'async'? 'func' softId genericParams? '(' funcParamList? ')' typeAnnot? '=' externMapping;
+externVar : (LET|CONST) softId typeAnnot '=' externMapping;
 externMapping : STRING_LITERAL                                              #SimpleExternMapping
               | LBRACE externSideMapping (',' externSideMapping)* RBRACE    #SharedExternMapping
               ;
@@ -121,20 +124,20 @@ enumFieldDef : ID typeAnnot ('=' expr)?;
 enumBody : (enumCase (',' enumCase)*)? enumMethod*;
 enumCase : ID enumCaseArgs? ('=' INT_LITERAL)?;
 enumCaseArgs : '(' (expr (',' expr)*)? ')';
-enumMethod : 'func' ID '(' funcParamList? ')' typeAnnot? block;
+enumMethod : 'func' softId '(' funcParamList? ')' typeAnnot? block;
 
 // Type Statements
 typeDeclStmt : annotation* 'type' ID genericParams? typeClause* LBRACE typeMember* RBRACE;
 typeClause : implementsClause | withClause ;
 implementsClause : 'implements' ID (',' ID)*;
 withClause : 'with' qualifiedRef (',' qualifiedRef)*;
-qualifiedRef : ID ('.' ID)?;
+qualifiedRef : softId ('.' softId)?;
 typeMember : fieldDecl
            | ctorDecl
            | methodDecl
            | castDecl
            ;
-fieldDecl : annotation* memberModifier* ID typeAnnot ('=' expr)?;
+fieldDecl : annotation* memberModifier* softId typeAnnot ('=' expr)?;
 ctorDecl : annotation* memberModifier* 'new' '(' funcParamList? ')' block?;
 methodDecl : annotation* memberModifier* 'func' methodName '(' funcParamList? ')' typeAnnot? block?;
 castDecl : annotation* memberModifier* 'cast' '(' ID typeAnnot ')' typeAnnot? block;
@@ -142,21 +145,21 @@ memberModifier : 'private' | 'shared';
 
 annotation : '@' ID ('(' (expr (',' expr)*)? ')')?;
 
-composableChild : ID ('.' ID)? LBRACE composableChild* RBRACE   #ComposableBareChild
+composableChild : softId ('.' softId)? LBRACE composableChild* RBRACE   #ComposableBareChild
                 | expr                                          #ComposableExprChild
                 | ifStmt                                        #ComposableIfChild
                 | forStmt                                       #ComposableForChild
                 | whileStmt                                     #ComposableWhileChild
                 | switchStmt                                    #ComposableSwitchChild
                 ;
-methodName : ID
+methodName : softId
            | 'op' opSymbol
            ;
 opSymbol : PLUS | MINUS | MULT | DIV | MOD | EQUAL;
 
 // Interface Statements
 interfaceDeclStmt : 'interface' ID LBRACE methodSignature* RBRACE;
-methodSignature : memberModifier* 'func' ID '(' funcParamList? ')' typeAnnot?;
+methodSignature : memberModifier* 'func' softId '(' funcParamList? ')' typeAnnot?;
 
 // Mixin Statements
 mixinDeclStmt : 'mixin' ID LBRACE mixinMember* RBRACE;
@@ -219,24 +222,26 @@ forRangeCondition : ID 'in' expr '..' expr;
 whileStmt : 'while' expr block;
 
 // --- Expressions --- \\
-exprStmt : ID genericArgs '(' funcArgList? ')'                  #GenericFuncCallExprStmt
+exprStmt : softId genericArgs '(' funcArgList? ')'              #GenericFuncCallExprStmt
          | expr '(' funcArgList? ')'                            #FuncCallExprStmt
-         | (INC | DEC) ID                                       #PrefixUnaryExprStmt
-         | ID (INC | DEC)                                       #PostfixUnaryExprStmt
-         | ID ('.' ID)+ assignmentOp expr                       #FieldAssignmentExprStmt
+         | (INC | DEC) softId                                   #PrefixUnaryExprStmt
+         | softId (INC | DEC)                                   #PostfixUnaryExprStmt
+         | softId ('.' softId)+ assignmentOp expr               #FieldAssignmentExprStmt
          | assignmentTarget (',' assignmentTarget)* '=' expr    #MultiAssignmentExprStmt
-         | ID assignmentOp expr                                 #AssignmentExprStmt
+         | expr LBRACK expr RBRACK assignmentOp expr            #IndexAssignmentExprStmt
+         | softId assignmentOp expr                             #AssignmentExprStmt
          ;
 
-assignmentTarget : ID
+assignmentTarget : softId
                  | '_'
                  ;
 
-expr : ID genericArgs '(' funcArgList? ')'                              #GenericFuncCallExpr
+expr : softId genericArgs '(' funcArgList? ')'                          #GenericFuncCallExpr
      | pkgIdent                                                         #IdExpr
      | expr '(' funcArgList? ')' LBRACE composableChild* RBRACE         #ComposableCallExpr
      | expr '(' funcArgList? ')'                                        #FuncCallExpr
-     | expr ('.' ID)+                                                   #FieldAccessExpr
+     | expr ('.' softId)+                                               #FieldAccessExpr
+     | expr LBRACK expr? ':' expr? RBRACK                               #SliceRangeExpr
      | expr LBRACK expr RBRACK                                          #IndexExpr
      | unaryOp expr                                                     #UnaryExpr
      | (INC | DEC) expr                                                 #PrefixUnaryExpr
@@ -260,13 +265,13 @@ expr : ID genericArgs '(' funcArgList? ')'                              #Generic
      | literal                                                          #LitExpr
      | 'when' expr LBRACE whenCase* defaultWhenCase RBRACE              #WhenExpr
      | 'func' '(' funcParamList? ')' typeAnnot? block                   #FuncLiteralExpr
-     | 'new' pkgIdent ('.' ID)? genericArgs? ('(' funcArgList? ')')?   #NewInstanceExpr
+     | 'new' pkgIdent ('.' softId)? genericArgs? ('(' funcArgList? ')')?   #NewInstanceExpr
      | 'chan' '<' type '>' '(' expr? ')'                                #ChanInitExpr
      | '@'                                                              #SessionExpr
      ;
 
 funcArgList : funcArg (',' funcArg)*;
-funcArg : (ID ':')? expr;
+funcArg : (softId ':')? expr;
 
 whenCase : expr (',' expr)* '=>' expr;
 defaultWhenCase : '_' '=>' expr;
@@ -300,9 +305,9 @@ literal : INT_LITERAL
         | map_literal
         | tuple_literal
         ;
-array_literal : '[' (expr (',' expr)*)? ']';
-map_literal : '{' (expr ':' expr ((',' expr ':' expr)*|','?))? '}';
-tuple_literal : '(' (expr (',' expr)*)? ')';
+array_literal : '[' (expr (',' expr)* ','?)? ']';
+map_literal : '{' (expr ':' expr (',' expr ':' expr)* ','?)? '}';
+tuple_literal : '(' (expr (',' expr)* ','?)? ')';
 
 // --- Types --- \\
 typeAnnot : ':'? type; // make colon optional for better reading

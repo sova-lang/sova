@@ -23,6 +23,9 @@ type SovaVisitor interface {
 	// Visit a parse tree produced by SovaParser#pkgIdent.
 	VisitPkgIdent(ctx *PkgIdentContext) interface{}
 
+	// Visit a parse tree produced by SovaParser#softId.
+	VisitSoftId(ctx *SoftIdContext) interface{}
+
 	// Visit a parse tree produced by SovaParser#sideDecl.
 	VisitSideDecl(ctx *SideDeclContext) interface{}
 
@@ -362,6 +365,9 @@ type SovaVisitor interface {
 	// Visit a parse tree produced by SovaParser#MultiAssignmentExprStmt.
 	VisitMultiAssignmentExprStmt(ctx *MultiAssignmentExprStmtContext) interface{}
 
+	// Visit a parse tree produced by SovaParser#IndexAssignmentExprStmt.
+	VisitIndexAssignmentExprStmt(ctx *IndexAssignmentExprStmtContext) interface{}
+
 	// Visit a parse tree produced by SovaParser#AssignmentExprStmt.
 	VisitAssignmentExprStmt(ctx *AssignmentExprStmtContext) interface{}
 
@@ -391,6 +397,9 @@ type SovaVisitor interface {
 
 	// Visit a parse tree produced by SovaParser#CmpBinaryExpr.
 	VisitCmpBinaryExpr(ctx *CmpBinaryExprContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#SliceRangeExpr.
+	VisitSliceRangeExpr(ctx *SliceRangeExprContext) interface{}
 
 	// Visit a parse tree produced by SovaParser#ComposableCallExpr.
 	VisitComposableCallExpr(ctx *ComposableCallExprContext) interface{}

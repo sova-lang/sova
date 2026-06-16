@@ -38,4 +38,225 @@ extern {
         frontend: "() => { var r = (typeof __sovaJSRandom === 'function') ? __sovaJSRandom() : Math.floor(Math.random() * 0x7fffffff); return (r & 1) === 1; }",
         backend: "func() bool { var r int64; if __sovaTestHarnessActive() { r = __sovaTestRandom() } else { r = time.Now().UnixNano() }; return r & 1 == 1 }"
     }
+
+    /// bytes returns `count` cryptographically-secure random bytes. Backend draws from `crypto/rand` (kernel CSPRNG); frontend draws from `crypto.getRandomValues` (browser CSPRNG). Use for tokens, session IDs, refresh tokens, anything that must not be guessable — the other helpers in this module are seeded from wall-clock time and explicitly NOT cryptographically secure.
+    func bytes(count: int): []byte = {
+        frontend: "(n) => { const arr = new Uint8Array(n); (globalThis.crypto || globalThis.msCrypto).getRandomValues(arr); return Array.from(arr); }",
+        backend("crypto/rand"): "func(n int64) []byte { b := make([]byte, n); _, _ = rand.Read(b); return b }"
+    }
+
+    /// hex returns `byteCount` cryptographically-secure random bytes hex-encoded as a 2*byteCount string. Common shape for refresh tokens and opaque session ids — `random.hex(32)` gives 64 hex chars (256 bits of entropy). Same CSPRNG backing as `bytes`; the hex encoding is the only difference.
+    func hex(byteCount: int): string = {
+        frontend: "(n) => { const arr = new Uint8Array(n); (globalThis.crypto || globalThis.msCrypto).getRandomValues(arr); let s = ''; for (let i = 0; i < arr.length; i++) { const v = arr[i].toString(16); s += v.length === 1 ? '0' + v : v; } return s; }",
+        backend("crypto/rand"): "func(n int64) string { b := make([]byte, n); _, _ = rand.Read(b); return hex.EncodeToString(b) }"
+    }
+}
+
+/// Rng is a seeded pseudo-random generator with explicit,
+/// mutable state — call `seeded(n)` to get a fresh one. Useful
+/// when you need reproducible sequences (tests, deterministic
+/// simulations, replayable procedural content).
+///
+/// Implementation is the **Park–Miller** linear congruential
+/// generator (`state * 48271 mod 2147483647`), chosen because
+/// every step stays within `Number.MAX_SAFE_INTEGER` — the
+/// sequence is **bit-identical between backend and frontend**
+/// for the same seed, so you can pre-generate a sequence
+/// server-side and the client-side replay matches exactly.
+///
+/// **Not cryptographically secure.** For tokens / session IDs
+/// use `random.bytes` or `random.hex` instead.
+type Rng {
+    private state: int = 1
+
+    new() {}
+
+    new(seed: int) {
+        let s = seed
+        if s < 0 {
+            s = -s
+        }
+        s = s % 2147483647
+        if s == 0 {
+            s = 1
+        }
+        this.state = s
+    }
+
+    /// nextInt advances the state and returns the next integer
+    /// in the sequence, always in the range [1, 2147483647).
+    func nextInt(): int {
+        this.state = (this.state * 48271) % 2147483647
+        return this.state
+    }
+
+    /// nextFloat returns the next value in the sequence mapped
+    /// to [0, 1). Suitable for weighted-random thresholding.
+    func nextFloat(): float {
+        return (this.nextInt() as float) / 2147483647.0
+    }
+
+    /// intBetween returns the next value mapped to the
+    /// half-open integer range [lo, hi). `hi` must be greater
+    /// than `lo`; behaviour is undefined otherwise.
+    func intBetween(lo: int, hi: int): int {
+        return lo + (this.nextInt() % (hi - lo))
+    }
+
+    /// floatBetween returns the next value mapped to the
+    /// half-open float range [lo, hi).
+    func floatBetween(lo: float, hi: float): float {
+        return lo + this.nextFloat() * (hi - lo)
+    }
+
+    /// nextBool returns a uniformly-random boolean from the
+    /// sequence.
+    func nextBool(): bool {
+        return this.nextInt() % 2 == 1
+    }
+}
+
+/// seeded constructs a deterministic `Rng` initialised with
+/// `seed`. The same seed always produces the same sequence
+/// on both backends.
+///
+/// ```sova
+/// let r = random.seeded(42)
+/// for i in 0..10 {
+///     println(r.intBetween(0, 100))   // same 10 numbers every run
+/// }
+/// ```
+///
+/// Seed 0 (or any multiple of 2147483647) is normalised to 1
+/// to avoid the degenerate fixed-point of the LCG.
+func seeded(seed: int): Rng {
+    return new Rng(seed)
+}
+
+/// WeightedPool<T> is a collection of items each tagged with a
+/// probability weight, supporting weighted-random selection.
+/// Construct empty, add `(item, weight)` pairs, then call
+/// `pick`.
+///
+/// ```sova
+/// let pool = new random.WeightedPool<string>()
+/// pool.add("common", 0.7)
+/// pool.add("rare", 0.25)
+/// pool.add("legendary", 0.05)
+/// let drop = pool.pick() ?? "nothing"   // 70/25/5 distribution
+/// ```
+///
+/// `pick(remove: false)` (the default) samples with replacement
+/// — the pool is unchanged. `pick(remove: true)` samples
+/// without replacement — the selected item and its weight are
+/// dropped from the pool. Useful for drawing N distinct items:
+/// `for _ in 0..n { pool.pick(remove: true)! }`.
+///
+/// Weights are raw ratios — they don't have to sum to 1. Zero
+/// or negative weights are accepted but their items will never
+/// be picked. An empty pool (or one whose weights all sum to
+/// ≤ 0) returns `none` from `pick`.
+///
+/// For deterministic sequences, pass a seeded `Rng` to
+/// `pickWith(rng, ...)` instead of using the default global
+/// (wall-clock-seeded) source.
+type WeightedPool<T> {
+    private items: []T = [ ]
+    private weights: []float = [ ]
+
+    new() {}
+
+    /// add appends `item` to the pool with the given `weight`.
+    /// Items with higher weights are picked more often.
+    func add(item: T, weight: float) {
+        this.items = this.items + [item]
+        this.weights = this.weights + [weight]
+    }
+
+    /// size returns the current number of items in the pool.
+    func size(): int {
+        return len(this.items)
+    }
+
+    /// isEmpty reports whether the pool has no items.
+    func isEmpty(): bool {
+        return len(this.items) == 0
+    }
+
+    /// totalWeight returns the sum of every weight currently
+    /// in the pool. Handy for showing the normalised
+    /// probability of any one item: `weight / pool.totalWeight()`.
+    func totalWeight(): float {
+        let s: float = 0.0
+        for w in this.weights {
+            s = s + w
+        }
+        return s
+    }
+
+    /// pick returns one random item, weighted by the assigned
+    /// probabilities. Uses the package-global random source
+    /// (wall-clock seeded). Returns `none` when the pool is
+    /// empty or all weights are non-positive.
+    ///
+    /// When `remove` is `true`, the selected item is removed
+    /// from the pool — subsequent `pick`s won't return it.
+    func pick(remove: bool = false): option<T> {
+        if len(this.items) == 0 {
+            return none
+        }
+        let total = this.totalWeight()
+        if total <= 0.0 {
+            return none
+        }
+        let roll = floatBetween(0.0, total)
+        return this.pickAt(roll, remove)
+    }
+
+    /// pickWith is `pick` but rolls against the supplied `Rng`
+    /// rather than the global random source. Use to get a
+    /// reproducible draw from a deterministic seed.
+    func pickWith(rng: Rng, remove: bool = false): option<T> {
+        if len(this.items) == 0 {
+            return none
+        }
+        let total = this.totalWeight()
+        if total <= 0.0 {
+            return none
+        }
+        let roll = rng.floatBetween(0.0, total)
+        return this.pickAt(roll, remove)
+    }
+
+    private func pickAt(roll: float, remove: bool): option<T> {
+        let acc: float = 0.0
+        let idx: int = -1
+        for w, i in this.weights {
+            acc = acc + w
+            if roll < acc && idx == -1 {
+                idx = i
+            }
+        }
+        if idx < 0 {
+            idx = len(this.items) - 1
+        }
+        let chosen = this.items[idx]
+        if remove {
+            let outItems: []T = [ ]
+            let outWeights: []float = [ ]
+            for x, i in this.items {
+                if i != idx {
+                    outItems = outItems + [x]
+                }
+            }
+            for w, i in this.weights {
+                if i != idx {
+                    outWeights = outWeights + [w]
+                }
+            }
+            this.items = outItems
+            this.weights = outWeights
+        }
+        return chosen
+    }
 }

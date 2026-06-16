@@ -19,6 +19,8 @@ type BuildConfig struct {
 	TestMode                bool
 	SCSSCommand             string // SCSSCommand pins the `sass` / `dart-sass` binary the embed resolver uses for `.scss`/`.sass` files. Empty enables auto-discovery on PATH (looks for `sass`, then `dart-sass`); set explicitly via `[build.scss] command = "..."` in sova.toml when the binary lives outside PATH or has a non-standard name.
 	SCSSDisabled            bool   // SCSSDisabled short-circuits SCSS preprocessing entirely. Set via `[build.scss] enabled = false`; defaults to false so SCSS works as long as a binary is discoverable. `@embed` on `.scss` with SCSS disabled produces a clear diagnostic.
+	LoadedEnv             map[string]string
+	LoadedEnvPublicPrefix string // LoadedEnvPublicPrefix is the prefix that gates frontend exposure. Vars whose key starts with this prefix are baked into the frontend bundle; everything else stays backend-only. Empty means "expose nothing to the frontend".
 }
 
 // DefaultBuildConfig returns a BuildConfig populated with the compiler's built-in defaults.
@@ -67,6 +69,12 @@ func (c BuildConfig) SCSSCommandValue() string { return c.SCSSCommand }
 
 // SCSSDisabledValue returns true when SCSS preprocessing is explicitly disabled in the manifest. The embed resolver treats `.scss`/`.sass` paths as errors when this is true, even if a binary would otherwise be discoverable.
 func (c BuildConfig) SCSSDisabledValue() bool { return c.SCSSDisabled }
+
+// LoadedEnvValue returns the merged dotenv map the manifest's `[env].autoload` step produced (nil when autoload is off or no files were found). Codegen consumes this to inject `os.Setenv` defaults on the backend and a `globalThis.__SOVA_ENV` literal on the frontend.
+func (c BuildConfig) LoadedEnvValue() map[string]string { return c.LoadedEnv }
+
+// LoadedEnvPublicPrefixValue returns the manifest-configured key prefix that determines which loaded env variables get exposed to the frontend bundle. Empty means "expose nothing"; keys matching the prefix are baked in plaintext into the JS, so SECRET-prefixed names stay backend-only.
+func (c BuildConfig) LoadedEnvPublicPrefixValue() string { return c.LoadedEnvPublicPrefix }
 
 // CacheKey is the key under which the resolved BuildConfig is stored in the pass-manager cache.
 const CacheKey = "build_config"

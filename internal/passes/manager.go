@@ -109,6 +109,10 @@ func (pm *PassManager) Run(bag *diag.DiagnosticsBag, pkgs []*ir.PackageContext, 
 func runPassWithRecover(p Pass, pc *PassContext, passName string) (out error) {
 	defer func() {
 		if r := recover(); r != nil {
+			if pc.Diag.Errored() {
+				out = fmt.Errorf("[%s] aborted (upstream diagnostic; pass body bailed out)", passName)
+				return
+			}
 			pc.Diag.Report(diag.ErrPassPanic, diag.NoSpan, passName, fmt.Sprint(r))
 			out = fmt.Errorf("[%s] panic: %v (a syntax error earlier in the file usually causes this — fix the diagnostics above first)", passName, r)
 		}

@@ -51,6 +51,12 @@ func (s *BaseSovaListener) EnterPkgIdent(ctx *PkgIdentContext) {}
 // ExitPkgIdent is called when production pkgIdent is exited.
 func (s *BaseSovaListener) ExitPkgIdent(ctx *PkgIdentContext) {}
 
+// EnterSoftId is called when production softId is entered.
+func (s *BaseSovaListener) EnterSoftId(ctx *SoftIdContext) {}
+
+// ExitSoftId is called when production softId is exited.
+func (s *BaseSovaListener) ExitSoftId(ctx *SoftIdContext) {}
+
 // EnterSideDecl is called when production sideDecl is entered.
 func (s *BaseSovaListener) EnterSideDecl(ctx *SideDeclContext) {}
 
@@ -729,6 +735,12 @@ func (s *BaseSovaListener) EnterMultiAssignmentExprStmt(ctx *MultiAssignmentExpr
 // ExitMultiAssignmentExprStmt is called when production MultiAssignmentExprStmt is exited.
 func (s *BaseSovaListener) ExitMultiAssignmentExprStmt(ctx *MultiAssignmentExprStmtContext) {}
 
+// EnterIndexAssignmentExprStmt is called when production IndexAssignmentExprStmt is entered.
+func (s *BaseSovaListener) EnterIndexAssignmentExprStmt(ctx *IndexAssignmentExprStmtContext) {}
+
+// ExitIndexAssignmentExprStmt is called when production IndexAssignmentExprStmt is exited.
+func (s *BaseSovaListener) ExitIndexAssignmentExprStmt(ctx *IndexAssignmentExprStmtContext) {}
+
 // EnterAssignmentExprStmt is called when production AssignmentExprStmt is entered.
 func (s *BaseSovaListener) EnterAssignmentExprStmt(ctx *AssignmentExprStmtContext) {}
 
@@ -788,6 +800,12 @@ func (s *BaseSovaListener) EnterCmpBinaryExpr(ctx *CmpBinaryExprContext) {}
 
 // ExitCmpBinaryExpr is called when production CmpBinaryExpr is exited.
 func (s *BaseSovaListener) ExitCmpBinaryExpr(ctx *CmpBinaryExprContext) {}
+
+// EnterSliceRangeExpr is called when production SliceRangeExpr is entered.
+func (s *BaseSovaListener) EnterSliceRangeExpr(ctx *SliceRangeExprContext) {}
+
+// ExitSliceRangeExpr is called when production SliceRangeExpr is exited.
+func (s *BaseSovaListener) ExitSliceRangeExpr(ctx *SliceRangeExprContext) {}
 
 // EnterComposableCallExpr is called when production ComposableCallExpr is entered.
 func (s *BaseSovaListener) EnterComposableCallExpr(ctx *ComposableCallExprContext) {}

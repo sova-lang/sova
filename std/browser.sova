@@ -228,7 +228,7 @@ type Element {
     func setAttr(name: string, v: string) { _setAttr(this._h, name, v) }
     func removeAttr(name: string) { _removeAttr(this._h, name) }
 
-    func append(child: Element) { _append(this._h, child.handle()) }
+    func appendChild(child: Element) { _append(this._h, child.handle()) }
     func remove() { _remove(this._h) }
     func clear() { _clear(this._h) }
     func dispatch(event: string) { _dispatch(this._h, event) }

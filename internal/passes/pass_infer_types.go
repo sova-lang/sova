@@ -26,9 +26,79 @@ func (p *PassInferTypes) Run(pc *PassContext) error {
 		p.preComputeFuncSignatures(pc, f.Hir.Statements)
 	}
 	for _, f := range pc.Pkg.Files {
+		p.preComputeTopLevelVarSignatures(pc, f.Hir.Statements)
+	}
+	for _, f := range pc.Pkg.Files {
+		p.preComputeStructFields(pc, f.Hir.Statements)
+	}
+	for _, f := range pc.Pkg.Files {
 		p.resolveStmts(pc, f.Hir.Statements)
 	}
 	return nil
+}
+
+// preComputeStructFields walks every top-level TypeDeclStmt across all files in the package and stamps each struct type's `StructFields` from the field annotations alone (no default-expression inference, no embedded-mixin field promotion — those still happen in the main `resolveStmts` loop). Without this, a file that's alphabetically earlier than the file declaring `type T { x: int }` would resolve a `tval.x` field access against a type whose `StructFields` slice is still nil — the field lookup misses and the user sees `type T has no field 'x'`. Same root-cause pattern as `preComputeTopLevelVarSignatures` / `preComputeFuncSignatures`: per-file body resolution needs cross-file declaration types to be visible up front.
+//
+// Fields with no explicit type annotation (`@reactive x = 0`) stay at fieldType=0 in the pre-stamp. The main loop fills them in from defaults later; cross-file access to a field with no annotation still depends on the declarer being processed first. The common case in user code is a typed field with an optional default, which this covers.
+func (p *PassInferTypes) preComputeStructFields(pc *PassContext, stmts []ir.Stmt) {
+	for _, st := range stmts {
+		if ir.IsNilStmt(st) {
+			continue
+		}
+		td, ok := st.(*ir.TypeDeclStmt)
+		if !ok {
+			continue
+		}
+		fields := make([]ir.StructFieldInfo, 0, len(td.Fields))
+		for _, field := range td.Fields {
+			fieldType := ir.TypID(0)
+			if field.Type != nil {
+				fieldType = field.Type.Typ
+			}
+			fields = append(fields, ir.StructFieldInfo{
+				Name:       field.Name.Name,
+				Type:       fieldType,
+				Private:    field.Private,
+				Sym:        field.Name.Sym,
+				IsReactive: hasAnnotation(field.Annotations, "reactive"),
+				IsShared:   field.IsShared,
+			})
+			if field.Name.Sym != 0 && fieldType != 0 {
+				pc.Pkg.Syms.SetType(field.Name.Sym, fieldType)
+			}
+		}
+		structTyp := pc.Types.StructOf(pc.Pkg.Path.String(), td.Name.Name, fields)
+		if structTy, ok := pc.Types.GetByID(structTyp); ok {
+			structTy.StructFields = fields
+		}
+		// Stamp the type symbol's `.Typ` immediately so cross-file `new T()` / `t.x` expressions resolved during earlier-processed files see a non-zero type id. Otherwise NewExpr's `sym.Typ == 0` guard kicks in and the call evaluates to `<unresolved>`.
+		if td.Name.Sym != 0 {
+			pc.Pkg.Syms.SetType(td.Name.Sym, structTyp)
+		}
+	}
+}
+
+// preComputeTopLevelVarSignatures stamps the declared-type onto every top-level `let`/`const`-bound symbol that carries an explicit type annotation, before the main statement walker visits anything. Without this, a file that's alphabetically earlier than the file declaring a top-level `let myFlag: bool = ...` would see `myFlag`'s symbol with `Typ = 0` and emit a spurious `<unresolved>` diagnostic when resolving cross-file reads. Mirrors the exact ordering trick `preComputeExternSignatures` and `preComputeFuncSignatures` use for extern + function symbols. Top-level vars without an explicit type annotation (`let x = someExpr()`) stay at Typ=0 here and rely on the per-file resolver to fill them — those are visible to subsequent files via the same pre-stamp because the resolver walks before any cross-file lookup hits them; only forward-references from a file processed earlier than the declarer would still misbehave, which is rare and gets the same fix in a later iteration if anyone trips on it.
+func (p *PassInferTypes) preComputeTopLevelVarSignatures(pc *PassContext, stmts []ir.Stmt) {
+	for _, st := range stmts {
+		if ir.IsNilStmt(st) {
+			continue
+		}
+		vd, ok := st.(*ir.VarDeclStmt)
+		if !ok {
+			continue
+		}
+		for i := range vd.Targets {
+			target := &vd.Targets[i]
+			if target.Name == nil || target.Name.Sym == 0 {
+				continue
+			}
+			if target.TypeAnn == nil || target.TypeAnn.Typ == 0 {
+				continue
+			}
+			pc.Pkg.Syms.SetType(target.Name.Sym, target.TypeAnn.Typ)
+		}
+	}
 }
 
 // preComputeExternSignatures stamps the FuncOf type onto every extern function symbol so that other files referencing those externs can resolve them during body walking, regardless of file order. Without this, a file alphabetically earlier than the extern's source would see a 0-typed callee and emit a spurious "expected function" diagnostic.
@@ -849,12 +919,13 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 		case *ir.ExprStmt:
 			p.synthesizeTypeFromExpr(pc, st.Expr)
 		case *ir.FieldAssignmentStmt:
-			valTyp := p.synthesizeTypeFromExpr(pc, st.Value)
 			if st.Receiver.Sym == 0 {
+				p.synthesizeTypeFromExpr(pc, st.Value)
 				continue
 			}
 			recvSym, ok := pc.Pkg.Syms.GetByID(st.Receiver.Sym)
 			if !ok {
+				p.synthesizeTypeFromExpr(pc, st.Value)
 				continue
 			}
 			cur := recvSym.Typ
@@ -880,11 +951,54 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				}
 			}
 			if cur != 0 && cur != pc.Types.TypError() {
+				preTypeEmptyLiteralFromContext(pc.Types, st.Value, cur)
+			}
+			valTyp := p.synthesizeTypeFromExpr(pc, st.Value)
+			if cur != 0 && cur != pc.Types.TypError() {
 				if assignable, _ := isTypeAssignable(pc.Types, cur, valTyp); !assignable {
 					pc.Diag.Report(diag.ErrTypeMismatch, st.Span(), typeName(pc, cur), typeName(pc, valTyp))
 				}
 			}
+		case *ir.IndexAssignmentStmt:
+			tRecv := p.synthesizeTypeFromExpr(pc, st.Receiver)
+			tIdx := p.synthesizeTypeFromExpr(pc, st.Index)
+			if recvTy, ok := pc.Types.GetByID(tRecv); ok {
+				switch recvTy.Kind {
+				case ir.TK_Map:
+					preTypeEmptyLiteralFromContext(pc.Types, st.Value, recvTy.ValueType)
+				case ir.TK_Slice, ir.TK_Array:
+					preTypeEmptyLiteralFromContext(pc.Types, st.Value, recvTy.ElemType)
+				}
+			}
+			tVal := p.synthesizeTypeFromExpr(pc, st.Value)
+			recvTy, ok := pc.Types.GetByID(tRecv)
+			if !ok {
+				continue
+			}
+			switch recvTy.Kind {
+			case ir.TK_Map:
+				if assignable, _ := isTypeAssignable(pc.Types, recvTy.KeyType, tIdx); !assignable {
+					pc.Diag.Report(diag.ErrTypeMismatch, st.Index.Span(), typeName(pc, recvTy.KeyType), typeName(pc, tIdx))
+				}
+				if assignable, _ := isTypeAssignable(pc.Types, recvTy.ValueType, tVal); !assignable {
+					pc.Diag.Report(diag.ErrTypeMismatch, st.Value.Span(), typeName(pc, recvTy.ValueType), typeName(pc, tVal))
+				}
+			case ir.TK_Slice, ir.TK_Array:
+				if tIdx != pc.Types.PrimInt() {
+					pc.Diag.Report(diag.ErrTypeMismatch, st.Index.Span(), "int", typeName(pc, tIdx))
+				}
+				if assignable, _ := isTypeAssignable(pc.Types, recvTy.ElemType, tVal); !assignable {
+					pc.Diag.Report(diag.ErrTypeMismatch, st.Value.Span(), typeName(pc, recvTy.ElemType), typeName(pc, tVal))
+				}
+			default:
+				pc.Diag.Report(diag.ErrTypeNotIndexable, st.Receiver.Span(), typeKeyDisplay(recvTy))
+			}
 		case *ir.MultiAssignmentStmt:
+			if len(st.Targets) == 1 && st.Targets[0].Name != nil && st.Targets[0].Name.Sym != 0 {
+				if tgtSym, ok := pc.Pkg.Syms.GetByID(st.Targets[0].Name.Sym); ok {
+					preTypeEmptyLiteralFromContext(pc.Types, st.Value, tgtSym.Typ)
+				}
+			}
 			tValue := p.synthesizeTypeFromExpr(pc, st.Value)
 
 			if len(st.Targets) == 1 {
@@ -942,6 +1056,9 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 			}
 		case *ir.ReturnStmt:
 			for i, result := range st.Results {
+				if p.currentReturnTyp != 0 {
+					preTypeEmptyLiteralFromContext(pc.Types, result, p.currentReturnTyp)
+				}
 				rt := p.synthesizeTypeFromExpr(pc, result)
 				if p.currentReturnTyp != 0 && rt != 0 && rt != p.currentReturnTyp {
 					if assignable, _ := isTypeAssignable(pc.Types, p.currentReturnTyp, rt); !assignable {
@@ -1457,6 +1574,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 		if !ok {
 			return tt.TypError()
 		}
+		preTypeEmptyLiteralFromContext(tt, x.Right, leftSym.Typ)
 		tRight := p.synthesizeTypeFromExpr(pc, x.Right)
 		if ok, _ := isTypeAssignable(tt, leftSym.Typ, tRight); ok {
 			x.SetType(leftSym.Typ)
@@ -1493,6 +1611,52 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 			}
 			x.SetType(baseTy.ValueType)
 			return baseTy.ValueType
+		case ir.TK_PrimitiveString:
+			if tIndex != tt.PrimInt() {
+				pc.Diag.Report(diag.ErrTypeMismatch, x.Index.Span(), "int", tIndexTy)
+				return tt.TypError()
+			}
+			x.SetType(tt.PrimByte())
+			return tt.PrimByte()
+		case ir.TK_PrimitiveAny:
+			// Indexing into `any` is allowed — the value is a runtime-typed bag (typically a json.decode result). Result is itself `any`; the index type is unconstrained because we don't know whether the underlying value is a map (string key) or a slice (int key). Runtime panics on a bad shape; callers that want compile-time safety should still cast `value as map<string, any>` (or whichever concrete shape they expect) first.
+			x.SetType(tt.PrimAny())
+			return tt.PrimAny()
+		default:
+			pc.Diag.Report(diag.ErrTypeNotIndexable, x.Expr.Span(), typeKeyDisplay(baseTy))
+			return tt.TypError()
+		}
+	case *ir.SliceRangeExpr:
+		tBase := p.synthesizeTypeFromExpr(pc, x.Expr)
+		baseTy, ok := tt.GetByID(tBase)
+		if !ok {
+			return tt.TypError()
+		}
+		if x.Low != nil {
+			tLow := p.synthesizeTypeFromExpr(pc, x.Low)
+			if tLow != tt.PrimInt() {
+				pc.Diag.Report(diag.ErrTypeMismatch, x.Low.Span(), "int", typeName(pc, tLow))
+				return tt.TypError()
+			}
+		}
+		if x.High != nil {
+			tHigh := p.synthesizeTypeFromExpr(pc, x.High)
+			if tHigh != tt.PrimInt() {
+				pc.Diag.Report(diag.ErrTypeMismatch, x.High.Span(), "int", typeName(pc, tHigh))
+				return tt.TypError()
+			}
+		}
+		switch baseTy.Kind {
+		case ir.TK_Slice:
+			x.SetType(tBase)
+			return tBase
+		case ir.TK_Array:
+			sliceTyp := tt.SliceOf(baseTy.ElemType)
+			x.SetType(sliceTyp)
+			return sliceTyp
+		case ir.TK_PrimitiveString:
+			x.SetType(tt.PrimString())
+			return tt.PrimString()
 		default:
 			pc.Diag.Report(diag.ErrTypeNotIndexable, x.Expr.Span(), typeKeyDisplay(baseTy))
 			return tt.TypError()
@@ -2981,6 +3145,33 @@ func fieldAccessIsThroughThis(pc *PassContext, recv ir.Expr) bool {
 			return sym.Name == "this"
 		default:
 			return false
+		}
+	}
+}
+
+// preTypeEmptyLiteralFromContext seeds an empty `[]` / `{}` literal's TypID from the surrounding context (e.g. the enclosing function's declared return type) BEFORE generic inference kicks in. Empty literals carry no element-type signal of their own, so without this nudge they default to `[]any` / `map<any, any>` and then clash with any more specific declared type at the use site — `return []` from a `func(): []int` would fail. By pre-stamping the literal with the expected type, the inference's `if existing := x.GetType(); existing != 0` short-circuit accepts the literal as-is. No-op when the expression is not an empty array/map literal or the expected type doesn't match the literal kind.
+func preTypeEmptyLiteralFromContext(tt *ir.TypeTable, expr ir.Expr, expectedTyp ir.TypID) {
+	if expectedTyp == 0 || ir.IsNilExpr(expr) {
+		return
+	}
+	expectedTy, ok := tt.GetByID(expectedTyp)
+	if !ok {
+		return
+	}
+	switch x := expr.(type) {
+	case *ir.ArrayLiteral:
+		if len(x.Elems) != 0 || x.GetType() != 0 {
+			return
+		}
+		if expectedTy.Kind == ir.TK_Slice || expectedTy.Kind == ir.TK_Array {
+			x.SetType(expectedTyp)
+		}
+	case *ir.MapLiteral:
+		if len(x.Entries) != 0 || x.GetType() != 0 {
+			return
+		}
+		if expectedTy.Kind == ir.TK_Map {
+			x.SetType(expectedTyp)
 		}
 	}
 }

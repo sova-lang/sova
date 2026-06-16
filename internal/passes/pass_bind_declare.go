@@ -387,6 +387,14 @@ func (p *PassBindDeclare) bindStmtScopes(pkg *ir.PackageContext, st ir.Stmt, sco
 		return p.bindExprScopes(pkg, st.Expr, scope)
 	case *ir.FieldAssignmentStmt:
 		return p.bindExprScopes(pkg, st.Value, scope)
+	case *ir.IndexAssignmentStmt:
+		if err := p.bindExprScopes(pkg, st.Receiver, scope); err != nil {
+			return err
+		}
+		if err := p.bindExprScopes(pkg, st.Index, scope); err != nil {
+			return err
+		}
+		return p.bindExprScopes(pkg, st.Value, scope)
 	case *ir.MultiAssignmentStmt:
 		return p.bindExprScopes(pkg, st.Value, scope)
 	case *ir.IfStmt:
@@ -688,6 +696,18 @@ func (p *PassBindDeclare) bindExprScopes(pkg *ir.PackageContext, expr ir.Expr, s
 			return err
 		}
 		return p.bindExprScopes(pkg, x.Index, scope)
+	case *ir.SliceRangeExpr:
+		if err := p.bindExprScopes(pkg, x.Expr, scope); err != nil {
+			return err
+		}
+		if x.Low != nil {
+			if err := p.bindExprScopes(pkg, x.Low, scope); err != nil {
+				return err
+			}
+		}
+		if x.High != nil {
+			return p.bindExprScopes(pkg, x.High, scope)
+		}
 	case *ir.FieldAccessExpr:
 		return p.bindExprScopes(pkg, x.Expr, scope)
 	case *ir.RangeExpr:

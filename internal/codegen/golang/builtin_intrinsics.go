@@ -20,6 +20,40 @@ func emitSovaErrorType(block *jen.Group) {
 	))
 }
 
+// emitSovaAnyIndex writes the `__sovaAnyIndex` runtime helper that backs `anyValue[key]` access from Sova. Sova's type system lets you index into an `any` value at compile time (Faithbook's `json.decode(...) result[k]` pattern is the canonical use), but Go won't index an `interface{}` directly. The helper type-switches at runtime over the shapes Sova's any-bag values typically hold — `map[string]any` (decoded JSON objects), `map[any]any` (paranoid fallback for non-string-keyed maps), and `[]any` (decoded JSON arrays, with int-key coercion via `int64` or `int`). Any other shape, or a missing key / out-of-range index, returns nil — matching the "no panic, no crash on shape drift" semantics #7 in faithbook BUGS.md committed to.
+func emitSovaAnyIndex(block *jen.Group) {
+	block.Add(jen.Func().Id("__sovaAnyIndex").Params(
+		jen.Id("value").Any(),
+		jen.Id("key").Any(),
+	).Any().Block(
+		jen.If(jen.Id("value").Op("==").Nil()).Block(jen.Return(jen.Nil())),
+		jen.Switch(jen.Id("v").Op(":=").Id("value").Assert(jen.Id("type"))).Block(
+			jen.Case(jen.Map(jen.String()).Any()).Block(
+				jen.If(jen.List(jen.Id("k"), jen.Id("ok")).Op(":=").Id("key").Assert(jen.String()), jen.Id("ok")).Block(
+					jen.Return(jen.Id("v").Index(jen.Id("k"))),
+				),
+				jen.Return(jen.Nil()),
+			),
+			jen.Case(jen.Map(jen.Any()).Any()).Block(
+				jen.Return(jen.Id("v").Index(jen.Id("key"))),
+			),
+			jen.Case(jen.Index().Any()).Block(
+				jen.Var().Id("idx").Int(),
+				jen.Switch(jen.Id("k").Op(":=").Id("key").Assert(jen.Id("type"))).Block(
+					jen.Case(jen.Int()).Block(jen.Id("idx").Op("=").Id("k")),
+					jen.Case(jen.Int64()).Block(jen.Id("idx").Op("=").Int().Parens(jen.Id("k"))),
+					jen.Default().Block(jen.Return(jen.Nil())),
+				),
+				jen.If(jen.Id("idx").Op("<").Lit(0).Op("||").Id("idx").Op(">=").Qual("", "len").Call(jen.Id("v"))).Block(
+					jen.Return(jen.Nil()),
+				),
+				jen.Return(jen.Id("v").Index(jen.Id("idx"))),
+			),
+		),
+		jen.Return(jen.Nil()),
+	))
+}
+
 // lookupBuiltinIntrinsic returns the canonical name ("print", "len", "error") if the call's callee resolves to a compiler-registered built-in symbol, or "" when the call is a regular user-defined function. Resolution goes through the `builtin_intrinsics` cache key seeded by `compiler.injectBuiltinsIntoPackage`.
 func lookupBuiltinIntrinsic(ctx *codegen.EmitContext, callee ir.Expr) string {
 	if ctx == nil || ctx.Cache == nil {

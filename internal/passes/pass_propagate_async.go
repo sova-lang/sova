@@ -335,6 +335,16 @@ func (p *PassPropagateAsync) markFuncLitsInExpr(pc *PassContext, pkg *ir.Package
 		if p.markFuncLitsInExpr(pc, pkg, x.Index) {
 			changed = true
 		}
+	case *ir.SliceRangeExpr:
+		if p.markFuncLitsInExpr(pc, pkg, x.Expr) {
+			changed = true
+		}
+		if x.Low != nil && p.markFuncLitsInExpr(pc, pkg, x.Low) {
+			changed = true
+		}
+		if x.High != nil && p.markFuncLitsInExpr(pc, pkg, x.High) {
+			changed = true
+		}
 	case *ir.FieldAccessExpr:
 		if p.markFuncLitsInExpr(pc, pkg, x.Expr) {
 			changed = true
@@ -545,6 +555,14 @@ func (p *PassPropagateAsync) markCallsInExpr(pc *PassContext, pkg *ir.PackageCon
 	case *ir.IndexExpr:
 		p.markCallsInExpr(pc, pkg, x.Expr)
 		p.markCallsInExpr(pc, pkg, x.Index)
+	case *ir.SliceRangeExpr:
+		p.markCallsInExpr(pc, pkg, x.Expr)
+		if x.Low != nil {
+			p.markCallsInExpr(pc, pkg, x.Low)
+		}
+		if x.High != nil {
+			p.markCallsInExpr(pc, pkg, x.High)
+		}
 	case *ir.FieldAccessExpr:
 		p.markCallsInExpr(pc, pkg, x.Expr)
 	case *ir.RangeExpr:
@@ -741,6 +759,17 @@ func (p *PassPropagateAsync) exprCallsAsync(pc *PassContext, pkg *ir.PackageCont
 		return p.exprCallsAsync(pc, pkg, x.Right)
 	case *ir.IndexExpr:
 		return p.exprCallsAsync(pc, pkg, x.Expr) || p.exprCallsAsync(pc, pkg, x.Index)
+	case *ir.SliceRangeExpr:
+		if p.exprCallsAsync(pc, pkg, x.Expr) {
+			return true
+		}
+		if x.Low != nil && p.exprCallsAsync(pc, pkg, x.Low) {
+			return true
+		}
+		if x.High != nil && p.exprCallsAsync(pc, pkg, x.High) {
+			return true
+		}
+		return false
 	case *ir.FieldAccessExpr:
 		return p.exprCallsAsync(pc, pkg, x.Expr)
 	case *ir.RangeExpr:

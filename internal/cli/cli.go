@@ -187,6 +187,12 @@ func resolveConfig(args []string, outDir, outName string, cmd *cobra.Command) (B
 		return cfg, fmt.Errorf("read %s: %w", ManifestFilename, err)
 	} else if ok {
 		applyManifest(&cfg, m)
+		// Resolve `[env].autoload` here (after applyManifest so the project source dir is settled) — keeping the loader at this stage means every command path (build, dev, run, check, test) sees the same dotenv view via BuildConfig without each having to call into pkgmgr.
+		envMap, publicPrefix := loadProjectDotenv(".", m)
+		if envMap != nil {
+			cfg.LoadedEnv = envMap
+			cfg.LoadedEnvPublicPrefix = publicPrefix
+		}
 	}
 	if outDir != "" {
 		cfg.OutputDir = outDir
@@ -434,7 +440,8 @@ func loadFromDir(c *compiler.CompilerContext, root, dir string) error {
 // resolveDepPath consults the package-manager layers in order:
 //  1. local-link override at `<projectRoot>/.sova/local-links.toml`
 //  2. workspace member listed in `<projectRoot>/sova.toml`
-//  3. resolved dep view at `<projectRoot>/.sova/deps/<name>/`
+//  3. inline `path = "..."` dep in `<projectRoot>/sova.toml`'s `[dependencies]` block
+//  4. resolved dep view at `<projectRoot>/.sova/deps/<name>/`
 //
 // The "project root" is found by walking upward from `sourceRoot` looking for the nearest `sova.toml`. Returns the on-disk directory and true on first hit; (`""`, false) when none of the layers match (caller falls back to the project-internal source-root scan).
 func resolveDepPath(sourceRoot, pkgPath string) (string, bool) {
@@ -449,12 +456,27 @@ func resolveDepPath(sourceRoot, pkgPath string) (string, bool) {
 			}
 		}
 	}
-	if m, ok, err := pkgmgr.LoadManifest(filepath.Join(projectRoot, pkgmgr.ManifestFilename)); err == nil && ok && m.Workspace != nil {
+	m, manifestOK, _ := pkgmgr.LoadManifest(filepath.Join(projectRoot, pkgmgr.ManifestFilename))
+	if manifestOK && m.Workspace != nil {
 		if members, err := m.ResolveWorkspaceMembers(); err == nil {
 			for _, dir := range members {
 				if mm, ok, err := pkgmgr.LoadManifest(filepath.Join(dir, pkgmgr.ManifestFilename)); err == nil && ok && mm.PackageName() == pkgPath {
 					return dir, true
 				}
+			}
+		}
+	}
+	if manifestOK {
+		if dep, ok := m.Dependencies[pkgPath]; ok && dep.Path != "" {
+			depDir := dep.Path
+			if !filepath.IsAbs(depDir) {
+				depDir = filepath.Join(projectRoot, filepath.FromSlash(depDir))
+			}
+			if sub, err := dep.NormalisedSubdir(); err == nil && sub != "" {
+				depDir = filepath.Join(depDir, filepath.FromSlash(sub))
+			}
+			if info, err := os.Stat(depDir); err == nil && info.IsDir() {
+				return depDir, true
 			}
 		}
 	}

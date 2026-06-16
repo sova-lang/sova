@@ -98,6 +98,14 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			e.jf.Add(target.Op(string(s.Op)).Add(e.buildExpr(ctx, pkg, f, s.Value)))
 		}
 
+	case *ir.IndexAssignmentStmt:
+		if !topLevel {
+			recv := e.buildExpr(ctx, pkg, f, s.Receiver)
+			idx := e.buildExpr(ctx, pkg, f, s.Index)
+			rhs := e.buildExpr(ctx, pkg, f, s.Value)
+			e.jf.Add(recv.Index(idx).Op(string(s.Op)).Add(rhs))
+		}
+
 	case *ir.IfStmt:
 		e.emitIfStmt(ctx, pkg, f, s, topLevel)
 

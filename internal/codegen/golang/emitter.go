@@ -65,6 +65,7 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 		block := e.jf.Group
 
 		emitSovaErrorType(block)
+		emitSovaAnyIndex(block)
 
 		if !testMode {
 			emitTestHarnessStubs(block)
@@ -113,6 +114,8 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 		if testMode {
 			e.emitTestImplFuncs(ctx, block)
 		}
+
+		emitDotenvInit(ctx, block)
 
 		if len(ctx.InitPlan) > 0 || len(e.deferredInits) > 0 {
 			block.Add(jen.Func().Id("init").Params().BlockFunc(func(g *jen.Group) {
@@ -216,6 +219,39 @@ func needsSessionManagerFromCache(ctx *codegen.EmitContext) bool {
 	}
 	v, ok := ctx.Cache["needs_session_manager"].(bool)
 	return ok && v
+}
+
+type dotenvLoadedEnvGetter interface {
+	LoadedEnvValue() map[string]string
+}
+
+func emitDotenvInit(ctx *codegen.EmitContext, block *jen.Group) {
+	if ctx == nil || ctx.Cache == nil {
+		return
+	}
+	cfg, ok := ctx.Cache["build_config"].(dotenvLoadedEnvGetter)
+	if !ok {
+		return
+	}
+	loaded := cfg.LoadedEnvValue()
+	if len(loaded) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(loaded))
+	for k := range loaded {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	block.Add(jen.Func().Id("init").Params().BlockFunc(func(g *jen.Group) {
+		for _, k := range keys {
+			g.If(
+				jen.List(jen.Id("_"), jen.Id("ok")).Op(":=").Qual("os", "LookupEnv").Call(jen.Lit(k)),
+				jen.Op("!").Id("ok"),
+			).Block(
+				jen.Qual("os", "Setenv").Call(jen.Lit(k), jen.Lit(loaded[k])),
+			)
+		}
+	}))
 }
 
 // needsGoModTidy reports whether the generated module has any non-stdlib `require` entries that would benefit from a `go mod tidy` invocation. True when the session manager is active OR when any extern declaration pinned a Go module via `extern "path@version"` / `backend("path@version")`. The two-state gate keeps the existing fast path for builds that don't reach for the network.
@@ -515,7 +551,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			}
 
 			params := make([]jen.Code, 0, len(s.Params)+1)
-			if s.IsWired {
+			if s.IsWired && (!isRawWire(s) || rawWireUsesSession(s)) {
 				params = append(params, jen.Id("__session").Op("*").Id("fn____Session"))
 			}
 			for _, param := range s.Params {
@@ -1146,6 +1182,16 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			}
 			return target.Op(string(s.Op)).Add(rhs)
 		})
+	case *ir.IndexAssignmentStmt:
+		if topLevel {
+			return
+		}
+		e.withStmt(block, func() jen.Code {
+			recv := e.buildExpr(ctx, pkg, f, s.Receiver)
+			idx := e.buildExpr(ctx, pkg, f, s.Index)
+			rhs := e.buildExpr(ctx, pkg, f, s.Value)
+			return jen.Parens(recv).Index(idx).Op(string(s.Op)).Add(rhs)
+		})
 	case *ir.MultiAssignmentStmt:
 		if topLevel {
 			return
@@ -1444,7 +1490,12 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				})
 			} else if s.CondType == ir.ForCondRange {
 				rangeCollectionVar := e.hk.NewTemp()
-				prepend = jen.Id(rangeCollectionVar).Op(":=").Add(e.buildRangeExpr(ctx, pkg, f, ctx.Types.PrimFloat(), s.CondRange.RangeStart, s.CondRange.RangeEnd, nil))
+				elemTy := s.CondRange.RangeStart.GetType()
+				if elemTy == 0 {
+					elemTy = ctx.Types.PrimInt()
+				}
+				sliceTy := ctx.Types.SliceOf(elemTy)
+				prepend = jen.Id(rangeCollectionVar).Op(":=").Add(e.buildRangeExpr(ctx, pkg, f, sliceTy, s.CondRange.RangeStart, s.CondRange.RangeEnd, nil))
 
 				rangeIterVar := symNameWithUnused(ctx, pkg, s.CondRange.RangeVar.Sym)
 				rangeIterOrig := symOrigName(ctx, s.CondRange.RangeVar.Sym)
@@ -1754,7 +1805,20 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 			group.Return(lhs.Clone())
 		}).Call()
 	case *ir.IndexExpr:
+		baseTyp := x.Expr.GetType()
+		if baseTy, ok := ctx.Types.GetByID(baseTyp); ok && baseTy.Kind == ir.TK_PrimitiveAny {
+			return jen.Id("__sovaAnyIndex").Call(e.buildExpr(ctx, pkg, f, x.Expr), e.buildExpr(ctx, pkg, f, x.Index))
+		}
 		return jen.Parens(e.buildExpr(ctx, pkg, f, x.Expr)).Index(e.buildExpr(ctx, pkg, f, x.Index))
+	case *ir.SliceRangeExpr:
+		var lowCode, highCode jen.Code = jen.Empty(), jen.Empty()
+		if x.Low != nil {
+			lowCode = e.buildExpr(ctx, pkg, f, x.Low)
+		}
+		if x.High != nil {
+			highCode = e.buildExpr(ctx, pkg, f, x.High)
+		}
+		return jen.Parens(e.buildExpr(ctx, pkg, f, x.Expr)).Index(lowCode, highCode)
 	case *ir.FieldAccessExpr:
 		if x.ResolvedSym != 0 {
 			return jen.Id(symName(ctx, x.ResolvedSym))
@@ -2179,12 +2243,16 @@ func (e *CodeEmitter) withStmt(block *jen.Group, core func() jen.Code) {
 }
 
 func (e *CodeEmitter) buildRangeExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, ty ir.TypID, start, end, inc ir.Expr) *jen.Statement {
+	elemTy := ty
+	if rowTy, ok := ctx.Types.GetByID(ty); ok && (rowTy.Kind == ir.TK_Slice || rowTy.Kind == ir.TK_Array) {
+		elemTy = rowTy.ElemType
+	}
 	return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, ty)).BlockFunc(func(g *jen.Group) {
 		resArr := e.hk.NewTemp()
 		g.Id(resArr).Op(":=").Make(typeToGoWithContext(ctx, pkg, ctx.Types, ty), jen.Lit(0))
 
 		iterVar := e.hk.NewTemp()
-		g.Id(iterVar).Op(":=").Add(e.buildExpr(ctx, pkg, f, start))
+		g.Var().Id(iterVar).Add(typeToGoWithContext(ctx, pkg, ctx.Types, elemTy)).Op("=").Add(e.buildExpr(ctx, pkg, f, start))
 
 		g.For().BlockFunc(func(bg *jen.Group) {
 			bg.Id(resArr).Op("=").Append(jen.Id(resArr), jen.Id(iterVar))
@@ -3325,7 +3393,7 @@ func emitBroadcastStruct(ctx *codegen.EmitContext, block *jen.Group) {
 		jen.Id("predicate").Func().Params(jen.Op("*").Id("fn____Session")).Bool(),
 	))
 
-	block.Add(jen.Func().Params(jen.Id("b").Op("*").Id("fn____Broadcast")).Id("to").Params(jen.Id("room").String()).Op("*").Id("fn____Broadcast").Block(
+	block.Add(jen.Func().Params(jen.Id("b").Op("*").Id("fn____Broadcast")).Id("toRoom").Params(jen.Id("room").String()).Op("*").Id("fn____Broadcast").Block(
 		jen.Id("prev").Op(":=").Id("b").Dot("predicate"),
 		jen.Return(jen.Op("&").Id("fn____Broadcast").Values(jen.Dict{
 			jen.Id("predicate"): jen.Func().Params(jen.Id("s").Op("*").Id("fn____Session")).Bool().Block(
@@ -4483,8 +4551,17 @@ func (e *CodeEmitter) emitEmbeddedVar(ctx *codegen.EmitContext, pkg *ir.PackageC
 	default:
 		return
 	}
+	e.ensureEmbedImport()
 	block.Add(jen.Comment("//go:embed " + staged))
 	block.Add(jen.Var().Id(name).Add(goType))
+}
+
+// ensureEmbedImport adds a blank `_ "embed"` import to the file the first time an `@embed`-bound const is emitted. The Go toolchain requires this whenever a `//go:embed` directive appears in the file, even when no `embed.FS` value is referenced; without it the user sees the cryptic `go:embed requires import "embed"` error at `go build` time. Idempotent — calling twice doesn't double-register the import.
+func (e *CodeEmitter) ensureEmbedImport() {
+	if e.jf == nil {
+		return
+	}
+	e.jf.Anon("embed")
 }
 
 // embedStagedRelPath is the relative path the `//go:embed` directive uses, anchored at the Go output directory (`<outputDir>/__embeds/<staged>`). The naming combines the content hash and the source's basename so collisions across embeds of files with the same name still produce distinct staged filenames. Mirrored by `build.go`'s staging step — keep the two in lockstep.
@@ -4600,15 +4677,32 @@ func (e *CodeEmitter) emitRawWiredHandler(ctx *codegen.EmitContext, pkg *ir.Pack
 	reqStruct := lookupRawHttpStructName(ctx, pkg, fn.Params[0].Type, "Request")
 	resStruct := lookupRawHttpStructName(ctx, pkg, fn.Params[1].Type, "Response")
 	rawField := goExportedName("raw")
+	wantsSession := rawWireUsesSession(fn)
 
 	block.Add(jen.Func().Id(handlerName).Params(
 		jen.Id("w").Qual("net/http", "ResponseWriter"),
 		jen.Id("r").Op("*").Qual("net/http", "Request"),
-	).Block(
-		jen.Id("__req").Op(":=").Op("&").Id(reqStruct).Values(jen.Dict{jen.Id(rawField): jen.Id("r")}),
-		jen.Id("__res").Op(":=").Op("&").Id(resStruct).Values(jen.Dict{jen.Id(rawField): jen.Id("w")}),
-		jen.Id(implName).Call(jen.Id("__req"), jen.Id("__res")),
-	))
+	).BlockFunc(func(g *jen.Group) {
+		g.Id("__req").Op(":=").Op("&").Id(reqStruct).Values(jen.Dict{jen.Id(rawField): jen.Id("r")})
+		g.Id("__res").Op(":=").Op("&").Id(resStruct).Values(jen.Dict{jen.Id(rawField): jen.Id("w")})
+		if wantsSession {
+			// User wrote `@` inside the body — load (or create) the session from the cookie via the same helper the regular wire handlers use, then thread it as the implicit first argument. The user function's Go signature was already widened to accept `*fn____Session` by the dispatcher emit path.
+			g.Id("__session").Op(":=").Id("__sovaLoadSession").Call(jen.Id("r"))
+			g.Id(implName).Call(jen.Id("__session"), jen.Id("__req"), jen.Id("__res"))
+		} else {
+			g.Id(implName).Call(jen.Id("__req"), jen.Id("__res"))
+		}
+	}))
+}
+
+// isRawWire reports whether a wired function uses `wire(transport: "raw")`. Raw wires bypass every part of the regular wire envelope — the JSON wrapper, the auth gating, AND the implicit `__session` first parameter — because the handler signature is fixed at `(req: http.Request, res: http.Response)` by analyze_wire.
+func isRawWire(s *ir.FuncDeclStmt) bool {
+	return s != nil && s.Wire != nil && s.Wire.Transport == "raw"
+}
+
+// rawWireUsesSession reports whether a raw-wire function's body referenced `@`. The flag is set by `pass_analyze_wire.rawWireUsesSession` during analysis; codegen reads it here to decide whether to prepend a `__session` parameter on the user function and wire the cookie-extract path into the raw handler wrapper. See BUGS.md #16 for the motivation — without this, raw wires were cut off from `@`, which blocked any auth-touching upload handler.
+func rawWireUsesSession(s *ir.FuncDeclStmt) bool {
+	return s != nil && s.Wire != nil && s.Wire.UsesSession
 }
 
 // lookupRawHttpStructName resolves the mangled Go struct name for a `std/http` wrapper type (Request or Response) at codegen time. The TypeRef has been bound + type-resolved by earlier passes, so `t.Typ` already points at the concrete struct in the TypeTable; we walk through to its package path + struct name and ask `findTypeSymbolAcrossPkgs` for the SymID so `symName` returns the same mangled identifier the std/http package itself was emitted under. Falls back to the literal `http_<name>` form if the type lookup fails — analyze_wire would already have rejected mismatched types before codegen runs, so a fallback here only fires on internal inconsistency.

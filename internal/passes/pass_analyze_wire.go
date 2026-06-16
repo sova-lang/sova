@@ -108,6 +108,10 @@ func (p *PassAnalyzeWire) Run(pc *PassContext) error {
 					}
 					if fn.Wire != nil && fn.Wire.Transport == "raw" {
 						p.validateRawWireSignature(pc, fn)
+						if p.rawWireUsesSession(fn) {
+							fn.Wire.UsesSession = true
+							needsManager = true
+						}
 					}
 					if fn.Wire != nil && fn.Wire.Method != "" && fn.Wire.Path != "" && effSide != ir.SideFrontend {
 						key := endpoint{method: fn.Wire.Method, path: fn.Wire.Path}
@@ -427,6 +431,124 @@ func (p *PassAnalyzeWire) validateRawWireSignature(pc *PassContext, fn *ir.FuncD
 	if fn.ReturnType != nil && fn.ReturnType.Kind != ir.TK_PrimitiveNone {
 		pc.Diag.Report(diag.ErrWireRawBadReturn, fn.Name.Span, fn.Name.Name)
 	}
+}
+
+// rawWireUsesSession reports whether the body of a `wire(transport: "raw")` function references `@` (a SessionExpr). Walks every statement and expression in the function body looking for at least one occurrence; returns true on first hit. The result tells codegen whether to wire the cookie-extract / session-lookup path into the raw handler wrapper (and prepend `__session` on the user function's Go signature). Closes BUGS.md #16: raw wires used to be completely cut off from `@`, forcing manual cookie parsing for any auth-touching upload handler.
+func (p *PassAnalyzeWire) rawWireUsesSession(fn *ir.FuncDeclStmt) bool {
+	if fn == nil || fn.Body == nil {
+		return false
+	}
+	return stmtsReferenceSession(fn.Body.Stmts)
+}
+
+// stmtsReferenceSession walks a statement slice and returns true on the first `@` SessionExpr encountered anywhere in its expressions or nested statements. Coverage isn't 100% (it skips a few exotic statement kinds that rarely appear inside raw wires), but the common shapes — if/else, return, let, assignments, for/while, calls — are all covered.
+func stmtsReferenceSession(stmts []ir.Stmt) bool {
+	for _, st := range stmts {
+		if stmtReferencesSession(st) {
+			return true
+		}
+	}
+	return false
+}
+
+func stmtReferencesSession(st ir.Stmt) bool {
+	if ir.IsNilStmt(st) {
+		return false
+	}
+	switch s := st.(type) {
+	case *ir.BlockStmt:
+		return stmtsReferenceSession(s.Stmts)
+	case *ir.VarDeclStmt:
+		return exprReferencesSession(s.Init)
+	case *ir.ExprStmt:
+		return exprReferencesSession(s.Expr)
+	case *ir.IfStmt:
+		if exprReferencesSession(s.Cond) || stmtReferencesSession(s.Then) {
+			return true
+		}
+		for _, eb := range s.ElseIfs {
+			if exprReferencesSession(eb.Cond) || stmtReferencesSession(eb.Then) {
+				return true
+			}
+		}
+		return stmtReferencesSession(s.Else)
+	case *ir.ReturnStmt:
+		for _, r := range s.Results {
+			if exprReferencesSession(r) {
+				return true
+			}
+		}
+	case *ir.ForStmt:
+		if s.Body != nil {
+			return stmtReferencesSession(s.Body)
+		}
+	case *ir.WhileStmt:
+		if exprReferencesSession(s.Cond) {
+			return true
+		}
+		if s.Body != nil && stmtReferencesSession(s.Body) {
+			return true
+		}
+	case *ir.FieldAssignmentStmt:
+		return exprReferencesSession(s.Value)
+	case *ir.IndexAssignmentStmt:
+		return exprReferencesSession(s.Receiver) || exprReferencesSession(s.Index) || exprReferencesSession(s.Value)
+	case *ir.MultiAssignmentStmt:
+		return exprReferencesSession(s.Value)
+	}
+	return false
+}
+
+func exprReferencesSession(e ir.Expr) bool {
+	if ir.IsNilExpr(e) {
+		return false
+	}
+	switch x := e.(type) {
+	case *ir.SessionExpr:
+		return true
+	case *ir.BinaryExpr:
+		return exprReferencesSession(x.Left) || exprReferencesSession(x.Right)
+	case *ir.UnaryExpr:
+		return exprReferencesSession(x.Expr)
+	case *ir.PrefixUnaryExpr:
+		return exprReferencesSession(x.Expr)
+	case *ir.PostfixUnaryExpr:
+		return exprReferencesSession(x.Expr)
+	case *ir.AssignmentExpr:
+		return exprReferencesSession(x.Right)
+	case *ir.GroupedExpr:
+		return exprReferencesSession(x.Expr)
+	case *ir.AsExpr:
+		return exprReferencesSession(x.Expr)
+	case *ir.OptionUnwrapExpr:
+		return exprReferencesSession(x.Expr)
+	case *ir.TenaryExpr:
+		return exprReferencesSession(x.Cond) || exprReferencesSession(x.Then) || exprReferencesSession(x.Else)
+	case *ir.CoalesceExpr:
+		return exprReferencesSession(x.Left) || exprReferencesSession(x.Default)
+	case *ir.IndexExpr:
+		return exprReferencesSession(x.Expr) || exprReferencesSession(x.Index)
+	case *ir.SliceRangeExpr:
+		return exprReferencesSession(x.Expr) || exprReferencesSession(x.Low) || exprReferencesSession(x.High)
+	case *ir.FieldAccessExpr:
+		return exprReferencesSession(x.Expr)
+	case *ir.FuncCallExpr:
+		if exprReferencesSession(x.Callee) {
+			return true
+		}
+		for _, a := range x.Args {
+			if exprReferencesSession(a.Expr) {
+				return true
+			}
+		}
+	case *ir.NewExpr:
+		for _, a := range x.Args {
+			if exprReferencesSession(a.Expr) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isRawHttpType matches a TypeRef against `http.<name>` from the `std/http` package. The qualifier check accepts both `http` (the post-import alias the user actually wrote) and `std/http` (the fully-qualified form should anyone reach for it). Returns true on a clean name match; everything else is a signature error.

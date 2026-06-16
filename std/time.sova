@@ -1,23 +1,1221 @@
 package std/time on shared
 
+/// std/time exposes two API layers in one package:
+///
+///   1. **Typed temporal layer**: `Instant`, `Duration`, `Zone`,
+///      `Date`, `DateTime`. Reach for these in new code — they
+///      make the intent ("save this as a timestamp", "what date
+///      is it in Berlin", "wait this long") readable and keep
+///      unit-tracking out of individual call sites. Entry points:
+///      `instant()`, `today()`, `dateTimeOf(...)`, `utc()`,
+///      `zone(name)`, `seconds(n)`, `between(a, b)`, the various
+///      `parse*` functions, etc.
+///
+///   2. **Raw integer layer**: `now()` (seconds), `unixMillis()`,
+///      `unixNano()`. Existing code uses this surface; the typed
+///      handles above are layered on top, so the two coexist.
+///      Use when interop with a system that speaks raw integer
+///      epochs makes the typed wrapper noise (`gorm` columns,
+///      log lines, query params).
+///
+/// Five value types:
+///
+///   - `Instant` — a point on the global UTC timeline, stored as
+///     nanoseconds since the Unix epoch. Independent of any
+///     timezone or calendar. Use when you mean "a specific moment
+///     happened then" — created_at timestamps, message ages,
+///     scheduled-job triggers.
+///
+///   - `Duration` — a signed length of time, stored as
+///     nanoseconds. Use when you mean "this much time passes" —
+///     timeouts, retry backoff, polling intervals.
+///
+///   - `Zone` — an IANA timezone identifier ("UTC",
+///     "Europe/Berlin", "America/New_York") or a fixed offset.
+///     Required when converting an `Instant` to wall-clock form,
+///     because the same moment reads differently in different
+///     zones. Construct via `utc()`, `localZone()`, `zone(name)`.
+///
+///   - `Date` — a calendar date (year + month + day), no time of
+///     day, no zone. Use when the unit of meaning is "what day
+///     is it" — birthdays, deadlines, calendar grids. Arithmetic
+///     respects month-end shifts (Jan 31 + 1 month = Feb 28/29).
+///
+///   - `DateTime` — a wall-clock reading in a specific zone:
+///     year/month/day/hour/minute/second/nano + `Zone`. Bridges
+///     `Instant` (when did it happen?) and `Date` (what day was
+///     it?). Use when the human-facing time matters: scheduled
+///     events, log timestamps shown to a user, "next Tuesday
+///     at 14:00 Berlin time".
+///
+/// All five compile to plain values (int64 nanos, ints, strings)
+/// on both backends, so they travel across the wire efficiently:
+/// a wired function returning `Instant` is just an int64 on the
+/// wire and reifies to a typed handle on each side. The same is
+/// true for `Date` (three small ints) and `DateTime` (int64 nanos
+/// + zone name string).
+///
+/// Frontend caveat: JavaScript's `Date` is millisecond-precise.
+/// Nanos below the millisecond floor are dropped on a frontend
+/// boundary crossing — `instant()` on the frontend yields
+/// `<ms> * 1_000_000`, with the bottom six zeros tracking only
+/// what the host platform supports. Backend code keeps the full
+/// nanosecond precision. Calendar arithmetic (`Date.plusDays`,
+/// `DateTime.year()`, etc.) is identical on both sides via host
+/// timezone libraries (Go's `time` package; the browser's
+/// `Intl.DateTimeFormat`).
+///
+/// Calendar / DST caveat: `Duration` is a count of nanos. Adding
+/// `days(1)` to an `Instant` advances exactly 86,400,000,000,000
+/// ns, NOT "the same wall-clock time tomorrow". Across a DST
+/// transition that's an hour off. Use `Date.plusDays(1)` or
+/// `DateTime` arithmetic with the broken-down accessors when you
+/// mean "tomorrow at the same wall-clock time".
+///
+/// What's deliberately NOT here (yet):
+///
+///   - locale-aware formatting / parsing ("Mittwoch, 16. Juni",
+///     "16/06/2026", short / long month names by locale).
+///     Falls into the `Intl.DateTimeFormat` rabbit hole; planned
+///     as a follow-up once a concrete use case lands.
+
+/// Instant is a moment on the global UTC timeline, stored as
+/// nanoseconds since 1970-01-01T00:00:00Z. Construct via the
+/// package-level helpers (`instant`, `fromUnix`, `fromUnixMillis`,
+/// `fromUnixNanos`, `parse`) — direct field assignment works but
+/// the helpers carry the conversion semantics so they're worth
+/// keeping the canonical path.
+type Instant {
+    nanos: int = 0
+
+    /// unix returns the moment as whole Unix seconds (loses
+    /// sub-second precision). Useful for legacy interop with
+    /// systems that only speak seconds.
+    func unix(): int {
+        return this.nanos / 1000000000
+    }
+
+    /// unixMillis returns the moment as Unix milliseconds. Common
+    /// frontend interop (`new Date(ms)`).
+    func unixMillis(): int {
+        return this.nanos / 1000000
+    }
+
+    /// unixNanos returns the underlying nanosecond stamp. Same
+    /// shape on both sides; the only API that preserves backend
+    /// precision across the frontend boundary is "don't bring it
+    /// to the frontend".
+    func unixNanos(): int {
+        return this.nanos
+    }
+
+    /// toISO formats the instant as an RFC 3339 / ISO 8601
+    /// string in UTC with nanosecond precision on the backend and
+    /// millisecond precision on the frontend (the JS `Date` floor).
+    /// Format: `2026-06-16T12:34:56.789012345Z`.
+    func toISO(): string {
+        return __instantToISO(this.nanos)
+    }
+
+    /// plus returns a new Instant shifted by `d`. Doesn't mutate
+    /// the receiver — Instants are values, not handles. Use as
+    /// `let later = now().plus(seconds(60))`.
+    func plus(d: Duration): Instant {
+        let out = new Instant()
+        out.nanos = this.nanos + d.nanos
+        return out
+    }
+
+    /// minus returns a new Instant shifted backward by `d`. Same
+    /// no-mutation semantics as `plus`.
+    func minus(d: Duration): Instant {
+        let out = new Instant()
+        out.nanos = this.nanos - d.nanos
+        return out
+    }
+
+    /// diff returns the `Duration` between this and `other`,
+    /// signed so that `a.diff(b)` is positive when `a` is later
+    /// than `b`. Use `between(a, b)` package-level helper for
+    /// the same operation in the "elapsed from a to b" reading.
+    func diff(other: Instant): Duration {
+        let out = new Duration()
+        out.nanos = this.nanos - other.nanos
+        return out
+    }
+
+    /// isBefore returns true when this Instant is strictly earlier
+    /// than `other`.
+    func isBefore(other: Instant): bool {
+        return this.nanos < other.nanos
+    }
+
+    /// isAfter returns true when this Instant is strictly later
+    /// than `other`.
+    func isAfter(other: Instant): bool {
+        return this.nanos > other.nanos
+    }
+
+    /// equals returns true when both Instants point at the exact
+    /// same nanosecond. Compare via `equals` rather than `==`
+    /// because Sova doesn't currently auto-derive equality on
+    /// struct values; explicit method intent is clearer anyway.
+    func equals(other: Instant): bool {
+        return this.nanos == other.nanos
+    }
+
+    /// inZone projects this Instant into the wall-clock reading
+    /// for the given zone. The result is a fully-specified
+    /// `DateTime` (year/month/day/hour/minute/second/nano + zone)
+    /// you can then break down via the accessor methods. The
+    /// underlying moment is unchanged — only its representation.
+    func inZone(z: Zone): DateTime {
+        let dt = new DateTime()
+        dt.nanos = this.nanos
+        dt.zoneName = z.name
+        return dt
+    }
+
+    /// date returns the calendar date this Instant falls on in
+    /// the given zone. Convenience for
+    /// `this.inZone(z).date()` — common enough to deserve a
+    /// shortcut. Pass `utc()` when you want a zone-independent
+    /// answer.
+    func date(z: Zone): Date {
+        let d = new Date()
+        d.year = __dateTimeYear(this.nanos, z.name)
+        d.month = __dateTimeMonth(this.nanos, z.name)
+        d.day = __dateTimeDay(this.nanos, z.name)
+        return d
+    }
+}
+
+/// Duration is a signed length of time stored as nanoseconds.
+/// Negative durations are well-formed (`Instant.diff` produces
+/// them when the receiver is earlier than the argument). Construct
+/// via the package-level helpers (`seconds`, `millis`, `nanos`,
+/// `minutes`, `hours`) — direct nanos assignment works but the
+/// helpers spell the unit out.
+type Duration {
+    nanos: int = 0
+
+    /// asSeconds returns the duration as fractional seconds
+    /// (float). Use when sub-second precision matters and you
+    /// want one number — `2.5s` → `2.5`.
+    func asSeconds(): float {
+        return (this.nanos as float) / 1000000000.0
+    }
+
+    /// asMillis returns whole milliseconds. Truncates sub-ms
+    /// remainder toward zero.
+    func asMillis(): int {
+        return this.nanos / 1000000
+    }
+
+    /// asNanos returns the underlying nanosecond count.
+    func asNanos(): int {
+        return this.nanos
+    }
+
+    /// inSeconds returns whole seconds. Truncates toward zero;
+    /// `Duration{nanos:1.5e9}.inSeconds()` is `1`, NOT `2`.
+    func inSeconds(): int {
+        return this.nanos / 1000000000
+    }
+
+    /// inMinutes returns whole minutes.
+    func inMinutes(): int {
+        return this.nanos / 60000000000
+    }
+
+    /// inHours returns whole hours.
+    func inHours(): int {
+        return this.nanos / 3600000000000
+    }
+
+    /// plus returns a new Duration equal to the sum of `this` and
+    /// `other`. No mutation.
+    func plus(other: Duration): Duration {
+        let out = new Duration()
+        out.nanos = this.nanos + other.nanos
+        return out
+    }
+
+    /// minus returns a new Duration equal to `this - other`.
+    func minus(other: Duration): Duration {
+        let out = new Duration()
+        out.nanos = this.nanos - other.nanos
+        return out
+    }
+
+    /// isZero reports whether this Duration spans no time.
+    func isZero(): bool {
+        return this.nanos == 0
+    }
+
+    /// isNegative reports whether this Duration is below zero.
+    func isNegative(): bool {
+        return this.nanos < 0
+    }
+}
+
+/// Zone is an IANA timezone identifier — `"UTC"`,
+/// `"Europe/Berlin"`, `"America/New_York"`, etc. Stored as a
+/// single string name; the underlying host resolves the rules
+/// (Go's `time.LoadLocation`, the browser's `Intl.DateTimeFormat`).
+///
+/// Fixed-offset zones (e.g. parsed back from an ISO string like
+/// `+02:00`) are spelled with a `±HH:MM` name and treated as
+/// constant-offset — they don't observe DST. IANA zones (with
+/// `/` in the name) follow the full DST ruleset.
+///
+/// Two zones compare equal when their names match; a zone parsed
+/// from `"+02:00"` is NOT equal to `"Europe/Berlin"` even when
+/// they happen to share the same offset on a given day.
+type Zone {
+    name: string = "UTC"
+
+    /// equals returns true when both zones share the same name.
+    func equals(other: Zone): bool {
+        return this.name == other.name
+    }
+
+    /// offsetAt returns the UTC offset this zone has at the given
+    /// `Instant`. Positive east of UTC, negative west. For an
+    /// IANA zone that observes DST the answer flips around the
+    /// transition — `Europe/Berlin` reads `seconds(3600)` in
+    /// January and `seconds(7200)` in July.
+    func offsetAt(i: Instant): Duration {
+        let out = new Duration()
+        out.nanos = __zoneOffsetAt(this.name, i.nanos) * 1000000000
+        return out
+    }
+
+    /// isDSTAt reports whether this zone is currently observing
+    /// daylight saving (summer) time at the given Instant. Returns
+    /// false for zones that don't have DST (e.g. `"UTC"`, fixed
+    /// offsets, equatorial zones). Implemented via the standard
+    /// trick of comparing the zone's offset at the given Instant
+    /// to its offset at the January-vs-July reference points of
+    /// the same year — robust for both hemispheres.
+    func isDSTAt(i: Instant): bool {
+        return __zoneIsDSTAt(this.name, i.nanos)
+    }
+
+    /// observesDST reports whether this zone has any DST rules
+    /// at all in the given year — i.e. its January offset
+    /// differs from its July offset. `Europe/Berlin` → true;
+    /// `UTC`, `Asia/Tokyo`, `+02:00` → false. Convenience for
+    /// UI code that wants to hide DST-related controls when the
+    /// user's zone doesn't observe it.
+    func observesDST(year: int): bool {
+        return __zoneObservesDST(this.name, year)
+    }
+}
+
+/// Date is a calendar date (year + month + day), independent of
+/// any zone or time of day. Month is 1-12 (NOT 0-11 like the JS
+/// `Date` constructor — Sova mirrors the human convention so a
+/// "month 6" Date really is June). Day is 1-31.
+///
+/// Calendar arithmetic respects month-end and leap-day semantics
+/// via the host (`time.Date(...).AddDate(years, months, days)` on
+/// the backend; equivalent on the frontend): `Jan 31 + 1 month`
+/// rolls to `Mar 3` in a non-leap year, NOT silent `Feb 31`.
+type Date {
+    year: int = 1970
+    month: int = 1
+    day: int = 1
+
+    /// toISO formats as the canonical `yyyy-MM-dd` (RFC 3339
+    /// full-date production). Pads year to four digits, month
+    /// and day to two.
+    func toISO(): string {
+        return __dateToISO(this.year, this.month, this.day)
+    }
+
+    /// weekday returns the day of the week as `0` (Sunday)
+    /// through `6` (Saturday) — matches Go's `time.Weekday` and
+    /// JS's `Date.getUTCDay()`. Use ISO weekday (Mon=1..Sun=7)?
+    /// `((d.weekday() + 6) % 7) + 1`.
+    func weekday(): int {
+        return __dateWeekday(this.year, this.month, this.day)
+    }
+
+    /// plusDays returns a new Date `n` days later (`n` may be
+    /// negative). Handles month/year rollover correctly via the
+    /// host calendar logic.
+    func plusDays(n: int): Date {
+        let packed = __dateAdd(this.year, this.month, this.day, n, 0, 0)
+        let out = new Date()
+        out.year = packed / 10000
+        out.month = (packed / 100) % 100
+        out.day = packed % 100
+        return out
+    }
+
+    /// plusMonths returns a new Date `n` months later. Clamps
+    /// the resulting day to the new month's length so `Jan 31
+    /// + 1 month` → `Feb 28/29`, NOT a synthesised Feb 31.
+    func plusMonths(n: int): Date {
+        let packed = __dateAdd(this.year, this.month, this.day, 0, n, 0)
+        let out = new Date()
+        out.year = packed / 10000
+        out.month = (packed / 100) % 100
+        out.day = packed % 100
+        return out
+    }
+
+    /// plusYears returns a new Date `n` years later. Same
+    /// month-end clamping as `plusMonths` — `Feb 29 + 1 year`
+    /// → `Feb 28` in a non-leap year.
+    func plusYears(n: int): Date {
+        let packed = __dateAdd(this.year, this.month, this.day, 0, 0, n)
+        let out = new Date()
+        out.year = packed / 10000
+        out.month = (packed / 100) % 100
+        out.day = packed % 100
+        return out
+    }
+
+    /// daysUntil returns the number of whole days from `this`
+    /// to `other`. Positive when `other` is later. Computes via
+    /// the host calendar so DST and timezone changes don't shift
+    /// the count.
+    func daysUntil(other: Date): int {
+        return __dateDaysBetween(this.year, this.month, this.day,
+                                 other.year, other.month, other.day)
+    }
+
+    /// equals returns true when both dates match year/month/day.
+    func equals(other: Date): bool {
+        return this.year == other.year && this.month == other.month && this.day == other.day
+    }
+
+    /// isBefore returns true when this date is strictly earlier
+    /// than `other`.
+    func isBefore(other: Date): bool {
+        if this.year != other.year {
+            return this.year < other.year
+        }
+        if this.month != other.month {
+            return this.month < other.month
+        }
+        return this.day < other.day
+    }
+
+    /// isAfter returns true when this date is strictly later
+    /// than `other`.
+    func isAfter(other: Date): bool {
+        if this.year != other.year {
+            return this.year > other.year
+        }
+        if this.month != other.month {
+            return this.month > other.month
+        }
+        return this.day > other.day
+    }
+
+    /// atStartOfDay returns the `Instant` corresponding to
+    /// `00:00:00` on this date in the given zone. Use for
+    /// queries like "everything created today" (start of day to
+    /// start of next day).
+    func atStartOfDay(z: Zone): Instant {
+        let out = new Instant()
+        out.nanos = __dateAtStartOfDay(this.year, this.month, this.day, z.name)
+        return out
+    }
+
+    /// format renders the date as a string per `pattern`.
+    /// Token reference (case-sensitive, Java/`DateTimeFormatter`
+    /// convention):
+    ///
+    /// | Token   | Output                                  |
+    /// | ------- | --------------------------------------- |
+    /// | `yyyy`  | 4-digit year (`2026`)                   |
+    /// | `yy`    | 2-digit year, last two (`26`)           |
+    /// | `MM`    | 2-digit month (`01`-`12`)               |
+    /// | `M`     | 1-2 digit month (`1`-`12`)              |
+    /// | `dd`    | 2-digit day (`01`-`31`)                 |
+    /// | `d`     | 1-2 digit day (`1`-`31`)                |
+    ///
+    /// Anything else passes through verbatim, so the German
+    /// convention `dd.MM.yyyy` reads as `16.06.2026`. For
+    /// time-of-day tokens (`HH`, `mm`, `ss`, `SSS`), reach for
+    /// `DateTime.format` — on a `Date` they render as zeros.
+    func format(pattern: string): string {
+        return __formatTimePattern(this.year, this.month, this.day, 0, 0, 0, 0, pattern)
+    }
+}
+
+/// DateTime is a wall-clock reading in a specific zone. Stored
+/// as the underlying UTC nanosecond stamp + the zone name; all
+/// broken-down accessors (`year()`, `month()`, etc.) compute on
+/// demand via the host calendar so the answer is always
+/// internally consistent.
+///
+/// Build via `instant().inZone(z)` (most common — "what does
+/// this moment look like in Berlin?"), `dateTimeOf(...)`
+/// (broken-down parts → DateTime), or `parseDateTime(iso)`.
+///
+/// DateTime is the place to reach for DST/summer-time logic:
+/// `.isDST()` is a one-call check, `.offset()` returns the UTC
+/// offset in effect at this moment, and `.withZone(other)`
+/// re-projects the same moment into a different zone (useful
+/// for showing a UTC log timestamp as the user's local time).
+type DateTime {
+    nanos: int = 0
+    zoneName: string = "UTC"
+
+    /// instant returns the underlying `Instant`. The conversion
+    /// loses the zone metadata (an Instant is zone-less by
+    /// definition) but preserves the exact moment.
+    func instant(): Instant {
+        let out = new Instant()
+        out.nanos = this.nanos
+        return out
+    }
+
+    /// zone returns the `Zone` this DateTime is anchored in.
+    func zone(): Zone {
+        let z = new Zone()
+        z.name = this.zoneName
+        return z
+    }
+
+    /// date returns the calendar date portion in this DateTime's
+    /// zone. Drops the time-of-day component.
+    func date(): Date {
+        let d = new Date()
+        d.year = __dateTimeYear(this.nanos, this.zoneName)
+        d.month = __dateTimeMonth(this.nanos, this.zoneName)
+        d.day = __dateTimeDay(this.nanos, this.zoneName)
+        return d
+    }
+
+    /// year returns the four-digit calendar year in this zone.
+    func year(): int {
+        return __dateTimeYear(this.nanos, this.zoneName)
+    }
+
+    /// month returns the month as 1 (January) through 12
+    /// (December).
+    func month(): int {
+        return __dateTimeMonth(this.nanos, this.zoneName)
+    }
+
+    /// day returns the day of the month, 1-31.
+    func day(): int {
+        return __dateTimeDay(this.nanos, this.zoneName)
+    }
+
+    /// hour returns the hour of day, 0-23.
+    func hour(): int {
+        return __dateTimeHour(this.nanos, this.zoneName)
+    }
+
+    /// minute returns the minute of hour, 0-59.
+    func minute(): int {
+        return __dateTimeMinute(this.nanos, this.zoneName)
+    }
+
+    /// second returns the second of minute, 0-59 (60 in a leap
+    /// second on hosts that surface them — Go's `time` package
+    /// smears them so always 0-59 in practice).
+    func second(): int {
+        return __dateTimeSecond(this.nanos, this.zoneName)
+    }
+
+    /// nano returns the sub-second nanosecond component, 0 to
+    /// 999_999_999. Frontend tops out at the millisecond floor
+    /// (multiples of 1_000_000).
+    func nano(): int {
+        return __dateTimeNano(this.nanos, this.zoneName)
+    }
+
+    /// weekday returns the day of week, 0 (Sunday) through 6
+    /// (Saturday). Same shape as `Date.weekday()`.
+    func weekday(): int {
+        return __dateTimeWeekday(this.nanos, this.zoneName)
+    }
+
+    /// offset returns the UTC offset in effect at this moment in
+    /// this zone. `Europe/Berlin` in July → `seconds(7200)`
+    /// (CEST, +02:00); in January → `seconds(3600)` (CET,
+    /// +01:00). Hands off to `Zone.offsetAt(instant)`.
+    func offset(): Duration {
+        let out = new Duration()
+        out.nanos = __zoneOffsetAt(this.zoneName, this.nanos) * 1000000000
+        return out
+    }
+
+    /// isDST reports whether this DateTime falls within the
+    /// daylight-saving (summer) period of its zone. Convenience
+    /// for `.zone().isDSTAt(.instant())`. `Europe/Berlin` last
+    /// Sunday in March → last Sunday in October → `true`;
+    /// otherwise `false`. Always `false` for `UTC` and other
+    /// non-DST zones.
+    func isDST(): bool {
+        return __zoneIsDSTAt(this.zoneName, this.nanos)
+    }
+
+    /// toISO formats the DateTime as an RFC 3339 / ISO 8601
+    /// string WITH the zone offset suffix
+    /// (`2026-06-16T14:34:56+02:00`). For a UTC suffix the
+    /// classical `Z` form is used when the zone resolves to UTC.
+    /// Use this when round-tripping through systems that need
+    /// the offset preserved (database TIMESTAMPTZ columns, REST
+    /// APIs that document zone semantics).
+    func toISO(): string {
+        return __dateTimeToISO(this.nanos, this.zoneName)
+    }
+
+    /// plus returns a new DateTime shifted by `d`. Operates on
+    /// the underlying nanosecond stamp — i.e. the result is the
+    /// same as `this.instant().plus(d).inZone(this.zone())`. For
+    /// "next Tuesday at the same wall-clock time", prefer
+    /// `Date.plusDays(7)` arithmetic so DST shifts don't move
+    /// the clock by an hour.
+    func plus(d: Duration): DateTime {
+        let out = new DateTime()
+        out.nanos = this.nanos + d.nanos
+        out.zoneName = this.zoneName
+        return out
+    }
+
+    /// minus returns a new DateTime shifted backward by `d`.
+    /// Same nanos-level semantics as `plus`.
+    func minus(d: Duration): DateTime {
+        let out = new DateTime()
+        out.nanos = this.nanos - d.nanos
+        out.zoneName = this.zoneName
+        return out
+    }
+
+    /// withZone re-projects the same moment into a different
+    /// zone. The underlying Instant is unchanged; only the
+    /// zone metadata flips. Use to render a stored UTC
+    /// timestamp in a user's local zone.
+    func withZone(z: Zone): DateTime {
+        let out = new DateTime()
+        out.nanos = this.nanos
+        out.zoneName = z.name
+        return out
+    }
+
+    /// equals returns true when both DateTimes refer to the
+    /// exact same nanosecond AND share the same zone name.
+    /// Two DateTimes that point to the same moment in different
+    /// zones are NOT equal — use `.instant().equals(o.instant())`
+    /// for moment-level equality.
+    func equals(other: DateTime): bool {
+        return this.nanos == other.nanos && this.zoneName == other.zoneName
+    }
+
+    /// isBefore returns true when this DateTime is strictly
+    /// earlier than `other` on the wall-clock timeline (compares
+    /// underlying nanoseconds; zone is irrelevant for ordering).
+    func isBefore(other: DateTime): bool {
+        return this.nanos < other.nanos
+    }
+
+    /// isAfter returns true when this DateTime is strictly later
+    /// than `other`.
+    func isAfter(other: DateTime): bool {
+        return this.nanos > other.nanos
+    }
+
+    /// format renders the DateTime as a string per `pattern`.
+    /// Token reference (case-sensitive, Java/`DateTimeFormatter`
+    /// convention; the lowercase/uppercase split is the same as
+    /// Moment.js without the `D`-vs-`d` weekday inversion):
+    ///
+    /// | Token   | Output                                  |
+    /// | ------- | --------------------------------------- |
+    /// | `yyyy`  | 4-digit year (`2026`)                   |
+    /// | `yy`    | 2-digit year, last two (`26`)           |
+    /// | `MM`    | 2-digit month (`01`-`12`)               |
+    /// | `M`     | 1-2 digit month (`1`-`12`)              |
+    /// | `dd`    | 2-digit day (`01`-`31`)                 |
+    /// | `d`     | 1-2 digit day (`1`-`31`)                |
+    /// | `HH`    | 2-digit hour, 24h (`00`-`23`)           |
+    /// | `H`     | 1-2 digit hour, 24h                     |
+    /// | `mm`    | 2-digit minute (`00`-`59`)              |
+    /// | `m`     | 1-2 digit minute                        |
+    /// | `ss`    | 2-digit second (`00`-`59`)              |
+    /// | `s`     | 1-2 digit second                        |
+    /// | `SSS`   | 3-digit millisecond (`000`-`999`)       |
+    ///
+    /// Anything else passes through verbatim. So `dd.MM.yyyy
+    /// HH:mm:ss` reads as `16.06.2026 14:30:00` — the canonical
+    /// German shape. For locale-aware month/weekday names
+    /// (`Juni`, `Mittwoch`) you currently have to compose them
+    /// yourself; that's the one piece of the temporal API still
+    /// deferred to a follow-up.
+    ///
+    /// Output is computed in this DateTime's zone — so a
+    /// `Berlin`-zoned DateTime formatted as `HH:mm` shows the
+    /// Berlin wall-clock hour, not UTC. Call `.withZone(...)`
+    /// first to format in a different zone.
+    func format(pattern: string): string {
+        return __formatTimePattern(this.year(), this.month(), this.day(), this.hour(), this.minute(), this.second(), this.nano(), pattern)
+    }
+}
+
+/// instant returns the current moment as an `Instant`. Named
+/// `instant` rather than `now` so it doesn't collide with the
+/// pre-existing `time.now()` (which returns Unix seconds as a
+/// plain int and stays the legacy compat path).
+func instant(): Instant {
+    let out = new Instant()
+    out.nanos = unixNano()
+    return out
+}
+
+/// fromUnix builds an Instant from a whole Unix-seconds value.
+func fromUnix(seconds: int): Instant {
+    let out = new Instant()
+    out.nanos = seconds * 1000000000
+    return out
+}
+
+/// fromUnixMillis builds an Instant from milliseconds since the
+/// Unix epoch. Common path when interop with JS / SQL that speaks
+/// in millis.
+func fromUnixMillis(ms: int): Instant {
+    let out = new Instant()
+    out.nanos = ms * 1000000
+    return out
+}
+
+/// fromUnixNanos builds an Instant from nanoseconds since the
+/// Unix epoch. Zero-conversion path — preserves the full backend
+/// precision.
+func fromUnixNanos(ns: int): Instant {
+    let out = new Instant()
+    out.nanos = ns
+    return out
+}
+
+/// parse turns an RFC 3339 / ISO 8601 string into an Instant.
+/// Returns `none` on a malformed input rather than panicking —
+/// matches Sova's no-panic policy. Accepted shapes include the
+/// canonical `2026-06-16T12:34:56Z`, the same with fractional
+/// seconds and/or offset (`+02:00`, `-05:30`), and the relaxed
+/// variants Go's `time.Parse(time.RFC3339Nano)` accepts.
+func parse(iso: string): option<Instant> {
+    let ns = __instantParse(iso)
+    if ns < 0 {
+        return none
+    }
+    let out = new Instant()
+    out.nanos = ns
+    return out
+}
+
+/// seconds builds a Duration of `n` seconds. Negative values are
+/// allowed (`seconds(-5)` is a valid Duration).
+func seconds(n: int): Duration {
+    let out = new Duration()
+    out.nanos = n * 1000000000
+    return out
+}
+
+/// millis builds a Duration of `n` milliseconds.
+func millis(n: int): Duration {
+    let out = new Duration()
+    out.nanos = n * 1000000
+    return out
+}
+
+/// nanos builds a Duration of `n` nanoseconds. Zero-conversion
+/// path; useful for libraries that already work in nanos.
+func nanos(n: int): Duration {
+    let out = new Duration()
+    out.nanos = n
+    return out
+}
+
+/// minutes builds a Duration of `n` minutes.
+func minutes(n: int): Duration {
+    let out = new Duration()
+    out.nanos = n * 60000000000
+    return out
+}
+
+/// hours builds a Duration of `n` hours.
+func hours(n: int): Duration {
+    let out = new Duration()
+    out.nanos = n * 3600000000000
+    return out
+}
+
+/// days builds a Duration of `n * 24` hours. **Caveat:** this is
+/// a pure nanosecond count — adding `days(1)` to an `Instant`
+/// across a DST transition (e.g. last Sunday in March in
+/// Europe) puts you an hour off the same wall-clock time. When
+/// you mean "same time tomorrow", use
+/// `Date.plusDays(1).atStartOfDay(zone)` plus your time-of-day,
+/// or work with `DateTime` directly. When you mean "advance by
+/// 86_400_000_000_000 nanos regardless of clock shifts", `days`
+/// is the helper you want.
+func days(n: int): Duration {
+    let out = new Duration()
+    out.nanos = n * 86400000000000
+    return out
+}
+
+/// between returns the Duration from `a` to `b`. Positive when
+/// `b` is later than `a`. Equivalent to `b.diff(a)`; provided as
+/// a free function because the "elapsed from start to end" call
+/// site reads more naturally with both endpoints visible.
+func between(a: Instant, b: Instant): Duration {
+    let out = new Duration()
+    out.nanos = b.nanos - a.nanos
+    return out
+}
+
+/// utc returns the UTC zone. Cheap to call — just constructs a
+/// `Zone { name: "UTC" }` value.
+func utc(): Zone {
+    let z = new Zone()
+    z.name = "UTC"
+    return z
+}
+
+/// localZone returns the zone the host environment considers
+/// "local" — on the backend, whatever `time.Local` resolves to
+/// (controlled by `$TZ` or the system timezone); on the frontend,
+/// `Intl.DateTimeFormat().resolvedOptions().timeZone`. For a
+/// German server with `$TZ=Europe/Berlin`, this returns
+/// `Zone{name:"Europe/Berlin"}` on both sides.
+func localZone(): Zone {
+    let z = new Zone()
+    z.name = __localZoneName()
+    return z
+}
+
+/// zone parses an IANA timezone name and returns the
+/// corresponding `Zone`, or `none` if the name isn't a known
+/// IANA identifier. Accepts the canonical IANA form
+/// (`"Europe/Berlin"`, `"America/New_York"`, etc.). Fixed offset
+/// strings (`"+02:00"`) are accepted as-is and treated as
+/// non-DST-observing.
+func zone(name: string): option<Zone> {
+    if !__zoneIsValid(name) {
+        return none
+    }
+    let z = new Zone()
+    z.name = name
+    return z
+}
+
+/// today returns the current calendar date in UTC. For "today in
+/// the user's timezone" use `todayIn(localZone())` or
+/// `todayIn(zone("Europe/Berlin")!)`.
+func today(): Date {
+    return instant().date(utc())
+}
+
+/// todayIn returns the current calendar date in the given zone.
+/// Around midnight the answer differs between zones — e.g. at
+/// 23:30 UTC on the 15th, `todayIn(zone("Europe/Berlin")!)`
+/// already reads as the 16th.
+func todayIn(z: Zone): Date {
+    return instant().date(z)
+}
+
+/// dateOf builds a `Date` from explicit year/month/day. No
+/// validation: `dateOf(2026, 13, 99)` constructs the struct as
+/// written. The first call that routes through host arithmetic
+/// (`plusDays`, `toISO`, etc.) will normalise it.
+func dateOf(year: int, month: int, day: int): Date {
+    let d = new Date()
+    d.year = year
+    d.month = month
+    d.day = day
+    return d
+}
+
+/// parseDate turns an ISO 8601 / RFC 3339 full-date string
+/// (`"yyyy-MM-dd"`) into a `Date`. Returns `none` on malformed
+/// input. Accepts the strict form only — for fuller
+/// date+time+offset strings use `parseDateTime`.
+func parseDate(iso: string): option<Date> {
+    let packed = __dateParse(iso)
+    if packed < 0 {
+        return none
+    }
+    let d = new Date()
+    d.year = packed / 10000
+    d.month = (packed / 100) % 100
+    d.day = packed % 100
+    return d
+}
+
+/// dateTimeOf builds a `DateTime` from broken-down parts. `nano`
+/// is the sub-second component (0 to 999_999_999); pass 0 if
+/// you only care about second precision. Returns `none` if the
+/// zone name isn't recognised — `dateTimeOf(..., "NotAZone")`
+/// won't silently use UTC. Out-of-range parts (month=13,
+/// day=32) normalise the way the host calendar does, rolling
+/// over into the next unit; that's a feature, not a validation
+/// failure.
+func dateTimeOf(year: int, month: int, day: int, hour: int, minute: int, second: int, nano: int, zoneName: string): option<DateTime> {
+    if !__zoneIsValid(zoneName) {
+        return none
+    }
+    let dt = new DateTime()
+    dt.nanos = __dateTimeFromParts(year, month, day, hour, minute, second, nano, zoneName)
+    dt.zoneName = zoneName
+    return dt
+}
+
+/// parseDateTime turns an RFC 3339 / ISO 8601 datetime string
+/// into a `DateTime`. The zone metadata is preserved when the
+/// input carries an offset — `"2026-06-16T14:34:56+02:00"`
+/// roundtrips with `zoneName = "+02:00"` (a fixed-offset zone,
+/// NOT `Europe/Berlin`, since the IANA name isn't recoverable
+/// from the offset alone). A `Z` suffix maps to `"UTC"`. Returns
+/// `none` on malformed input.
+func parseDateTime(iso: string): option<DateTime> {
+    let zoneName = __dateTimeParseZone(iso)
+    if zoneName == "" {
+        return none
+    }
+    let dt = new DateTime()
+    dt.nanos = __dateTimeParseNanos(iso)
+    dt.zoneName = zoneName
+    return dt
+}
+
+/// parseDateExact parses `input` against a custom `pattern`
+/// using the same token language `Date.format` emits — the
+/// inverse of `format`. Returns `none` when the input doesn't
+/// match the pattern shape (extra characters, missing fields,
+/// non-digit where a digit was expected).
+///
+/// ```sova
+/// let d = time.parseDateExact("16.06.2026", "dd.MM.yyyy")!
+/// // d.year == 2026, d.month == 6, d.day == 16
+/// ```
+///
+/// Only `yyyy` / `yy` / `MM` / `M` / `dd` / `d` are interpreted
+/// — time-of-day tokens in the pattern are matched literally
+/// (i.e. `"14:30"` against pattern `"HH:mm"` won't extract
+/// anything because Date has no time-of-day; use
+/// `parseDateTimeExact` for that).
+func parseDateExact(input: string, pattern: string): option<Date> {
+    let nanos = __parseTimePattern(input, pattern, "UTC")
+    if nanos == -9223372036854775807 {
+        return none
+    }
+    let d = new Date()
+    d.year = __dateTimeYear(nanos, "UTC")
+    d.month = __dateTimeMonth(nanos, "UTC")
+    d.day = __dateTimeDay(nanos, "UTC")
+    return d
+}
+
+/// parseDateTimeExact parses `input` against `pattern` and
+/// constructs a `DateTime` in the given zone. The pattern
+/// doesn't carry zone metadata, so the caller decides what zone
+/// the wall-clock fields name.
+///
+/// ```sova
+/// let berlin = time.zone("Europe/Berlin")!
+/// let dt = time.parseDateTimeExact(
+///     "16.06.2026 14:30:00",
+///     "dd.MM.yyyy HH:mm:ss",
+///     berlin,
+/// )!
+/// // dt.hour() == 14, dt.zone().name == "Europe/Berlin"
+/// // dt.offset() == seconds(7200)  // CEST is active in June
+/// ```
+///
+/// All format tokens (`yyyy`, `MM`, `dd`, `HH`, `mm`, `ss`,
+/// `SSS`) are accepted. Variable-width tokens (`M`, `d`, `H`,
+/// `m`, `s`) match 1-2 digits greedily.
+func parseDateTimeExact(input: string, pattern: string, z: Zone): option<DateTime> {
+    let nanos = __parseTimePattern(input, pattern, z.name)
+    if nanos == -9223372036854775807 {
+        return none
+    }
+    let dt = new DateTime()
+    dt.nanos = nanos
+    dt.zoneName = z.name
+    return dt
+}
+
 extern {
-    /// Returns the current wall-clock time as the number of whole seconds
-    /// since the Unix epoch.
+    /// Returns the current wall-clock time as the number of whole
+    /// seconds since the Unix epoch. Kept for low-level interop
+    /// with code that wants raw ints; prefer `instant()` for new
+    /// code, which gives a typed `Instant`.
     func now(): int = {
         frontend: "() => (typeof __sovaJSNow === 'function') ? __sovaJSNow() : Math.floor(Date.now() / 1000)",
         backend: "func() int64 { if __sovaTestHarnessActive() { return __sovaTestNow().Unix() }; return time.Now().Unix() }"
     }
 
-    /// Returns the current time in nanoseconds since the Unix epoch.
-    /// Useful as a high-resolution monotonic-ish stamp.
+    /// Returns the current time in nanoseconds since the Unix
+    /// epoch. Frontend tops out at millisecond precision (Date.now
+    /// * 1e6).
     func unixNano(): int = {
         frontend: "() => (typeof __sovaJSUnixNano === 'function') ? __sovaJSUnixNano() : Date.now() * 1000000",
         backend: "func() int64 { if __sovaTestHarnessActive() { return __sovaTestNow().UnixNano() }; return time.Now().UnixNano() }"
     }
 
-    /// Returns the current time in milliseconds since the Unix epoch.
+    /// Returns the current time in milliseconds since the Unix
+    /// epoch.
     func unixMillis(): int = {
         frontend: "() => (typeof __sovaJSUnixMillis === 'function') ? __sovaJSUnixMillis() : Date.now()",
         backend: "func() int64 { if __sovaTestHarnessActive() { return __sovaTestNow().UnixMilli() }; return time.Now().UnixMilli() }"
     }
+
+    /// __instantToISO formats `nanos`-since-epoch as an RFC 3339
+    /// string. Backend produces nanosecond precision via
+    /// `time.RFC3339Nano`; frontend uses `Date.prototype.toISOString`
+    /// which is millisecond-floor.
+    func __instantToISO(ns: int): string = {
+        frontend: "(ns) => { const ms = Number(ns) / 1000000; return new Date(ms).toISOString(); }",
+        backend: "func(ns int64) string { return time.Unix(0, ns).UTC().Format(time.RFC3339Nano) }"
+    }
+
+    /// __instantParse parses an RFC 3339 / ISO 8601 string and
+    /// returns nanoseconds since the epoch, or -1 on parse
+    /// failure (caller's wrapper converts to `option<Instant>`).
+    /// Backend accepts the broader `time.RFC3339Nano` shape;
+    /// frontend uses `Date.parse` which is more permissive but
+    /// only millisecond-precise.
+    func __instantParse(iso: string): int = {
+        frontend: "(s) => { const ms = Date.parse(s); if (Number.isNaN(ms)) return -1; return ms * 1000000; }",
+        backend: "func(s string) int64 { t, err := time.Parse(time.RFC3339Nano, s); if err != nil { return -1 }; return t.UnixNano() }"
+    }
+
+    /// __localZoneName returns the host's local IANA timezone
+    /// name. Backend: `time.Local.String()` (resolves `$TZ` /
+    /// `/etc/localtime`). Frontend:
+    /// `Intl.DateTimeFormat().resolvedOptions().timeZone`.
+    func __localZoneName(): string = {
+        frontend: "() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) { return 'UTC'; } }",
+        backend: "func() string { n := time.Local.String(); if n == \"\" || n == \"Local\" { return \"UTC\" }; return n }"
+    }
+
+    /// __zoneIsValid reports whether `name` is a recognised IANA
+    /// timezone (or a fixed-offset spelling like `+02:00` /
+    /// `-05:30`). Used by `zone(name)` to fail-closed instead of
+    /// returning a Zone that won't resolve.
+    func __zoneIsValid(name: string): bool = {
+        frontend: "(n) => { if (!n) return false; if (/^[+-]\\d{2}:\\d{2}$/.test(n)) return true; try { new Intl.DateTimeFormat('en-US', {timeZone: n}); return true; } catch (e) { return false; } }",
+        backend: "func(n string) bool { if n == \"\" { return false }; if len(n) == 6 && (n[0] == '+' || n[0] == '-') && n[3] == ':' { return true }; _, err := time.LoadLocation(n); return err == nil }"
+    }
+
+    /// __zoneOffsetAt returns the UTC offset (in whole seconds)
+    /// the named zone has at the given Instant. Positive east
+    /// of UTC.
+    func __zoneOffsetAt(zoneName: string, nanos: int): int = {
+        frontend: "(z, ns) => { try { const ms = Number(ns) / 1e6; const m = /^([+-])(\\d{2}):(\\d{2})$/.exec(z); if (m) { return (m[1] === '-' ? -1 : 1) * (parseInt(m[2], 10) * 3600 + parseInt(m[3], 10) * 60); } const d = new Date(ms); const fmt = new Intl.DateTimeFormat('en-CA', {timeZone: z, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false}); const parts = fmt.formatToParts(d); const o = {}; for (const p of parts) o[p.type] = p.value; const asUtc = Date.UTC(+o.year, +o.month - 1, +o.day === 24 ? 0 : +o.day, +o.hour === 24 ? 0 : +o.hour, +o.minute, +o.second); return Math.floor((asUtc - ms) / 1000); } catch (e) { return 0; } }",
+        backend: "func(z string, ns int64) int64 { loc, err := time.LoadLocation(z); if err != nil { if len(z) == 6 && (z[0] == '+' || z[0] == '-') { var hh, mm int; fmt.Sscanf(z, \"%3d:%2d\", &hh, &mm); sign := int64(1); if z[0] == '-' { sign = -1; hh = -hh }; return sign * (int64(hh) * 3600 + int64(mm) * 60) }; return 0 }; _, off := time.Unix(0, ns).In(loc).Zone(); return int64(off) }"
+    }
+
+    /// __zoneIsDSTAt reports whether the named zone is observing
+    /// DST at the given Instant. Backend uses Go's built-in
+    /// `time.Time.IsDST()` (Go 1.17+); frontend compares the
+    /// zone's offset at this moment to its offsets at January-15
+    /// and July-15 of the same year — the standard
+    /// hemisphere-agnostic heuristic. Helper `offOf` is inlined
+    /// to keep this extern self-contained.
+    func __zoneIsDSTAt(zoneName: string, nanos: int): bool = {
+        frontend: "(z, ns) => { try { if (!z || z === 'UTC' || /^[+-]\\d{2}:\\d{2}$/.test(z)) return false; const offOf = (zz, nn) => { const mms = Number(nn) / 1e6; const fmt = new Intl.DateTimeFormat('en-CA', {timeZone: zz, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false}); const o = {}; for (const p of fmt.formatToParts(new Date(mms))) o[p.type] = p.value; const h = parseInt(o.hour, 10) === 24 ? 0 : parseInt(o.hour, 10); const asUtc = Date.UTC(parseInt(o.year, 10), parseInt(o.month, 10) - 1, parseInt(o.day, 10), h, parseInt(o.minute, 10), parseInt(o.second, 10)); return Math.floor((asUtc - mms) / 1000); }; const cur = offOf(z, ns); const year = new Date(Number(ns) / 1e6).getUTCFullYear(); const janMs = Date.UTC(year, 0, 15); const julMs = Date.UTC(year, 6, 15); const oJan = offOf(z, BigInt(janMs) * 1000000n); const oJul = offOf(z, BigInt(julMs) * 1000000n); if (oJan === oJul) return false; return cur === Math.max(oJan, oJul); } catch (e) { return false; } }",
+        backend: "func(z string, ns int64) bool { loc, err := time.LoadLocation(z); if err != nil { return false }; return time.Unix(0, ns).In(loc).IsDST() }"
+    }
+
+    /// __zoneObservesDST reports whether the named zone has any
+    /// DST rules in `year` — i.e. whether its January offset
+    /// differs from its July offset.
+    func __zoneObservesDST(zoneName: string, year: int): bool = {
+        frontend: "(z, y) => { try { if (!z || z === 'UTC' || /^[+-]\\d{2}:\\d{2}$/.test(z)) return false; const offOf = (zz, mms) => { const fmt = new Intl.DateTimeFormat('en-CA', {timeZone: zz, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false}); const o = {}; for (const p of fmt.formatToParts(new Date(mms))) o[p.type] = p.value; const h = parseInt(o.hour, 10) === 24 ? 0 : parseInt(o.hour, 10); const asUtc = Date.UTC(parseInt(o.year, 10), parseInt(o.month, 10) - 1, parseInt(o.day, 10), h, parseInt(o.minute, 10), parseInt(o.second, 10)); return Math.floor((asUtc - mms) / 1000); }; const janMs = Date.UTC(Number(y), 0, 15); const julMs = Date.UTC(Number(y), 6, 15); return offOf(z, janMs) !== offOf(z, julMs); } catch (e) { return false; } }",
+        backend: "func(z string, y int64) bool { loc, err := time.LoadLocation(z); if err != nil { return false }; jan := time.Date(int(y), time.January, 15, 12, 0, 0, 0, loc); jul := time.Date(int(y), time.July, 15, 12, 0, 0, 0, loc); _, oJan := jan.Zone(); _, oJul := jul.Zone(); return oJan != oJul }"
+    }
+
+    /// __dateTimeYear / Month / Day / Hour / Minute / Second /
+    /// Nano break down a UTC nanosecond stamp into the broken
+    /// fields it has in the named zone. Each is one
+    /// `time.Unix(0, ns).In(loc)` (backend) or one
+    /// `Intl.DateTimeFormat.formatToParts` (frontend); the host
+    /// caches the location lookup so repeated accessor calls on
+    /// the same DateTime are cheap.
+    func __dateTimeYear(nanos: int, zoneName: string): int = {
+        frontend: "(ns, z) => { const ms = Number(ns) / 1e6; const fmt = new Intl.DateTimeFormat('en-CA', {timeZone: z, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false}); const o = {}; for (const p of fmt.formatToParts(new Date(ms))) o[p.type] = p.value; return parseInt(o.year, 10); }",
+        backend: "func(ns int64, z string) int64 { loc, err := time.LoadLocation(z); if err != nil { loc = time.UTC }; return int64(time.Unix(0, ns).In(loc).Year()) }"
+    }
+
+    func __dateTimeMonth(nanos: int, zoneName: string): int = {
+        frontend: "(ns, z) => { const ms = Number(ns) / 1e6; const fmt = new Intl.DateTimeFormat('en-CA', {timeZone: z, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false}); const o = {}; for (const p of fmt.formatToParts(new Date(ms))) o[p.type] = p.value; return parseInt(o.month, 10); }",
+        backend: "func(ns int64, z string) int64 { loc, err := time.LoadLocation(z); if err != nil { loc = time.UTC }; return int64(time.Unix(0, ns).In(loc).Month()) }"
+    }
+
+    func __dateTimeDay(nanos: int, zoneName: string): int = {
+        frontend: "(ns, z) => { const ms = Number(ns) / 1e6; const fmt = new Intl.DateTimeFormat('en-CA', {timeZone: z, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false}); const o = {}; for (const p of fmt.formatToParts(new Date(ms))) o[p.type] = p.value; return parseInt(o.day, 10); }",
+        backend: "func(ns int64, z string) int64 { loc, err := time.LoadLocation(z); if err != nil { loc = time.UTC }; return int64(time.Unix(0, ns).In(loc).Day()) }"
+    }
+
+    func __dateTimeHour(nanos: int, zoneName: string): int = {
+        frontend: "(ns, z) => { const ms = Number(ns) / 1e6; const fmt = new Intl.DateTimeFormat('en-CA', {timeZone: z, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false}); const o = {}; for (const p of fmt.formatToParts(new Date(ms))) o[p.type] = p.value; const h = parseInt(o.hour, 10); return h === 24 ? 0 : h; }",
+        backend: "func(ns int64, z string) int64 { loc, err := time.LoadLocation(z); if err != nil { loc = time.UTC }; return int64(time.Unix(0, ns).In(loc).Hour()) }"
+    }
+
+    func __dateTimeMinute(nanos: int, zoneName: string): int = {
+        frontend: "(ns, z) => { const ms = Number(ns) / 1e6; const fmt = new Intl.DateTimeFormat('en-CA', {timeZone: z, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false}); const o = {}; for (const p of fmt.formatToParts(new Date(ms))) o[p.type] = p.value; return parseInt(o.minute, 10); }",
+        backend: "func(ns int64, z string) int64 { loc, err := time.LoadLocation(z); if err != nil { loc = time.UTC }; return int64(time.Unix(0, ns).In(loc).Minute()) }"
+    }
+
+    func __dateTimeSecond(nanos: int, zoneName: string): int = {
+        frontend: "(ns, z) => { const ms = Number(ns) / 1e6; const fmt = new Intl.DateTimeFormat('en-CA', {timeZone: z, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false}); const o = {}; for (const p of fmt.formatToParts(new Date(ms))) o[p.type] = p.value; return parseInt(o.second, 10); }",
+        backend: "func(ns int64, z string) int64 { loc, err := time.LoadLocation(z); if err != nil { loc = time.UTC }; return int64(time.Unix(0, ns).In(loc).Second()) }"
+    }
+
+    func __dateTimeNano(nanos: int, zoneName: string): int = {
+        frontend: "(ns, z) => Number(BigInt(ns) - (BigInt(ns) / 1000000000n) * 1000000000n)",
+        backend: "func(ns int64, z string) int64 { loc, err := time.LoadLocation(z); if err != nil { loc = time.UTC }; return int64(time.Unix(0, ns).In(loc).Nanosecond()) }"
+    }
+
+    /// __dateTimeWeekday returns the weekday as 0=Sun..6=Sat in
+    /// the named zone. Frontend derives it from the wall-clock
+    /// y/m/d in the zone (a `Date.UTC` of those parts + `getUTCDay`).
+    func __dateTimeWeekday(nanos: int, zoneName: string): int = {
+        frontend: "(ns, z) => { const ms = Number(ns) / 1e6; const fmt = new Intl.DateTimeFormat('en-CA', {timeZone: z, year:'numeric', month:'2-digit', day:'2-digit', hour12: false}); const o = {}; for (const p of fmt.formatToParts(new Date(ms))) o[p.type] = p.value; return new Date(Date.UTC(parseInt(o.year, 10), parseInt(o.month, 10) - 1, parseInt(o.day, 10))).getUTCDay(); }",
+        backend: "func(ns int64, z string) int64 { loc, err := time.LoadLocation(z); if err != nil { loc = time.UTC }; return int64(time.Unix(0, ns).In(loc).Weekday()) }"
+    }
+
+    /// __dateTimeToISO formats `nanos` in the named zone as
+    /// `2026-06-16T14:34:56+02:00` (offset suffix) or
+    /// `...Z` when the zone resolves to UTC. Frontend builds
+    /// the string from the broken-down parts plus the zone's
+    /// offset at this moment.
+    func __dateTimeToISO(nanos: int, zoneName: string): string = {
+        frontend: "(ns, z) => { const ms = Number(ns) / 1e6; const fmt = new Intl.DateTimeFormat('en-CA', {timeZone: z, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false}); const o = {}; for (const p of fmt.formatToParts(new Date(ms))) o[p.type] = p.value; const h = parseInt(o.hour, 10); const hh = String(h === 24 ? 0 : h).padStart(2, '0'); const asUtc = Date.UTC(parseInt(o.year, 10), parseInt(o.month, 10) - 1, parseInt(o.day, 10), h === 24 ? 0 : h, parseInt(o.minute, 10), parseInt(o.second, 10)); let offSec = Math.floor((asUtc - ms) / 1000); let sign = '+'; if (offSec < 0) { sign = '-'; offSec = -offSec; } const oh = String(Math.floor(offSec / 3600)).padStart(2, '0'); const om = String(Math.floor((offSec % 3600) / 60)).padStart(2, '0'); const suffix = offSec === 0 ? 'Z' : (sign + oh + ':' + om); return o.year + '-' + o.month + '-' + o.day + 'T' + hh + ':' + o.minute + ':' + o.second + suffix; }",
+        backend: "func(ns int64, z string) string { loc, err := time.LoadLocation(z); if err != nil { loc = time.UTC }; return time.Unix(0, ns).In(loc).Format(time.RFC3339Nano) }"
+    }
+
+    /// __dateTimeParseNanos parses an RFC 3339 / ISO 8601 string
+    /// to UTC nanoseconds. Same `time.Parse` / `Date.parse`
+    /// shape as `__instantParse` — split into two externs only
+    /// so `parseDateTime` can recover the zone metadata in one
+    /// pass without packed-string tricks.
+    func __dateTimeParseNanos(iso: string): int = {
+        frontend: "(s) => { const ms = Date.parse(s); if (Number.isNaN(ms)) return 0; return ms * 1000000; }",
+        backend: "func(s string) int64 { t, err := time.Parse(time.RFC3339Nano, s); if err != nil { return 0 }; return t.UnixNano() }"
+    }
+
+    /// __dateTimeParseZone parses the zone portion out of an ISO
+    /// string and returns the canonical zone name —
+    /// `\"UTC\"` for a trailing `Z`, `\"+HH:MM\"` /
+    /// `\"-HH:MM\"` for a numeric offset. Returns `\"\"` on
+    /// parse failure (the wrapper turns that into `none`).
+    func __dateTimeParseZone(iso: string): string = {
+        frontend: "(s) => { if (!s) return ''; if (Number.isNaN(Date.parse(s))) return ''; if (/Z$/.test(s)) return 'UTC'; const m = /([+-]\\d{2}:?\\d{2})$/.exec(s); if (!m) return 'UTC'; const o = m[1]; return o.length === 5 ? o.slice(0,3) + ':' + o.slice(3) : o; }",
+        backend: "func(s string) string { t, err := time.Parse(time.RFC3339Nano, s); if err != nil { return \"\" }; n := t.Location().String(); if n == \"\" || n == \"Local\" || n == \"UTC\" { if t.Format(\"-07:00\") == \"+00:00\" { return \"UTC\" }; return t.Format(\"-07:00\") }; return n }"
+    }
+
+    /// __dateTimeFromParts constructs a UTC-nanosecond stamp from
+    /// broken-down wall-clock parts in the named zone. Frontend
+    /// computes via the "format-then-diff" trick: build the
+    /// UTC ms of the wall-clock parts, then ask the host how
+    /// many seconds the zone is offset from UTC at that moment,
+    /// and subtract. Out-of-range parts normalise (month=13
+    /// rolls into next year) on both sides.
+    func __dateTimeFromParts(year: int, month: int, day: int, hour: int, minute: int, second: int, nano: int, zoneName: string): int = {
+        frontend: "(y, mo, d, h, mi, s, ns, z) => { const wallMs = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)); const offOf = (zz, mms) => { const fmt = new Intl.DateTimeFormat('en-CA', {timeZone: zz, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false}); const o = {}; for (const p of fmt.formatToParts(new Date(mms))) o[p.type] = p.value; const hh = parseInt(o.hour, 10) === 24 ? 0 : parseInt(o.hour, 10); const asUtc = Date.UTC(parseInt(o.year, 10), parseInt(o.month, 10) - 1, parseInt(o.day, 10), hh, parseInt(o.minute, 10), parseInt(o.second, 10)); return Math.floor((asUtc - mms) / 1000); }; let off = offOf(z, wallMs); for (let i = 0; i < 2; i++) { off = offOf(z, wallMs - off * 1000); } const utcMs = wallMs - off * 1000; return BigInt(utcMs) * 1000000n + BigInt(Number(ns)); }",
+        backend: "func(y, mo, d, h, mi, s, ns int64, z string) int64 { loc, err := time.LoadLocation(z); if err != nil { loc = time.UTC }; return time.Date(int(y), time.Month(mo), int(d), int(h), int(mi), int(s), int(ns), loc).UnixNano() }"
+    }
+
+    /// __dateToISO formats `y/m/d` as `yyyy-MM-dd` with
+    /// zero-padded fields.
+    func __dateToISO(year: int, month: int, day: int): string = {
+        frontend: "(y, m, d) => { const pad = (v, n) => String(v).padStart(n, '0'); return pad(y, 4) + '-' + pad(m, 2) + '-' + pad(d, 2); }",
+        backend: "func(y, m, d int64) string { return fmt.Sprintf(\"%04d-%02d-%02d\", y, m, d) }"
+    }
+
+    /// __dateWeekday returns the weekday (0=Sun..6=Sat) for
+    /// the given calendar date, computed in UTC. Same answer on
+    /// both sides.
+    func __dateWeekday(year: int, month: int, day: int): int = {
+        frontend: "(y, m, d) => new Date(Date.UTC(Number(y), Number(m) - 1, Number(d))).getUTCDay()",
+        backend: "func(y, m, d int64) int64 { return int64(time.Date(int(y), time.Month(m), int(d), 0, 0, 0, 0, time.UTC).Weekday()) }"
+    }
+
+    /// __dateAdd advances a calendar date by `days+months+years`
+    /// (any combination, including negative). Returns the
+    /// resulting date packed as `year*10000 + month*100 + day`
+    /// so Sova can unpack into a new `Date` struct without
+    /// needing a struct-return extern. Month-end clamping is
+    /// host-default: `Jan 31 + 1 month` → `Mar 3` (Go's
+    /// `AddDate`) or `Feb 28/29` (JS `Date` constructor with
+    /// clamp). Go's behaviour wins because that's where most
+    /// arithmetic lives; the frontend matches by manual clamp.
+    func __dateAdd(year: int, month: int, day: int, days: int, months: int, years: int): int = {
+        frontend: "(y, mo, d, dd, dm, dy) => { const nm = Number(mo) - 1 + Number(dm); const ny = Number(y) + Number(dy) + Math.floor(nm / 12); const m2 = ((nm % 12) + 12) % 12; const daysIn = [31, ((ny%4===0&&ny%100!==0)||ny%400===0)?29:28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]; const dClamp = Math.min(Number(d), daysIn[m2]); const ms = Date.UTC(ny, m2, dClamp) + Number(dd) * 86400000; const out = new Date(ms); return out.getUTCFullYear() * 10000 + (out.getUTCMonth() + 1) * 100 + out.getUTCDate(); }",
+        backend: "func(y, m, d, dd, dm, dy int64) int64 { t := time.Date(int(y), time.Month(m), int(d), 0, 0, 0, 0, time.UTC).AddDate(int(dy), int(dm), int(dd)); return int64(t.Year()) * 10000 + int64(t.Month()) * 100 + int64(t.Day()) }"
+    }
+
+    /// __dateDaysBetween returns the count of calendar days from
+    /// `(y1, m1, d1)` to `(y2, m2, d2)`. Positive when the
+    /// second date is later. Uses midnight-UTC anchoring so the
+    /// answer is timezone-independent (a "calendar day" in this
+    /// API is the UTC-anchored day, NOT a local-zone day —
+    /// the difference can matter for users in non-UTC zones at
+    /// hours close to midnight).
+    func __dateDaysBetween(y1: int, m1: int, d1: int, y2: int, m2: int, d2: int): int = {
+        frontend: "(y1, m1, d1, y2, m2, d2) => { const a = Date.UTC(Number(y1), Number(m1) - 1, Number(d1)); const b = Date.UTC(Number(y2), Number(m2) - 1, Number(d2)); return Math.round((b - a) / 86400000); }",
+        backend: "func(y1, m1, d1, y2, m2, d2 int64) int64 { a := time.Date(int(y1), time.Month(m1), int(d1), 0, 0, 0, 0, time.UTC); b := time.Date(int(y2), time.Month(m2), int(d2), 0, 0, 0, 0, time.UTC); return int64(b.Sub(a).Hours() / 24) }"
+    }
+
+    /// __dateAtStartOfDay returns the UTC-nanosecond stamp of
+    /// `00:00:00` on the given calendar date in the named zone.
+    /// E.g. `(2026, 6, 16, "Europe/Berlin")` → the nanos for
+    /// `2026-06-16T00:00:00+02:00` (CEST). The result is an
+    /// `Instant` (zone-independent); the zone parameter only
+    /// affects WHICH wall-clock midnight you're asking for.
+    func __dateAtStartOfDay(year: int, month: int, day: int, zoneName: string): int = {
+        frontend: "(y, m, d, z) => { const wallMs = Date.UTC(Number(y), Number(m) - 1, Number(d), 0, 0, 0); const offOf = (zz, mms) => { const fmt = new Intl.DateTimeFormat('en-CA', {timeZone: zz, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false}); const o = {}; for (const p of fmt.formatToParts(new Date(mms))) o[p.type] = p.value; const hh = parseInt(o.hour, 10) === 24 ? 0 : parseInt(o.hour, 10); const asUtc = Date.UTC(parseInt(o.year, 10), parseInt(o.month, 10) - 1, parseInt(o.day, 10), hh, parseInt(o.minute, 10), parseInt(o.second, 10)); return Math.floor((asUtc - mms) / 1000); }; let off = offOf(z, wallMs); for (let i = 0; i < 2; i++) { off = offOf(z, wallMs - off * 1000); } return BigInt(wallMs - off * 1000) * 1000000n; }",
+        backend: "func(y, m, d int64, z string) int64 { loc, err := time.LoadLocation(z); if err != nil { loc = time.UTC }; return time.Date(int(y), time.Month(m), int(d), 0, 0, 0, 0, loc).UnixNano() }"
+    }
+
+    /// __dateParse parses a `yyyy-MM-dd` string into a packed
+    /// `year*10000 + month*100 + day` int, or -1 on malformed
+    /// input. Strict — only accepts the canonical ISO form,
+    /// no extra whitespace or trailing characters.
+    func __dateParse(iso: string): int = {
+        frontend: "(s) => { const m = /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(s); if (!m) return -1; return Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3]); }",
+        backend: "func(s string) int64 { t, err := time.Parse(\"2006-01-02\", s); if err != nil { return -1 }; return int64(t.Year()) * 10000 + int64(t.Month()) * 100 + int64(t.Day()) }"
+    }
+
+    /// __formatTimePattern does a regex-based token-replace over
+    /// `pattern`, substituting `yyyy`/`MM`/`dd`/`HH`/`mm`/`ss`/
+    /// etc. with the corresponding broken-down field values.
+    /// Anything that isn't a recognised token passes through
+    /// verbatim — `.`, `-`, `:`, space, even letters that don't
+    /// form a token (so `T` in an ISO-like pattern works).
+    /// Both sides use the same regex (RE2-compatible) and
+    /// alternation order (longest variants first); output is
+    /// identical character-for-character.
+    func __formatTimePattern(year: int, month: int, day: int, hour: int, minute: int, second: int, nano: int, pattern: string): string = {
+        frontend: "(y, mo, d, h, mi, s, ns, pat) => { const pad = (v, n) => String(v).padStart(n, '0'); const yn = Number(y), mon = Number(mo), dn = Number(d), hn = Number(h), min = Number(mi), sn = Number(s), nsn = Number(ns); return String(pat).replace(/yyyy|yy|MM|M|dd|d|HH|H|mm|m|ss|s|SSS/g, t => { switch (t) { case 'yyyy': return pad(yn, 4); case 'yy': return pad(yn % 100, 2); case 'MM': return pad(mon, 2); case 'M': return String(mon); case 'dd': return pad(dn, 2); case 'd': return String(dn); case 'HH': return pad(hn, 2); case 'H': return String(hn); case 'mm': return pad(min, 2); case 'm': return String(min); case 'ss': return pad(sn, 2); case 's': return String(sn); case 'SSS': return pad(Math.floor(nsn / 1000000), 3); } return t; }); }",
+        backend("regexp"): "func(y, mo, d, h, mi, s, ns int64, pat string) string { re := regexp.MustCompile(\"yyyy|yy|MM|M|dd|d|HH|H|mm|m|ss|s|SSS\"); return re.ReplaceAllStringFunc(pat, func(t string) string { switch t { case \"yyyy\": return fmt.Sprintf(\"%04d\", y); case \"yy\": return fmt.Sprintf(\"%02d\", y%100); case \"MM\": return fmt.Sprintf(\"%02d\", mo); case \"M\": return fmt.Sprintf(\"%d\", mo); case \"dd\": return fmt.Sprintf(\"%02d\", d); case \"d\": return fmt.Sprintf(\"%d\", d); case \"HH\": return fmt.Sprintf(\"%02d\", h); case \"H\": return fmt.Sprintf(\"%d\", h); case \"mm\": return fmt.Sprintf(\"%02d\", mi); case \"m\": return fmt.Sprintf(\"%d\", mi); case \"ss\": return fmt.Sprintf(\"%02d\", s); case \"s\": return fmt.Sprintf(\"%d\", s); case \"SSS\": return fmt.Sprintf(\"%03d\", ns/1000000) }; return t }) }"
+    }
+
+    /// __parseTimePattern is the inverse of `__formatTimePattern`.
+    /// Converts `pattern` into a regex (anchored `^...$` with
+    /// `\\d{N}` capture groups in place of tokens, all other
+    /// pattern characters quoted as literals), matches `input`,
+    /// then maps captures back to year/month/day/hour/min/sec/ns
+    /// and constructs a UTC-nanosecond stamp at the given zone.
+    /// Returns Int64.MinValue (-9223372036854775807) on any
+    /// mismatch — the Sova wrappers turn that into `none`.
+    func __parseTimePattern(input: string, pattern: string, zoneName: string): int = {
+        frontend: "(input, pat, zoneName) => { const tokRe = /yyyy|yy|MM|M|dd|d|HH|H|mm|m|ss|s|SSS/g; const tokens = []; let reSrc = '^'; let last = 0; let m; while ((m = tokRe.exec(String(pat))) !== null) { const lit = String(pat).slice(last, m.index); reSrc += lit.replace(/[.*+?^${}()|\\[\\]\\\\]/g, '\\\\$&'); const tk = m[0]; tokens.push(tk); switch (tk) { case 'yyyy': reSrc += '(\\\\d{4})'; break; case 'yy': reSrc += '(\\\\d{2})'; break; case 'MM': reSrc += '(\\\\d{2})'; break; case 'M': reSrc += '(\\\\d{1,2})'; break; case 'dd': reSrc += '(\\\\d{2})'; break; case 'd': reSrc += '(\\\\d{1,2})'; break; case 'HH': reSrc += '(\\\\d{2})'; break; case 'H': reSrc += '(\\\\d{1,2})'; break; case 'mm': reSrc += '(\\\\d{2})'; break; case 'm': reSrc += '(\\\\d{1,2})'; break; case 'ss': reSrc += '(\\\\d{2})'; break; case 's': reSrc += '(\\\\d{1,2})'; break; case 'SSS': reSrc += '(\\\\d{3})'; break; } last = m.index + tk.length; } reSrc += String(pat).slice(last).replace(/[.*+?^${}()|\\[\\]\\\\]/g, '\\\\$&'); reSrc += '$'; let re; try { re = new RegExp(reSrc); } catch (e) { return -9223372036854775807n; } const mm = re.exec(String(input)); if (!mm) return -9223372036854775807n; let y = 1970, mo = 1, d = 1, h = 0, mi = 0, s = 0, ns = 0; for (let i = 0; i < tokens.length; i++) { const v = parseInt(mm[i + 1], 10); switch (tokens[i]) { case 'yyyy': y = v; break; case 'yy': y = 2000 + v; break; case 'MM': case 'M': mo = v; break; case 'dd': case 'd': d = v; break; case 'HH': case 'H': h = v; break; case 'mm': case 'm': mi = v; break; case 'ss': case 's': s = v; break; case 'SSS': ns = v * 1000000; break; } } const wallMs = Date.UTC(y, mo - 1, d, h, mi, s); const offOf = (zz, mms) => { const ifmt = new Intl.DateTimeFormat('en-CA', {timeZone: zz, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false}); const o = {}; for (const p of ifmt.formatToParts(new Date(mms))) o[p.type] = p.value; const hh = parseInt(o.hour, 10) === 24 ? 0 : parseInt(o.hour, 10); const asUtc = Date.UTC(parseInt(o.year, 10), parseInt(o.month, 10) - 1, parseInt(o.day, 10), hh, parseInt(o.minute, 10), parseInt(o.second, 10)); return Math.floor((asUtc - mms) / 1000); }; let off = offOf(zoneName, wallMs); for (let i = 0; i < 2; i++) { off = offOf(zoneName, wallMs - off * 1000); } return BigInt(wallMs - off * 1000) * 1000000n + BigInt(ns); }",
+        backend("regexp"): "func(input, pat, zoneName string) int64 { tokRe := regexp.MustCompile(\"yyyy|yy|MM|M|dd|d|HH|H|mm|m|ss|s|SSS\"); idxs := tokRe.FindAllStringIndex(pat, -1); var reSrc string = \"^\"; last := 0; tokens := []string{}; for _, m := range idxs { reSrc += regexp.QuoteMeta(pat[last:m[0]]); tk := pat[m[0]:m[1]]; tokens = append(tokens, tk); switch tk { case \"yyyy\": reSrc += \"(\\\\d{4})\"; case \"yy\": reSrc += \"(\\\\d{2})\"; case \"MM\": reSrc += \"(\\\\d{2})\"; case \"M\": reSrc += \"(\\\\d{1,2})\"; case \"dd\": reSrc += \"(\\\\d{2})\"; case \"d\": reSrc += \"(\\\\d{1,2})\"; case \"HH\": reSrc += \"(\\\\d{2})\"; case \"H\": reSrc += \"(\\\\d{1,2})\"; case \"mm\": reSrc += \"(\\\\d{2})\"; case \"m\": reSrc += \"(\\\\d{1,2})\"; case \"ss\": reSrc += \"(\\\\d{2})\"; case \"s\": reSrc += \"(\\\\d{1,2})\"; case \"SSS\": reSrc += \"(\\\\d{3})\" }; last = m[1] }; reSrc += regexp.QuoteMeta(pat[last:]) + \"$\"; re, err := regexp.Compile(reSrc); if err != nil { return -9223372036854775807 }; mm := re.FindStringSubmatch(input); if mm == nil { return -9223372036854775807 }; var y, mo, d, h, mi, s, ns int64 = 1970, 1, 1, 0, 0, 0, 0; for i, tk := range tokens { var v int64; for _, c := range mm[i+1] { v = v*10 + int64(c-'0') }; switch tk { case \"yyyy\": y = v; case \"yy\": y = 2000 + v; case \"MM\", \"M\": mo = v; case \"dd\", \"d\": d = v; case \"HH\", \"H\": h = v; case \"mm\", \"m\": mi = v; case \"ss\", \"s\": s = v; case \"SSS\": ns = v * 1000000 } }; loc, lerr := time.LoadLocation(zoneName); if lerr != nil { loc = time.UTC }; return time.Date(int(y), time.Month(mo), int(d), int(h), int(mi), int(s), int(ns), loc).UnixNano() }"
+    }
 }
+

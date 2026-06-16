@@ -16,6 +16,7 @@ type manifest struct {
 	Build   manifestBuild   `toml:"build"`
 	Wire    manifestWire    `toml:"wire"`
 	Serve   manifestServe   `toml:"serve"`
+	Env     manifestEnv     `toml:"env"`
 }
 
 type manifestProject struct {
@@ -48,6 +49,13 @@ type manifestServe struct {
 type manifestSCSS struct {
 	Command string `toml:"command"`
 	Enabled *bool  `toml:"enabled"`
+}
+
+type manifestEnv struct {
+	Autoload     bool     `toml:"autoload"`
+	Files        []string `toml:"files"`
+	PublicPrefix string   `toml:"public_prefix"`
+	Profile      string   `toml:"profile"`
 }
 
 // LoadManifest reads sova.toml from path. Returns the zero manifest and ok=false if the file does not exist; any other I/O or parse error is returned.

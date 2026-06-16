@@ -10,6 +10,7 @@ type PassResolveTypeRefs struct {
 	genericParamMap map[string]ir.TypID                  // generic param name -> TypID, populated per generic decl
 	aliases         map[string]map[string]*ir.TypeAliasStmt // pkgPath -> name -> alias decl, populated once per build
 	aliasResolving  map[string]bool                      // cycle guard: "pkgPath:name" currently being resolved
+	mixinNames      map[string]map[string]bool             // pkgPath -> mixin name -> exists. Populated once per build so mixin-typed return annotations (`: Composable`) can resolve to `any` instead of failing — see BUGS.md #19. Mixins aren't first-class types in Sova (they're inlined at type-declare time), so any concrete value can stand in for a mixin-typed slot at the call site.
 }
 
 func (p *PassResolveTypeRefs) Name() string       { return "resolve_typerefs" }
@@ -23,6 +24,7 @@ func (p *PassResolveTypeRefs) Run(pc *PassContext) error {
 	p.currentPkgPath = pc.Pkg.Path.String()
 	if p.aliases == nil {
 		p.aliases = map[string]map[string]*ir.TypeAliasStmt{}
+		p.mixinNames = map[string]map[string]bool{}
 		for _, pkg := range pc.Pkgs {
 			pkgPath := pkg.Path.String()
 			for _, f := range pkg.Files {
@@ -32,6 +34,12 @@ func (p *PassResolveTypeRefs) Run(pc *PassContext) error {
 							p.aliases[pkgPath] = map[string]*ir.TypeAliasStmt{}
 						}
 						p.aliases[pkgPath][ta.Name.Name] = ta
+					}
+					if md, ok := st.(*ir.MixinDeclStmt); ok && md.Name.Name != "" {
+						if p.mixinNames[pkgPath] == nil {
+							p.mixinNames[pkgPath] = map[string]bool{}
+						}
+						p.mixinNames[pkgPath][md.Name.Name] = true
 					}
 				}
 			}
@@ -384,6 +392,14 @@ func (p *PassResolveTypeRefs) resolveExpr(tt *ir.TypeTable, expr ir.Expr) {
 	case *ir.IndexExpr:
 		p.resolveExpr(tt, x.Expr)
 		p.resolveExpr(tt, x.Index)
+	case *ir.SliceRangeExpr:
+		p.resolveExpr(tt, x.Expr)
+		if x.Low != nil {
+			p.resolveExpr(tt, x.Low)
+		}
+		if x.High != nil {
+			p.resolveExpr(tt, x.High)
+		}
 	case *ir.FieldAccessExpr:
 		p.resolveExpr(tt, x.Expr)
 	case *ir.RangeExpr:
@@ -560,6 +576,18 @@ func (p *PassResolveTypeRefs) resolveTypeRef(tt *ir.TypeTable, tr *ir.TypeRef) i
 			}
 			if id, ok := lookup.GetByType(ir.TypeKey(kind + "::" + tr.CustomName)); ok {
 				return id
+			}
+		}
+		if p.mixinNames != nil {
+			if names, ok := p.mixinNames[lookupPkg]; ok && names[tr.CustomName] {
+				return tt.PrimAny()
+			}
+			if tr.CustomQualifier == "" {
+				for _, pkgMixins := range p.mixinNames {
+					if pkgMixins[tr.CustomName] {
+						return tt.PrimAny()
+					}
+				}
 			}
 		}
 		return 0

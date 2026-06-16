@@ -94,7 +94,7 @@ func buildSessionsPackage(c *CompilerContext) {
 
 	predicateTyp := t.FuncOf([]*ir.FuncParam{mkParam("s", sessionTyp)}, boolTyp)
 	broadcastStructTy.StructMethods = []ir.StructMethodInfo{
-		{Name: "to", FuncTyp: t.FuncOf([]*ir.FuncParam{mkParam("room", stringTyp)}, broadcastTyp)},
+		{Name: "toRoom", FuncTyp: t.FuncOf([]*ir.FuncParam{mkParam("room", stringTyp)}, broadcastTyp)},
 		{Name: "filter", FuncTyp: t.FuncOf([]*ir.FuncParam{mkParam("predicate", predicateTyp)}, broadcastTyp)},
 	}
 
