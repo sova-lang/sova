@@ -2162,7 +2162,21 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 			args := make([]jen.Code, len(x.Args))
 			for i, arg := range x.Args {
 				if arg.Expr != nil {
-					args[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
+					var paramFp *ir.FuncParam
+					if ctorFunc != nil && i < len(ctorFunc.ParamTypes) {
+						paramFp = ctorFunc.ParamTypes[i]
+					}
+					if wrapped := tryWrapErasedLambdaArg(ctx, pkg, f, e, paramFp, arg.Expr); wrapped != nil {
+						args[i] = wrapped
+					} else if wrapped := tryWrapErasedSliceArg(ctx, pkg, f, e, paramFp, arg.Expr); wrapped != nil {
+						args[i] = wrapped
+					} else {
+						var emitted jen.Code = e.buildExpr(ctx, pkg, f, arg.Expr)
+						if paramFp != nil && paramFp.Type != nil && typeContainsTypeParam(ctx.Types, paramFp.Type.Typ) {
+							emitted = wrapPrimitiveForAny(ctx, arg.Expr, emitted)
+						}
+						args[i] = emitted
+					}
 				} else if ctorFunc != nil && i < len(ctorFunc.ParamTypes) && ctorFunc.ParamTypes[i].Default != nil {
 					args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.ParamTypes[i].Default)
 				} else {

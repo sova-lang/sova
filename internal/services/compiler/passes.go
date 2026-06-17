@@ -12,6 +12,7 @@ func buildPassManager() *passes.PassManager {
 	pm.Register(&passes.PassBindDeclare{})
 	pm.Register(&passes.PassResolveNames{})
 	pm.Register(&passes.PassResolveTypeRefs{})
+	pm.Register(&passes.PassPrecomputeSignatures{})
 	pm.Register(&passes.PassInferTypes{})
 	pm.Register(&passes.PassAnalyzeWire{})
 	pm.Register(&passes.PassAnalyzeExterns{})
@@ -41,6 +42,7 @@ func TestPipeline() []string {
 		"bind_declare",
 		"resolve_names",
 		"resolve_typerefs",
+		"precompute_signatures",
 		"analyze_wire",
 		"infer_types",
 		"analyze_externs",
@@ -77,6 +79,7 @@ func compilerPipeline() []string {
 		"bind_declare",
 		"resolve_names",
 		"resolve_typerefs",
+		"precompute_signatures",
 		"analyze_wire",
 		"infer_types",
 		"analyze_externs",
@@ -105,6 +108,7 @@ func checkPipeline() []string {
 		"bind_declare",
 		"resolve_names",
 		"resolve_typerefs",
+		"precompute_signatures",
 		"analyze_wire",
 		"infer_types",
 		"analyze_externs",

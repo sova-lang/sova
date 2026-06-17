@@ -15,25 +15,10 @@ type PassInferTypes struct {
 
 func (p *PassInferTypes) Name() string       { return "infer_types" }
 func (p *PassInferTypes) Scope() PassScope   { return PerPackage }
-func (p *PassInferTypes) Requires() []string { return []string{"resolve_names", "resolve_typerefs"} }
+func (p *PassInferTypes) Requires() []string { return []string{"resolve_names", "resolve_typerefs", "precompute_signatures"} }
 func (p *PassInferTypes) NoErrors() bool     { return false }
 
 func (p *PassInferTypes) Run(pc *PassContext) error {
-	for _, f := range pc.Pkg.Files {
-		p.preComputeExternSignatures(pc, f.Hir.Statements)
-	}
-	for _, f := range pc.Pkg.Files {
-		p.preComputeFuncSignatures(pc, f.Hir.Statements)
-	}
-	for _, f := range pc.Pkg.Files {
-		p.preComputeTopLevelVarSignatures(pc, f.Hir.Statements)
-	}
-	for _, f := range pc.Pkg.Files {
-		p.preComputeStructFields(pc, f.Hir.Statements)
-	}
-	for _, f := range pc.Pkg.Files {
-		p.preComputeStructCtors(pc, f.Hir.Statements)
-	}
 	for _, f := range pc.Pkg.Files {
 		p.resolveStmts(pc, f.Hir.Statements)
 	}
@@ -64,6 +49,55 @@ func (p *PassInferTypes) preComputeStructCtors(pc *PassContext, stmts []ir.Stmt)
 			ctorInfos = append(ctorInfos, ir.StructCtorInfo{Sym: ctor.Sym, FuncTyp: funcTyp})
 		}
 		structTy.StructCtors = ctorInfos
+	}
+}
+
+// preComputeStructMethods walks every top-level TypeDeclStmt across all files in the package and stamps each struct type's `StructMethods` from method signatures alone (no body resolution, no default-param inference, no interface-conformance promotion — those still happen in the main `resolveStmts` loop). Without this, a cross-package method call like `streams.Stream<T>` referencing `list.List<T>.toSlice` from a body resolved before the list package's `infer_types` ran would see `StructMethods` still nil and fail with `has no field or method`. Methods whose return or param types depend on per-file inference (defaults, complex narrowing) are still stamped here with their annotated signature; the main loop overwrites with identical info, so behaviour stays the same — only timing changes.
+//
+// Methods with un-annotated parameter defaults stay at param.Type.Typ=0 in the pre-stamp and rely on the main resolver to fill them; cross-package references to such methods still need the declarer to be processed before the user. The common case is fully-annotated method signatures, which this covers.
+func (p *PassInferTypes) preComputeStructMethods(pc *PassContext, stmts []ir.Stmt) {
+	for _, st := range stmts {
+		if ir.IsNilStmt(st) {
+			continue
+		}
+		td, ok := st.(*ir.TypeDeclStmt)
+		if !ok || td.Name.Sym == 0 {
+			continue
+		}
+		sym, ok := pc.Pkg.Syms.GetByID(td.Name.Sym)
+		if !ok || sym.Typ == 0 {
+			continue
+		}
+		structTy, ok := pc.Types.GetByID(sym.Typ)
+		if !ok || structTy.Kind != ir.TK_Struct {
+			continue
+		}
+		methodInfos := make([]ir.StructMethodInfo, 0, len(td.Methods))
+		for _, method := range td.Methods {
+			if method == nil || method.Func == nil {
+				continue
+			}
+			fn := method.Func
+			if method.ThisSym != 0 {
+				pc.Pkg.Syms.SetType(method.ThisSym, sym.Typ)
+			}
+			for _, param := range fn.Params {
+				if param.Type != nil && param.Type.Typ != 0 && param.Name.Sym != 0 {
+					pc.Pkg.Syms.SetType(param.Name.Sym, param.Type.Typ)
+				}
+			}
+			returnType := ir.TypID(0)
+			if fn.ReturnType != nil {
+				returnType = fn.ReturnType.Typ
+			}
+			if returnType == 0 {
+				returnType = pc.Types.TypNone()
+			}
+			funcTyp := pc.Types.FuncOf(fn.Params, returnType)
+			pc.Pkg.Syms.SetType(fn.Name.Sym, funcTyp)
+			methodInfos = append(methodInfos, ir.StructMethodInfo{Name: fn.Name.Name, Sym: fn.Name.Sym, FuncTyp: funcTyp, IsShared: method.IsShared})
+		}
+		structTy.StructMethods = methodInfos
 	}
 }
 

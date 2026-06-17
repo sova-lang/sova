@@ -235,11 +235,14 @@ func (c *CompilerContext) topoSortPackages() []*ir.PackageContext {
 		queue = append(queue, promoted...)
 	}
 
+	var leftover []string
 	for path := range c.Packages {
 		if inDegree[path] > 0 {
-			order = append(order, path)
+			leftover = append(leftover, path)
 		}
 	}
+	sort.Strings(leftover)
+	order = append(order, leftover...)
 
 	out := make([]*ir.PackageContext, 0, len(order))
 	for _, path := range order {

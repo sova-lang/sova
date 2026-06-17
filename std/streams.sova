@@ -1,5 +1,7 @@
 package std/streams on shared
 
+import "std/list"
+
 /// std/streams gives you a chainable, LINQ-style pipeline over
 /// `[]T` and `List<T>`. Build a stream, chain transformations,
 /// drain it with a terminal operation.
@@ -226,6 +228,11 @@ type Stream<T> {
         return this.items[0]
     }
 
+    /// firstOrElse returns the first element, or `def` when empty.
+    func firstOrElse(def: T): T {
+        return this.first() ?? def
+    }
+
     /// last returns the last element, or `none` when empty.
     func last(): option<T> {
         let n = len(this.items)
@@ -233,6 +240,11 @@ type Stream<T> {
             return none
         }
         return this.items[n - 1]
+    }
+
+    /// lastOrElse returns the last element, or `def` when empty.
+    func lastOrElse(def: T): T {
+        return this.last() ?? def
     }
 
     /// firstMatch returns the first element for which `pred`
@@ -308,6 +320,17 @@ type Stream<T> {
         let out: []T = [ ]
         for x in this.items {
             out = out + [x]
+        }
+        return out
+    }
+
+    /// toList drains the stream into a `std/list.List<T>` so subsequent code can
+    /// keep operating on a typed collection instead of a raw slice. Snapshot
+    /// at call-time; mutating the returned list doesn't affect the stream.
+    func toList(): list.List<T> {
+        let out = new list.List<T>()
+        for x in this.items {
+            out.add(x)
         }
         return out
     }
