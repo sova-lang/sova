@@ -398,6 +398,9 @@ type SovaVisitor interface {
 	// Visit a parse tree produced by SovaParser#CmpBinaryExpr.
 	VisitCmpBinaryExpr(ctx *CmpBinaryExprContext) interface{}
 
+	// Visit a parse tree produced by SovaParser#TurbofishCallExpr.
+	VisitTurbofishCallExpr(ctx *TurbofishCallExprContext) interface{}
+
 	// Visit a parse tree produced by SovaParser#SliceRangeExpr.
 	VisitSliceRangeExpr(ctx *SliceRangeExprContext) interface{}
 
@@ -427,6 +430,9 @@ type SovaVisitor interface {
 
 	// Visit a parse tree produced by SovaParser#LOrBinaryExpr.
 	VisitLOrBinaryExpr(ctx *LOrBinaryExprContext) interface{}
+
+	// Visit a parse tree produced by SovaParser#InstanceofExpr.
+	VisitInstanceofExpr(ctx *InstanceofExprContext) interface{}
 
 	// Visit a parse tree produced by SovaParser#AddBinaryExpr.
 	VisitAddBinaryExpr(ctx *AddBinaryExprContext) interface{}

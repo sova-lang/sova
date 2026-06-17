@@ -520,6 +520,8 @@ func exprReferencesSession(e ir.Expr) bool {
 		return exprReferencesSession(x.Expr)
 	case *ir.AsExpr:
 		return exprReferencesSession(x.Expr)
+	case *ir.InstanceofExpr:
+		return exprReferencesSession(x.Expr)
 	case *ir.OptionUnwrapExpr:
 		return exprReferencesSession(x.Expr)
 	case *ir.TenaryExpr:

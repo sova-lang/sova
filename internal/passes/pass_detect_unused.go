@@ -256,6 +256,8 @@ func (p *PassDetectUnused) trackUsageExpr(pc *PassContext, expr ir.Expr) {
 		p.trackUsageExpr(pc, e.Right)
 	case *ir.AsExpr:
 		p.trackUsageExpr(pc, e.Expr)
+	case *ir.InstanceofExpr:
+		p.trackUsageExpr(pc, e.Expr)
 	case *ir.OptionUnwrapExpr:
 		p.trackUsageExpr(pc, e.Expr)
 	case *ir.IndexExpr:

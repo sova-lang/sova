@@ -1688,7 +1688,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 			}
 		}
 		if srcTy != 0 && srcTy != tt.PrimAny() && dstTy != tt.PrimAny() && srcTy != dstTy {
-			if !isPrimitiveConversionAllowed(tt, srcTy, dstTy) {
+			if !isPrimitiveConversionAllowed(tt, srcTy, dstTy) && !isHandleWrapperCast(tt, srcTy, dstTy) {
 				if ok, _ := isTypeAssignable(tt, dstTy, srcTy); !ok {
 					if ok2, _ := isTypeAssignable(tt, srcTy, dstTy); !ok2 {
 						pc.Diag.Report(diag.ErrCastNotAllowed, x.Span(), typeName(pc, srcTy), typeName(pc, dstTy))
@@ -1705,6 +1705,10 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 		}
 		x.SetType(dstTy)
 		return dstTy
+	case *ir.InstanceofExpr:
+		p.synthesizeTypeFromExpr(pc, x.Expr)
+		x.SetType(tt.PrimBool())
+		return tt.PrimBool()
 	case *ir.AssignmentExpr:
 		leftSym, ok := sa.GetByID(x.Left.Sym)
 		if !ok {
@@ -3257,6 +3261,23 @@ func wireStateTypeFromCache(pc *PassContext) ir.TypID {
 		}
 	}
 	return 0
+}
+
+// isHandleWrapperCast reports whether both src and dst are struct types carrying a `handle: any` field. Used by AsExpr to allow cross-wrapper casts (e.g. `Element as HTMLInputElement`) that wouldn't pass the normal assignability check; the codegen rewraps the handle or runs an instanceof check.
+func isHandleWrapperCast(tt *ir.TypeTable, srcTy, dstTy ir.TypID) bool {
+	hasHandle := func(t ir.TypID) bool {
+		info, ok := tt.GetByID(t)
+		if !ok || info.Kind != ir.TK_Struct {
+			return false
+		}
+		for _, sf := range info.StructFields {
+			if sf.Name == "handle" && sf.Type == tt.PrimAny() {
+				return true
+			}
+		}
+		return false
+	}
+	return hasHandle(srcTy) && hasHandle(dstTy)
 }
 
 // isPrimitiveConversionAllowed reports whether `src as dst` is a permitted primitive-to-primitive conversion. Stringification (`int|float|bool|char as string`) is always allowed; numeric widening/narrowing between int and float is allowed; parsing strings back into numerics (`string as int|float`) is allowed but may fail at runtime (returns 0/NaN in JS). Codegen lowers each branch to the appropriate JS conversion (`String(...)`, `Number(...)`, `parseInt(...)`, etc.) instead of the default typecheck-throw.

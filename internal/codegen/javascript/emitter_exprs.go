@@ -116,6 +116,9 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 	case *ir.AsExpr:
 		return e.buildAsExpr(ctx, pkg, f, x)
 
+	case *ir.InstanceofExpr:
+		return e.buildInstanceofExpr(ctx, pkg, f, x)
+
 	case *ir.AssignmentExpr:
 		var left *jsgen.Statement
 		if name, isMethod, ok := e.classMemberLookup(ctx, x.Left.Sym); ok && !isMethod {
@@ -566,6 +569,14 @@ func (e *CodeEmitter) buildAsExpr(ctx *codegen.EmitContext, pkg *ir.PackageConte
 	if x.Target == nil || x.Target.Typ == 0 {
 		return src
 	}
+	if wrapName, jsCtor, ok := jsHandleWrapperTarget(ctx, x.Target.Typ); ok {
+		if x.Safe {
+			body := fmt.Sprintf("(__v => (__v != null && __v.handle != null && typeof globalThis[%q] === 'function' && __v.handle instanceof globalThis[%q]) ? new %s(__v.handle) : null)", jsCtor, jsCtor, wrapName)
+			return jsgen.Raw(body).Call(src)
+		}
+		body := fmt.Sprintf("(__v => (__v == null) ? new %s(null) : new %s(__v.handle))", wrapName, wrapName)
+		return jsgen.Raw(body).Call(src)
+	}
 	if x.Safe {
 		if conv := jsSafePrimitiveConversion(ctx, x.Expr.GetType(), x.Target.Typ, "__v"); conv != "" {
 			body := fmt.Sprintf("(__v => %s)", conv)
@@ -583,6 +594,59 @@ func (e *CodeEmitter) buildAsExpr(ctx *codegen.EmitContext, pkg *ir.PackageConte
 		return jsgen.Raw(body).Call(src)
 	}
 	return src
+}
+
+// buildInstanceofExpr emits `expr instanceof T` for both handle-wrapper struct targets (checks the underlying JS handle's class) and primitive targets (uses typeof). Always evaluates to a bool; null/undefined receivers return false.
+func (e *CodeEmitter) buildInstanceofExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.InstanceofExpr) *jsgen.Statement {
+	src := e.buildExpr(ctx, pkg, f, x.Expr)
+	if x.Target == nil || x.Target.Typ == 0 {
+		return jsgen.Raw("false")
+	}
+	if _, jsCtor, ok := jsHandleWrapperTarget(ctx, x.Target.Typ); ok {
+		body := fmt.Sprintf("(__v => __v != null && __v.handle != null && typeof globalThis[%q] === 'function' && __v.handle instanceof globalThis[%q])", jsCtor, jsCtor)
+		return jsgen.Raw(body).Call(src)
+	}
+	if check := jsAsExprPredicate(ctx, x.Target.Typ, "__v"); check != "" {
+		body := fmt.Sprintf("(__v => __v != null && (%s))", check)
+		return jsgen.Raw(body).Call(src)
+	}
+	return jsgen.Raw("false")
+}
+
+// jsHandleWrapperTarget reports whether `typID` is a struct with a `handle: any` field —
+// the convention browserx-generated WebIDL wrappers follow. Returns the mangled Sova class
+// name and the JS-side constructor name to instanceof-check against.
+func jsHandleWrapperTarget(ctx *codegen.EmitContext, typID ir.TypID) (mangled, jsCtor string, ok bool) {
+	ty, found := ctx.Types.GetByID(typID)
+	if !found || ty.Kind != ir.TK_Struct {
+		return "", "", false
+	}
+	hasHandle := false
+	for _, sf := range ty.StructFields {
+		if sf.Name == "handle" && sf.Type == ctx.Types.PrimAny() {
+			hasHandle = true
+			break
+		}
+	}
+	if !hasHandle {
+		return "", "", false
+	}
+	for _, group := range [][]*ir.PackageContext{ctx.Pkgs, ctx.TransPkgs} {
+		for _, p := range group {
+			if p == nil {
+				continue
+			}
+			for sym, s := range p.Syms.ByID() {
+				if s == nil || s.Typ != typID || s.Name != ty.StructName {
+					continue
+				}
+				if name, found := ctx.Names.GetMangledName(sym); found {
+					return name, ty.StructName, true
+				}
+			}
+		}
+	}
+	return "", "", false
 }
 
 // jsSafePrimitiveConversion mirrors `jsPrimitiveConversion` but produces option-typed results: lossless conversions return the converted value directly (treated as a non-null option), parse-style conversions explicitly check for failure and return `null` (the option's `none`) when the input does not parse. Returns "" when the pair is not a primitive conversion the caller falls back to the structural predicate check.

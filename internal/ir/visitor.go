@@ -2092,6 +2092,17 @@ func (v *HirVisitor) VisitAsExpr(ctx *parser.AsExprContext) any {
 	}
 }
 
+func (v *HirVisitor) VisitInstanceofExpr(ctx *parser.InstanceofExprContext) any {
+	expr := v.visitExpr(ctx.Expr())
+	target, _ := v.Visit(ctx.TypeAnnot()).(*TypeRef)
+	return &InstanceofExpr{
+		node:     v.mkNode(ctx),
+		exprBase: exprBase{},
+		Expr:     expr,
+		Target:   target,
+	}
+}
+
 func (v *HirVisitor) VisitOptionUnwrapExpr(ctx *parser.OptionUnwrapExprContext) any {
 	return &OptionUnwrapExpr{
 		node:     v.mkNode(ctx),
@@ -2210,6 +2221,32 @@ func (v *HirVisitor) VisitFuncCallExpr(ctx *parser.FuncCallExprContext) any {
 		}
 	}
 
+	return fc
+}
+
+func (v *HirVisitor) VisitTurbofishCallExpr(ctx *parser.TurbofishCallExprContext) any {
+	fc := &FuncCallExpr{
+		node:     v.mkNode(ctx),
+		exprBase: exprBase{},
+		Callee:   v.visitExpr(ctx.Expr()),
+	}
+	for _, ta := range ctx.AllTypeAnnot() {
+		if tr, ok := v.Visit(ta).(*TypeRef); ok {
+			fc.TypeArgs = append(fc.TypeArgs, tr)
+		}
+	}
+	if ctx.FuncArgList() != nil {
+		for _, argCtx := range ctx.FuncArgList().AllFuncArg() {
+			var argName string
+			if argCtx.SoftId() != nil {
+				argName = argCtx.SoftId().GetText()
+			}
+			fc.Args = append(fc.Args, FuncCallArg{
+				Name: argName,
+				Expr: v.visitExpr(argCtx.Expr()),
+			})
+		}
+	}
 	return fc
 }
 

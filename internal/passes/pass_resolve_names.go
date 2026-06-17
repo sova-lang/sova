@@ -395,6 +395,8 @@ func (p *PassResolveNames) resolveExprNames(pc *PassContext, expr ir.Expr, pkg *
 		p.resolveExprNames(pc, x.Expr, pkg)
 	case *ir.AsExpr:
 		p.resolveExprNames(pc, x.Expr, pkg)
+	case *ir.InstanceofExpr:
+		p.resolveExprNames(pc, x.Expr, pkg)
 	case *ir.OptionUnwrapExpr:
 		p.resolveExprNames(pc, x.Expr, pkg)
 	case *ir.AssignmentExpr:

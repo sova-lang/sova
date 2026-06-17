@@ -395,6 +395,10 @@ func (p *PassPropagateAsync) markFuncLitsInExpr(pc *PassContext, pkg *ir.Package
 		if p.markFuncLitsInExpr(pc, pkg, x.Expr) {
 			changed = true
 		}
+	case *ir.InstanceofExpr:
+		if p.markFuncLitsInExpr(pc, pkg, x.Expr) {
+			changed = true
+		}
 	}
 	return changed
 }
@@ -620,6 +624,8 @@ func (p *PassPropagateAsync) markCallsInExpr(pc *PassContext, pkg *ir.PackageCon
 			p.markCallsInStmt(pc, pkg, ss)
 		}
 	case *ir.AsExpr:
+		p.markCallsInExpr(pc, pkg, x.Expr)
+	case *ir.InstanceofExpr:
 		p.markCallsInExpr(pc, pkg, x.Expr)
 	}
 }

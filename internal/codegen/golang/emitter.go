@@ -1771,6 +1771,8 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 			storage = ty.ElemType
 		}
 		return cur
+	case *ir.InstanceofExpr:
+		return jen.False()
 	case *ir.AsExpr:
 		if x.Target == nil || x.Target.Typ == 0 {
 			return e.buildExpr(ctx, pkg, f, x.Expr)

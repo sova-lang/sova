@@ -257,6 +257,8 @@ func (p *PassAnalyzeSharedMembers) walkSharedExpr(pc *PassContext, td *ir.TypeDe
 		p.walkSharedExpr(pc, td, methodName, x.Expr, allowed)
 	case *ir.AsExpr:
 		p.walkSharedExpr(pc, td, methodName, x.Expr, allowed)
+	case *ir.InstanceofExpr:
+		p.walkSharedExpr(pc, td, methodName, x.Expr, allowed)
 	case *ir.CoalesceExpr:
 		p.walkSharedExpr(pc, td, methodName, x.Left, allowed)
 		p.walkSharedExpr(pc, td, methodName, x.Default, allowed)

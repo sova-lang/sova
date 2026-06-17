@@ -398,6 +398,9 @@ type SovaListener interface {
 	// EnterCmpBinaryExpr is called when entering the CmpBinaryExpr production.
 	EnterCmpBinaryExpr(c *CmpBinaryExprContext)
 
+	// EnterTurbofishCallExpr is called when entering the TurbofishCallExpr production.
+	EnterTurbofishCallExpr(c *TurbofishCallExprContext)
+
 	// EnterSliceRangeExpr is called when entering the SliceRangeExpr production.
 	EnterSliceRangeExpr(c *SliceRangeExprContext)
 
@@ -427,6 +430,9 @@ type SovaListener interface {
 
 	// EnterLOrBinaryExpr is called when entering the LOrBinaryExpr production.
 	EnterLOrBinaryExpr(c *LOrBinaryExprContext)
+
+	// EnterInstanceofExpr is called when entering the InstanceofExpr production.
+	EnterInstanceofExpr(c *InstanceofExprContext)
 
 	// EnterAddBinaryExpr is called when entering the AddBinaryExpr production.
 	EnterAddBinaryExpr(c *AddBinaryExprContext)
@@ -938,6 +944,9 @@ type SovaListener interface {
 	// ExitCmpBinaryExpr is called when exiting the CmpBinaryExpr production.
 	ExitCmpBinaryExpr(c *CmpBinaryExprContext)
 
+	// ExitTurbofishCallExpr is called when exiting the TurbofishCallExpr production.
+	ExitTurbofishCallExpr(c *TurbofishCallExprContext)
+
 	// ExitSliceRangeExpr is called when exiting the SliceRangeExpr production.
 	ExitSliceRangeExpr(c *SliceRangeExprContext)
 
@@ -967,6 +976,9 @@ type SovaListener interface {
 
 	// ExitLOrBinaryExpr is called when exiting the LOrBinaryExpr production.
 	ExitLOrBinaryExpr(c *LOrBinaryExprContext)
+
+	// ExitInstanceofExpr is called when exiting the InstanceofExpr production.
+	ExitInstanceofExpr(c *InstanceofExprContext)
 
 	// ExitAddBinaryExpr is called when exiting the AddBinaryExpr production.
 	ExitAddBinaryExpr(c *AddBinaryExprContext)

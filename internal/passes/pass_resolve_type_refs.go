@@ -392,6 +392,11 @@ func (p *PassResolveTypeRefs) resolveExpr(tt *ir.TypeTable, expr ir.Expr) {
 			x.Target.Typ = p.resolveTypeRef(tt, x.Target)
 		}
 		p.resolveExpr(tt, x.Expr)
+	case *ir.InstanceofExpr:
+		if x.Target != nil {
+			x.Target.Typ = p.resolveTypeRef(tt, x.Target)
+		}
+		p.resolveExpr(tt, x.Expr)
 	case *ir.AssignmentExpr:
 		p.resolveExpr(tt, x.Right)
 	case *ir.IndexExpr:
@@ -416,6 +421,9 @@ func (p *PassResolveTypeRefs) resolveExpr(tt *ir.TypeTable, expr ir.Expr) {
 		}
 	case *ir.FuncCallExpr:
 		p.resolveExpr(tt, x.Callee)
+		for _, ta := range x.TypeArgs {
+			ta.Typ = p.resolveTypeRef(tt, ta)
+		}
 		for _, arg := range x.Args {
 			p.resolveExpr(tt, arg.Expr)
 		}

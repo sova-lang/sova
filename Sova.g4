@@ -239,6 +239,7 @@ assignmentTarget : softId
 expr : softId genericArgs '(' funcArgList? ')'                          #GenericFuncCallExpr
      | pkgIdent                                                         #IdExpr
      | expr '(' funcArgList? ')' LBRACE composableChild* RBRACE         #ComposableCallExpr
+     | expr '::' LT typeAnnot (',' typeAnnot)* GT '(' funcArgList? ')'  #TurbofishCallExpr
      | expr '(' funcArgList? ')'                                        #FuncCallExpr
      | expr ('.' softId)+                                               #FieldAccessExpr
      | expr LBRACK expr? ':' expr? RBRACK                               #SliceRangeExpr
@@ -248,6 +249,7 @@ expr : softId genericArgs '(' funcArgList? ')'                          #Generic
      | expr (INC | DEC)                                                 #PostfixUnaryExpr
      | expr '!'                                                         #OptionUnwrapExpr
      | expr 'as' '?'? typeAnnot                                         #AsExpr
+     | expr 'instanceof' typeAnnot                                      #InstanceofExpr
      | expr '..' expr (LPAREN expr RPAREN)?                             #RangeExpr
      | expr (MULT | DIV | MOD) expr                                     #MulBinaryExpr
      | expr (PLUS | MINUS) expr                                         #AddBinaryExpr

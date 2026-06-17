@@ -801,6 +801,12 @@ func (s *BaseSovaListener) EnterCmpBinaryExpr(ctx *CmpBinaryExprContext) {}
 // ExitCmpBinaryExpr is called when production CmpBinaryExpr is exited.
 func (s *BaseSovaListener) ExitCmpBinaryExpr(ctx *CmpBinaryExprContext) {}
 
+// EnterTurbofishCallExpr is called when production TurbofishCallExpr is entered.
+func (s *BaseSovaListener) EnterTurbofishCallExpr(ctx *TurbofishCallExprContext) {}
+
+// ExitTurbofishCallExpr is called when production TurbofishCallExpr is exited.
+func (s *BaseSovaListener) ExitTurbofishCallExpr(ctx *TurbofishCallExprContext) {}
+
 // EnterSliceRangeExpr is called when production SliceRangeExpr is entered.
 func (s *BaseSovaListener) EnterSliceRangeExpr(ctx *SliceRangeExprContext) {}
 
@@ -860,6 +866,12 @@ func (s *BaseSovaListener) EnterLOrBinaryExpr(ctx *LOrBinaryExprContext) {}
 
 // ExitLOrBinaryExpr is called when production LOrBinaryExpr is exited.
 func (s *BaseSovaListener) ExitLOrBinaryExpr(ctx *LOrBinaryExprContext) {}
+
+// EnterInstanceofExpr is called when production InstanceofExpr is entered.
+func (s *BaseSovaListener) EnterInstanceofExpr(ctx *InstanceofExprContext) {}
+
+// ExitInstanceofExpr is called when production InstanceofExpr is exited.
+func (s *BaseSovaListener) ExitInstanceofExpr(ctx *InstanceofExprContext) {}
 
 // EnterAddBinaryExpr is called when production AddBinaryExpr is entered.
 func (s *BaseSovaListener) EnterAddBinaryExpr(ctx *AddBinaryExprContext) {}

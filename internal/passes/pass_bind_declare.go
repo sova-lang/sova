@@ -687,6 +687,8 @@ func (p *PassBindDeclare) bindExprScopes(pkg *ir.PackageContext, expr ir.Expr, s
 		return p.bindExprScopes(pkg, x.Expr, scope)
 	case *ir.AsExpr:
 		return p.bindExprScopes(pkg, x.Expr, scope)
+	case *ir.InstanceofExpr:
+		return p.bindExprScopes(pkg, x.Expr, scope)
 	case *ir.OptionUnwrapExpr:
 		return p.bindExprScopes(pkg, x.Expr, scope)
 	case *ir.AssignmentExpr:

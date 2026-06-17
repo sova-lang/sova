@@ -872,6 +872,16 @@ type AsExpr struct {
 
 func (*AsExpr) exprNode() {}
 
+// InstanceofExpr is `expr instanceof T` — a runtime type-shape check. Always evaluates to a bool. For handle-wrapper struct types the codegen lowers to a JS `instanceof` against the global constructor of the same name; for primitives it uses `typeof`. Returns false on null/undefined and on missing target constructor.
+type InstanceofExpr struct {
+	node
+	exprBase
+	Expr   Expr
+	Target *TypeRef
+}
+
+func (*InstanceofExpr) exprNode() {}
+
 // OptionUnwrapExpr is the postfix `expr!` form: asserts that an `option<T>` value is not `none` and yields the underlying `T`. Codegen lowers to a pointer dereference (Go) or identity (JS). Today the assertion is unchecked at runtime - dereferencing a `none` will produce a host-language nil-pointer panic / null-access; a future tightening could insert an explicit `none` check.
 //
 // IsNoOp is set by the type checker when the operand is already a non-option (typically because flow-sensitive `if x == none` narrowing has already unwrapped it). Codegen then emits the operand unchanged.

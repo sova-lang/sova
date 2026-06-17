@@ -528,6 +528,10 @@ func (v *BaseSovaVisitor) VisitCmpBinaryExpr(ctx *CmpBinaryExprContext) interfac
 	return v.VisitChildren(ctx)
 }
 
+func (v *BaseSovaVisitor) VisitTurbofishCallExpr(ctx *TurbofishCallExprContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
 func (v *BaseSovaVisitor) VisitSliceRangeExpr(ctx *SliceRangeExprContext) interface{} {
 	return v.VisitChildren(ctx)
 }
@@ -565,6 +569,10 @@ func (v *BaseSovaVisitor) VisitIdExpr(ctx *IdExprContext) interface{} {
 }
 
 func (v *BaseSovaVisitor) VisitLOrBinaryExpr(ctx *LOrBinaryExprContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
+func (v *BaseSovaVisitor) VisitInstanceofExpr(ctx *InstanceofExprContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 
