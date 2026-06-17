@@ -52,6 +52,66 @@ func (p *PassInferTypes) preComputeStructCtors(pc *PassContext, stmts []ir.Stmt)
 	}
 }
 
+// preComputeEnumCases walks every top-level EnumDeclStmt and stamps the enum's type onto its
+// symbol plus each case's symbol, populating EnumCases / EnumFields / IsNumeric on the type
+// table. Without this, a file that references `OtherEnum.SomeCase` as a default expression
+// before the enum's declaring file is walked by `resolveStmts` would see an unresolved case -
+// the dictionary-default-with-enum pattern emitted by the browserx generator triggers this
+// when alphabetical file order puts dictionaries.sova before enums.sova in the same package.
+//
+// We deliberately skip method-body resolution here (those still live in the main loop) and we
+// skip the payload-type vs. argument-type compatibility check the main loop does. Those
+// produce diagnostics, which would re-fire (under a different span) if we ran them here too.
+// The precompute is purely about getting the type-system surface visible cross-file.
+func (p *PassInferTypes) preComputeEnumCases(pc *PassContext, stmts []ir.Stmt) {
+	for _, st := range stmts {
+		if ir.IsNilStmt(st) {
+			continue
+		}
+		ed, ok := st.(*ir.EnumDeclStmt)
+		if !ok || ed.Name.Sym == 0 {
+			continue
+		}
+		isNumeric := len(ed.Fields) == 0
+		nextValue := int64(0)
+		var caseInfos []ir.EnumCaseInfo
+		for _, c := range ed.Cases {
+			if c.Value != nil {
+				nextValue = *c.Value
+			}
+			caseInfos = append(caseInfos, ir.EnumCaseInfo{
+				Name:    c.Name.Name,
+				Ordinal: c.Ordinal,
+				Value:   nextValue,
+			})
+			nextValue++
+		}
+		var enumFields []ir.EnumFieldInfo
+		for _, field := range ed.Fields {
+			fieldType := ir.TypID(0)
+			if field.Type != nil {
+				fieldType = field.Type.Typ
+			}
+			enumFields = append(enumFields, ir.EnumFieldInfo{
+				Name: field.Name.Name,
+				Type: fieldType,
+			})
+		}
+		enumTyp := pc.Types.EnumOf(pc.Pkg.Path.String(), ed.Name.Name, caseInfos, enumFields, isNumeric)
+		if enumTy, ok := pc.Types.GetByID(enumTyp); ok {
+			enumTy.EnumCases = caseInfos
+			enumTy.EnumFields = enumFields
+			enumTy.IsNumeric = isNumeric
+		}
+		pc.Pkg.Syms.SetType(ed.Name.Sym, enumTyp)
+		for _, c := range ed.Cases {
+			if c.Name.Sym != 0 {
+				pc.Pkg.Syms.SetType(c.Name.Sym, enumTyp)
+			}
+		}
+	}
+}
+
 // preComputeStructMethods walks every top-level TypeDeclStmt across all files in the package and stamps each struct type's `StructMethods` from method signatures alone (no body resolution, no default-param inference, no interface-conformance promotion — those still happen in the main `resolveStmts` loop). Without this, a cross-package method call like `streams.Stream<T>` referencing `list.List<T>.toSlice` from a body resolved before the list package's `infer_types` ran would see `StructMethods` still nil and fail with `has no field or method`. Methods whose return or param types depend on per-file inference (defaults, complex narrowing) are still stamped here with their annotated signature; the main loop overwrites with identical info, so behaviour stays the same — only timing changes.
 //
 // Methods with un-annotated parameter defaults stay at param.Type.Typ=0 in the pre-stamp and rely on the main resolver to fill them; cross-package references to such methods still need the declarer to be processed before the user. The common case is fully-annotated method signatures, which this covers.
@@ -1735,8 +1795,10 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 			return tt.TypError()
 		}
 	case *ir.FieldAccessExpr:
+		var pkgQualifiedStartField int
+		var pkgQualifiedCur ir.TypID
 		if vr, ok := x.Expr.(*ir.VarRef); ok && vr.Ref.Sym != 0 {
-			if recvSym, found := pc.Pkg.Syms.GetByID(vr.Ref.Sym); found && recvSym.Kind == ir.SK_Package && len(x.Fields) == 1 {
+			if recvSym, found := pc.Pkg.Syms.GetByID(vr.Ref.Sym); found && recvSym.Kind == ir.SK_Package && len(x.Fields) >= 1 {
 				targetPkg := findPackageByPath(pc, recvSym.PackagePath)
 				if targetPkg == nil {
 					pc.Diag.Report(diag.ErrUndeclaredSymbol, x.Fields[0].Span, recvSym.PackagePath)
@@ -1755,13 +1817,25 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 					return tt.TypError()
 				}
 				memberInfo, _ := targetPkg.Syms.GetByID(memberSym)
+				if len(x.Fields) == 1 {
+					x.ResolvedSym = memberSym
+					x.SetType(memberInfo.Typ)
+					return memberInfo.Typ
+				}
+				
 				x.ResolvedSym = memberSym
-				x.SetType(memberInfo.Typ)
-				return memberInfo.Typ
+				pkgQualifiedStartField = 1
+				pkgQualifiedCur = memberInfo.Typ
 			}
 		}
-		cur := p.synthesizeTypeFromExpr(pc, x.Expr)
-		for _, fld := range x.Fields {
+		var cur ir.TypID
+		if pkgQualifiedStartField > 0 {
+			cur = pkgQualifiedCur
+		} else {
+			cur = p.synthesizeTypeFromExpr(pc, x.Expr)
+		}
+		fieldsToWalk := x.Fields[pkgQualifiedStartField:]
+		for _, fld := range fieldsToWalk {
 			ty, ok := tt.GetByID(cur)
 			if !ok {
 				pc.Diag.Report(diag.ErrUnknownType, fld.Span, "base")

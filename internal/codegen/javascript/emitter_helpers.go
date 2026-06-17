@@ -411,16 +411,22 @@ func typeOfSym(pkg *ir.PackageContext, sym ir.SymID) ir.TypID {
 	return 0
 }
 
-// getEnumSymbol looks up the symbol ID for an enum type by its name.
+// getEnumSymbol looks up the symbol ID for an enum type by its name. Walks the package's
+// symbol arena map directly so that sparse SymIDs (the arena is shared across packages, each
+// pkg keeps only the IDs it allocated) don't fool the lookup into bailing early. We also
+// extend the search across every loaded package so an enum defined in browserx and used from
+// a consumer package still resolves; without that, cross-package enum case access in a struct
+// field default emits the dreaded `unresolved symbol: 0` panic during JS codegen.
 func getEnumSymbol(ctx *codegen.EmitContext, pkg *ir.PackageContext, enumName string) ir.SymID {
-	// Search through all symbols to find the enum by name
-	for sym := ir.SymID(1); ; sym++ {
-		s, ok := pkg.Syms.GetByID(sym)
-		if !ok {
-			break
-		}
-		if s.Kind == ir.SK_Function { // Enums are declared as SK_Function
-			if orig, ok := ctx.Names.GetOriginalName(sym); ok && orig == enumName {
+	if sym := findEnumInPackage(ctx, pkg, enumName); sym != 0 {
+		return sym
+	}
+	for _, group := range [][]*ir.PackageContext{ctx.Pkgs, ctx.TransPkgs} {
+		for _, p := range group {
+			if p == nil || p == pkg {
+				continue
+			}
+			if sym := findEnumInPackage(ctx, p, enumName); sym != 0 {
 				return sym
 			}
 		}
@@ -428,20 +434,51 @@ func getEnumSymbol(ctx *codegen.EmitContext, pkg *ir.PackageContext, enumName st
 	return 0
 }
 
-// getMethodSymbol looks up the symbol ID for an enum method by enum name and method name.
-func getMethodSymbol(ctx *codegen.EmitContext, pkg *ir.PackageContext, enumName string, methodName string) ir.SymID {
-	// Search through all symbols to find the method
-	for sym := ir.SymID(1); ; sym++ {
-		s, ok := pkg.Syms.GetByID(sym)
-		if !ok {
-			break
+func findEnumInPackage(ctx *codegen.EmitContext, pkg *ir.PackageContext, enumName string) ir.SymID {
+	if pkg == nil {
+		return 0
+	}
+	for sym, s := range pkg.Syms.ByID() {
+		if s == nil || s.Kind != ir.SK_Function {
+			continue
 		}
-		if s.Kind == ir.SK_Function {
-			if orig, ok := ctx.Names.GetOriginalName(sym); ok && orig == methodName {
-				// Check if this method belongs to the enum
-				// The method's scope should be the enum's scope
+		if orig, ok := ctx.Names.GetOriginalName(sym); ok && orig == enumName {
+			return sym
+		}
+	}
+	return 0
+}
+
+// getMethodSymbol looks up the symbol ID for an enum method by enum name and method name.
+// Same gap-aware iteration as getEnumSymbol: walk the arena map directly and fall through to
+// other loaded packages when the receiver isn't in the current one.
+func getMethodSymbol(ctx *codegen.EmitContext, pkg *ir.PackageContext, enumName string, methodName string) ir.SymID {
+	if sym := findMethodInPackage(ctx, pkg, methodName); sym != 0 {
+		return sym
+	}
+	for _, group := range [][]*ir.PackageContext{ctx.Pkgs, ctx.TransPkgs} {
+		for _, p := range group {
+			if p == nil || p == pkg {
+				continue
+			}
+			if sym := findMethodInPackage(ctx, p, methodName); sym != 0 {
 				return sym
 			}
+		}
+	}
+	return 0
+}
+
+func findMethodInPackage(ctx *codegen.EmitContext, pkg *ir.PackageContext, methodName string) ir.SymID {
+	if pkg == nil {
+		return 0
+	}
+	for sym, s := range pkg.Syms.ByID() {
+		if s == nil || s.Kind != ir.SK_Function {
+			continue
+		}
+		if orig, ok := ctx.Names.GetOriginalName(sym); ok && orig == methodName {
+			return sym
 		}
 	}
 	return 0

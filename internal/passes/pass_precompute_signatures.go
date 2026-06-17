@@ -34,5 +34,8 @@ func (p *PassPrecomputeSignatures) Run(pc *PassContext) error {
 	for _, f := range pc.Pkg.Files {
 		p.delegate.preComputeStructMethods(pc, f.Hir.Statements)
 	}
+	for _, f := range pc.Pkg.Files {
+		p.delegate.preComputeEnumCases(pc, f.Hir.Statements)
+	}
 	return nil
 }

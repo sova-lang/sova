@@ -147,11 +147,34 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		return base.Dot("slice").Call(args...)
 
 	case *ir.FieldAccessExpr:
+		var base *jsgen.Statement
+		var fields []ir.FieldName
+		var curType ir.TypID
 		if x.ResolvedSym != 0 {
-			return jsgen.Id(symName(ctx, x.ResolvedSym))
+			base = jsgen.Id(symName(ctx, x.ResolvedSym))
+			if len(x.Fields) <= 1 {
+				return base
+			}
+			fields = x.Fields[1:]
+			for _, group := range [][]*ir.PackageContext{ctx.Pkgs, ctx.TransPkgs} {
+				for _, p := range group {
+					if p == nil {
+						continue
+					}
+					if sym, ok := p.Syms.GetByID(x.ResolvedSym); ok {
+						curType = sym.Typ
+						break
+					}
+				}
+				if curType != 0 {
+					break
+				}
+			}
+		} else {
+			base = e.buildExpr(ctx, pkg, f, x.Expr)
+			fields = x.Fields
+			curType = x.Expr.GetType()
 		}
-		base := e.buildExpr(ctx, pkg, f, x.Expr)
-		curType := x.Expr.GetType()
 		isThisReceiver := false
 		if vr, ok := x.Expr.(*ir.VarRef); ok {
 			if orig, ok := ctx.Names.GetOriginalName(vr.Ref.Sym); ok && orig == "this" {
@@ -159,7 +182,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 			}
 		}
 		lastWasMethod := false
-		for _, field := range x.Fields {
+		for _, field := range fields {
 			ty, ok := ctx.Types.GetByID(curType)
 			lastWasMethod = false
 			if ok && ty.Kind == ir.TK_Enum {

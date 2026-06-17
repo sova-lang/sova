@@ -1839,12 +1839,37 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		}
 		return jen.Parens(e.buildExpr(ctx, pkg, f, x.Expr)).Index(lowCode, highCode)
 	case *ir.FieldAccessExpr:
+		var base *jen.Statement
+		var cur *jen.Statement
+		var curType ir.TypID
+		var fields []ir.FieldName
 		if x.ResolvedSym != 0 {
-			return jen.Id(symName(ctx, x.ResolvedSym))
+			base = jen.Id(symName(ctx, x.ResolvedSym))
+			if len(x.Fields) <= 1 {
+				return base
+			}
+			cur = base
+			fields = x.Fields[1:]
+			for _, group := range [][]*ir.PackageContext{ctx.Pkgs, ctx.TransPkgs} {
+				for _, p := range group {
+					if p == nil {
+						continue
+					}
+					if sym, ok := p.Syms.GetByID(x.ResolvedSym); ok {
+						curType = sym.Typ
+						break
+					}
+				}
+				if curType != 0 {
+					break
+				}
+			}
+		} else {
+			base = e.buildExpr(ctx, pkg, f, x.Expr)
+			cur = base
+			curType = x.Expr.GetType()
+			fields = x.Fields
 		}
-		base := e.buildExpr(ctx, pkg, f, x.Expr)
-		cur := base
-		curType := x.Expr.GetType()
 		// Option-unwrap flow narrowing: the expr's cached type was overwritten to the unwrapped element type inside an `if x != none` branch, but the underlying Go storage is still the wider `option<T>` (one extra pointer). Detect by comparing against the receiver symbol's declared type and insert one deref per option layer the narrowing peeled off.
 		if vr, ok := x.Expr.(*ir.VarRef); ok && vr.Ref.Sym != 0 {
 			if sym, ok := pkg.Syms.GetByID(vr.Ref.Sym); ok {
@@ -1868,7 +1893,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 			cur = jen.Parens(jen.Op("*").Add(cur))
 			curType = ty.ElemType
 		}
-		for _, fld := range x.Fields {
+		for _, fld := range fields {
 			ty, ok := ctx.Types.GetByID(curType)
 			if ok && ty.Kind == ir.TK_Struct {
 				found := false
