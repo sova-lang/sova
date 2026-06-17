@@ -161,6 +161,270 @@ type Response {
     }
 }
 
+/// CookieOpts carries the optional flags that go on a Set-Cookie
+/// header — everything the standard Go `*http.Cookie` cares about
+/// except `Name` and `Value` (those come from the SetCookieDir).
+/// Build via `http.cookieOptions(...)` for the typical case;
+/// construct directly when you need a default-zero record.
+///
+/// `sameSite` accepts `"Lax"`, `"Strict"`, `"None"`, or `""` (browser
+/// default). `path` defaults to `/` at write time if left empty.
+/// `maxAge` is in seconds — `0` means session-cookie (clears when
+/// the browser closes), positive is a fixed lifetime.
+type CookieOpts {
+    httpOnly: bool = false
+    secure: bool = false
+    sameSite: string = ""
+    path: string = ""
+    domain: string = ""
+    maxAge: int = 0
+}
+
+/// SetCookieDir is one cookie directive attached to a typed
+/// response. `clear == true` means "emit a `Max-Age=-1` clearing
+/// header"; the other fields are ignored in that case. Built by the
+/// `setCookie` / `clearCookie` chain helpers — there's rarely a
+/// reason to construct these directly.
+type SetCookieDir {
+    name: string = ""
+    value: string = ""
+    opts: CookieOpts = new CookieOpts()
+    clear: bool = false
+}
+
+/// Redirect is the typed response shape for a 3xx HTTP redirect.
+/// Returned from a wired function to write `Location` + status +
+/// any attached `Set-Cookie` headers, with no body. The frontend
+/// stub for a `Redirect`-returning wire issues `fetch(...,
+/// redirect: 'manual')` so the browser does NOT auto-follow —
+/// user code reads the `location` and navigates explicitly.
+///
+/// Build via `http.redirectTo(url)` (302) or
+/// `http.redirectWithStatus(url, status)` for 301/303/307/308. Chain
+/// `setCookie` / `clearCookie` to mutate cookies in the same
+/// response — common pattern for OAuth callbacks that clear the
+/// `oauth_state` cookie at the same time they redirect to the
+/// dashboard.
+type Redirect {
+    location: string = ""
+    status: int = 302
+    cookies: []SetCookieDir = [ ]
+
+    /// setCookie appends a `Set-Cookie` directive to the redirect
+    /// response. Returns `this` so calls chain.
+    func setCookie(name: string, value: string, opts: CookieOpts): Redirect {
+        let dir = new SetCookieDir()
+        dir.name = name
+        dir.value = value
+        dir.opts = opts
+        this.cookies = this.cookies + [dir]
+        return this
+    }
+
+    /// clearCookie appends a clearing directive (`Max-Age=-1`) for
+    /// `name`. Use to delete cookies the browser previously set —
+    /// e.g. an `oauthState` cookie once the OAuth flow completes.
+    func clearCookie(name: string): Redirect {
+        let dir = new SetCookieDir()
+        dir.name = name
+        dir.clear = true
+        this.cookies = this.cookies + [dir]
+        return this
+    }
+}
+
+/// redirectTo builds a 302 Found Redirect at `url`. The default
+/// status when you don't care about the precise redirect kind;
+/// browsers honour it for GET-after-POST and external navigation.
+func redirectTo(url: string): Redirect {
+    let r = new Redirect()
+    r.location = url
+    r.status = 302
+    return r
+}
+
+/// redirectWithStatus is `redirectTo` with an explicit status
+/// code. Use `301` for permanent redirects (cached by browsers),
+/// `303` to force GET on the new URL after a POST, `307`/`308` to
+/// preserve the original method.
+func redirectWithStatus(url: string, status: int): Redirect {
+    let r = new Redirect()
+    r.location = url
+    r.status = status
+    return r
+}
+
+/// Html is the typed response shape for server-rendered HTML. The
+/// backend writes `Content-Type: text/html; charset=utf-8`
+/// automatically and the request body. Default status is 200;
+/// pass a different one via `htmlWithStatus` for error pages.
+///
+/// The frontend stub returns `{body: string, status: number}` so
+/// client code can inject the HTML into the DOM or branch on the
+/// status code. Body is delivered as-is — no escaping; you're
+/// responsible for whatever templating you ran on the way out.
+type Html {
+    body: string = ""
+    status: int = 200
+    cookies: []SetCookieDir = [ ]
+
+    /// setCookie appends a `Set-Cookie` directive to the HTML
+    /// response. Returns `this` so calls chain.
+    func setCookie(name: string, value: string, opts: CookieOpts): Html {
+        let dir = new SetCookieDir()
+        dir.name = name
+        dir.value = value
+        dir.opts = opts
+        this.cookies = this.cookies + [dir]
+        return this
+    }
+
+    /// clearCookie appends a clearing directive (`Max-Age=-1`) for
+    /// `name`.
+    func clearCookie(name: string): Html {
+        let dir = new SetCookieDir()
+        dir.name = name
+        dir.clear = true
+        this.cookies = this.cookies + [dir]
+        return this
+    }
+}
+
+/// html builds an HTML response with status 200. The most common
+/// shape — render a template, return it.
+func html(body: string): Html {
+    let h = new Html()
+    h.body = body
+    h.status = 200
+    return h
+}
+
+/// htmlWithStatus is `html` plus a custom status code. Use for
+/// error pages (404, 500, etc.) where you still want HTML rendered
+/// rather than a JSON envelope.
+func htmlWithStatus(body: string, status: int): Html {
+    let h = new Html()
+    h.body = body
+    h.status = status
+    return h
+}
+
+/// File is the typed response shape for binary downloads or
+/// inline-rendered media (PDFs, images, generated reports).
+/// Carries the bytes, a content-type (defaults to
+/// `application/octet-stream` at write time when empty), a
+/// filename used in the `Content-Disposition` header, and an
+/// `inline` flag that switches `attachment` (download prompt) for
+/// `inline` (browser renders directly). Default status 200.
+///
+/// The frontend stub returns
+/// `{data: Blob, filename: string, contentType: string, status: number}`
+/// so client code can `URL.createObjectURL(data)` for inline
+/// rendering or trigger a download via a synthetic `<a download>`.
+type File {
+    data: []byte = [ ]
+    filename: string = ""
+    contentType: string = ""
+    inline: bool = false
+    status: int = 200
+    cookies: []SetCookieDir = [ ]
+
+    /// setCookie appends a `Set-Cookie` directive to the file
+    /// response. Returns `this` so calls chain.
+    func setCookie(name: string, value: string, opts: CookieOpts): File {
+        let dir = new SetCookieDir()
+        dir.name = name
+        dir.value = value
+        dir.opts = opts
+        this.cookies = this.cookies + [dir]
+        return this
+    }
+}
+
+/// file builds a download response — sets
+/// `Content-Disposition: attachment; filename="<name>"` so the
+/// browser prompts the user to save it. Use for invoices, exports,
+/// backups, etc.
+func file(data: []byte, filename: string, contentType: string): File {
+    let f = new File()
+    f.data = data
+    f.filename = filename
+    f.contentType = contentType
+    return f
+}
+
+/// fileInline builds an inline-rendered response —
+/// `Content-Disposition: inline`. Use for previewable content
+/// (PDFs, images, audio) where the user expects to see it in the
+/// browser without a download prompt. No filename is set; the
+/// browser uses the URL's last segment when it needs one.
+func fileInline(data: []byte, contentType: string): File {
+    let f = new File()
+    f.data = data
+    f.contentType = contentType
+    f.inline = true
+    return f
+}
+
+/// Status&lt;T&gt; is a typed JSON response with an explicit HTTP
+/// status code plus optional custom headers. The body still rides
+/// the standard `{value, state}` envelope, so the wire's
+/// authn/authz contract continues to work — `Status` only
+/// overrides the HTTP status line and lets you set arbitrary
+/// headers like `Location` or rate-limit metadata.
+///
+/// Common shapes:
+///
+///   - `201 Created` for POST handlers that created a resource —
+///     pair with `setHeader("Location", "/resource/<id>")`.
+///   - `202 Accepted` for async jobs queued for later processing.
+///   - `429 Too Many Requests` with `setHeader("Retry-After", "60")`.
+///
+/// The frontend stub returns `{body: T, status: number}` — `body`
+/// goes through the same `__sovaReify` path as a normal wire so
+/// the typed `T` lands fully reified at the call site, and
+/// `status` exposes the actual HTTP status the backend wrote.
+type Status<T> {
+    body: T
+    status: int = 200
+    cookies: []SetCookieDir = [ ]
+    headers: map<string, string> = { }
+
+    /// setCookie appends a `Set-Cookie` directive. Returns `this`
+    /// so calls chain.
+    func setCookie(name: string, value: string, opts: CookieOpts): Status<T> {
+        let dir = new SetCookieDir()
+        dir.name = name
+        dir.value = value
+        dir.opts = opts
+        this.cookies = this.cookies + [dir]
+        return this
+    }
+
+    /// setHeader sets an arbitrary response header. Replaces any
+    /// existing value for the same name. Returns `this` so calls
+    /// chain.
+    func setHeader(name: string, value: string): Status<T> {
+        this.headers[name] = value
+        return this
+    }
+}
+
+/// cookieOptions is the convenience builder for `CookieOpts`. Pass
+/// the values you care about and let the rest default — typical
+/// auth-cookie shape is
+/// `cookieOptions(true, true, "Lax", "/", 3600)` (httpOnly + secure
+/// + SameSite=Lax + root path + 1h lifetime).
+func cookieOptions(httpOnly: bool, secure: bool, sameSite: string, path: string, maxAge: int): CookieOpts {
+    let o = new CookieOpts()
+    o.httpOnly = httpOnly
+    o.secure = secure
+    o.sameSite = sameSite
+    o.path = path
+    o.maxAge = maxAge
+    return o
+}
+
 extern {
     /// __reqQuery reads a query-string value from the underlying Go
     /// request. Internal — call `query(req, name)` from user code so
@@ -253,6 +517,59 @@ extern {
     func __resRedirect(rawRes: any, url: string, status: int) = {
         backend: "func(res any, url string, status int64) { w := res.(http.ResponseWriter); w.Header().Set(\"Location\", url); if status == 0 { status = int64(http.StatusFound) }; w.WriteHeader(int(status)) }"
     }
+
+    /// __sovaAddCustomWireHandler bridges into the runtime-registered
+    /// wire-handler registry emitted by the Go codegen. Returns
+    /// `none` on success and `some(msg)` when registration failed
+    /// (path already registered, or the wire server has already
+    /// started). Internal — call `addCustomWireHandler` from user
+    /// code so the `option<error>` shape stays the only public
+    /// surface.
+    func __sovaAddCustomWireHandler(path: string, handler: any): option<string> = {
+        backend: "func(path string, handler any) *string { if err := __sovaRegisterCustomWireHandler(path, handler); err != nil { msg := err.Error(); return &msg }; return nil }"
+    }
+}
+
+/// addCustomWireHandler registers a raw-style wire handler at
+/// runtime, before the wire server starts serving. The shape is
+/// identical to a `wire(transport: "raw") func(req, res)` handler
+/// — full byte-level access to the underlying request/response —
+/// but the registration happens from user code instead of from a
+/// parse-time decl. Use when paths come from config, from a
+/// plugin registry, or when iterating over a runtime-built list.
+///
+/// First-call-wins on collisions. Returns `none` on success,
+/// `some(error)` when:
+///
+///   - the path is already taken (by a declared
+///     `wire(transport: "raw", path: ...)` OR by an earlier
+///     `addCustomWireHandler` call), or
+///   - the wire server has already started — registration must
+///     happen before `main()` returns.
+///
+/// ```sova
+/// import "std/http"
+///
+/// func setupWebhooks() {
+///     let err = http.addCustomWireHandler("/webhooks/stripe", func(req: http.Request, res: http.Response) {
+///         let body = http.body(req)
+///         http.writeText(res, "ok")
+///     })
+///     if err != none {
+///         println("webhook registration failed")
+///     }
+/// }
+///
+/// func main() {
+///     setupWebhooks()
+/// }
+/// ```
+func addCustomWireHandler(path: string, handler: func(Request, Response)): option<error> {
+    let msg = __sovaAddCustomWireHandler(path, handler)
+    if msg == none {
+        return none
+    }
+    return error(msg!)
 }
 
 /// query returns the value of `name` from the request URL's query

@@ -344,11 +344,13 @@ func (*FuncDeclStmt) stmtNode() {}
 
 type FuncParam struct {
 	node
-	IsVariadic  bool         // IsVariadic indicates if the parameter is variadic.
-	Name        NameRef      // Name is the name of the parameter.
-	Type        *TypeRef     // Type is the type of the parameter.
-	Default     Expr         // Default is the default value of the parameter. May be nil.
-	Annotations []Annotation // Annotations are the `@name(args)` decorations applied to this parameter (lowered to built-ins by `expand_synths` before any downstream pass sees them).
+	IsVariadic  bool
+	Name        NameRef
+	Type        *TypeRef
+	Default     Expr
+	Annotations []Annotation
+	WireBinding string
+	WireBindAs  string
 }
 
 func (*FuncParam) stmtNode() {}

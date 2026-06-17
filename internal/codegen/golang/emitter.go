@@ -3365,6 +3365,7 @@ func (e *CodeEmitter) emitWireStateDecl(ctx *codegen.EmitContext, block *jen.Gro
 	))
 
 	emitSessionStructAndMethods(block)
+	emitCustomWireHandlerRegistry(ctx, block)
 
 	needsManager := false
 	if ctx.Cache != nil {
@@ -3699,6 +3700,66 @@ func emitFrontendWireMethods(ctx *codegen.EmitContext, block *jen.Group) {
 
 		block.Add(methodDecl.Block(bodyStmts...))
 	}
+}
+
+func lookupHttpStructName(ctx *codegen.EmitContext, name string) string {
+	fallback := "http_" + name
+	sym := findTypeSymbolAcrossPkgs(ctx, nil, "std/http", name)
+	if sym == 0 {
+		return fallback
+	}
+	return symName(ctx, sym)
+}
+
+func emitCustomWireHandlerRegistry(ctx *codegen.EmitContext, block *jen.Group) {
+	reqName := lookupHttpStructName(ctx, "Request")
+	resName := lookupHttpStructName(ctx, "Response")
+
+	block.Add(jen.Var().Id("__sovaCustomWireHandlers").Op("=").Map(jen.String()).Func().Params(
+		jen.Qual("net/http", "ResponseWriter"),
+		jen.Op("*").Qual("net/http", "Request"),
+	).Values())
+	block.Add(jen.Var().Id("__sovaCustomWireMu").Qual("sync", "Mutex"))
+	block.Add(jen.Var().Id("__sovaCustomWireApplied").Bool())
+
+	block.Add(jen.Func().Id("__sovaRegisterCustomWireHandler").Params(
+		jen.Id("path").String(),
+		jen.Id("handler").Any(),
+	).Error().Block(
+		jen.Id("__sovaCustomWireMu").Dot("Lock").Call(),
+		jen.Defer().Id("__sovaCustomWireMu").Dot("Unlock").Call(),
+		jen.If(jen.Id("__sovaCustomWireApplied")).Block(
+			jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("addCustomWireHandler: server already started, must be called before main() returns"))),
+		),
+		jen.If(jen.List(jen.Id("_"), jen.Id("ok")).Op(":=").Id("__sovaCustomWireHandlers").Index(jen.Id("path")).Op(";").Id("ok")).Block(
+			jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("addCustomWireHandler: path %q already has a handler"), jen.Id("path"))),
+		),
+		jen.Id("fn").Op(",").Id("ok").Op(":=").Id("handler").Assert(jen.Func().Params(
+			jen.Op("*").Id(reqName),
+			jen.Op("*").Id(resName),
+		)),
+		jen.If(jen.Op("!").Id("ok")).Block(
+			jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("addCustomWireHandler: handler must be func(http.Request, http.Response)"))),
+		),
+		jen.Id("__sovaCustomWireHandlers").Index(jen.Id("path")).Op("=").Func().Params(
+			jen.Id("w").Qual("net/http", "ResponseWriter"),
+			jen.Id("r").Op("*").Qual("net/http", "Request"),
+		).Block(
+			jen.Id("fn").Call(jen.Op("&").Id(reqName).Values(jen.Dict{jen.Id("Raw"): jen.Id("r")}), jen.Op("&").Id(resName).Values(jen.Dict{jen.Id("Raw"): jen.Id("w")})),
+		),
+		jen.Return(jen.Nil()),
+	))
+
+	block.Add(jen.Func().Id("__sovaApplyCustomWireHandlers").Params(
+		jen.Id("mux").Op("*").Qual("net/http", "ServeMux"),
+	).Block(
+		jen.Id("__sovaCustomWireMu").Dot("Lock").Call(),
+		jen.Defer().Id("__sovaCustomWireMu").Dot("Unlock").Call(),
+		jen.For(jen.List(jen.Id("path"), jen.Id("h")).Op(":=").Range().Id("__sovaCustomWireHandlers")).Block(
+			jen.Id("mux").Dot("HandleFunc").Call(jen.Id("path"), jen.Id("h")),
+		),
+		jen.Id("__sovaCustomWireApplied").Op("=").True(),
+	))
 }
 
 // emitSessionStructAndMethods writes the fn____Session struct mirroring the Sova-side sessions.Session shape plus the methods bound to it (authenticate, logout, role helpers, rooms helpers, isAuthenticated). These are emitted unconditionally because the Sova-side type surface is the same regardless of whether the session manager is active.
@@ -4429,6 +4490,7 @@ func (e *CodeEmitter) emitDevOnlyBoot(ctx *codegen.EmitContext, g *jen.Group) {
 // emitWireServerBoot generates the HTTP server boot sequence for wired endpoints: handler registration, listen address resolution (env > manifest > default), and ListenAndServe blocking call.
 func (e *CodeEmitter) emitWireServerBoot(ctx *codegen.EmitContext, g *jen.Group) {
 	g.Id("__mux").Op(":=").Qual("net/http", "NewServeMux").Call()
+	g.Id("__sovaApplyCustomWireHandlers").Call(jen.Id("__mux"))
 	for _, fn := range e.wiredFuncs {
 		fnRef := fn
 		handlerName := symName(ctx, fnRef.Name.Sym) + "__wireHandler"
@@ -4779,9 +4841,13 @@ func (e *CodeEmitter) emitWiredHandler(ctx *codegen.EmitContext, pkg *ir.Package
 		if hasBody {
 			var nonPathParams []*ir.FuncParam
 			for _, param := range fn.Params {
-				if !pathArgSet[param.Name.Name] {
-					nonPathParams = append(nonPathParams, param)
+				if param.WireBinding != "" && param.WireBinding != "body" {
+					continue
 				}
+				if pathArgSet[param.Name.Name] && param.WireBinding == "" {
+					continue
+				}
+				nonPathParams = append(nonPathParams, param)
 			}
 			if len(nonPathParams) > 0 {
 				// Cap the body so a giant payload can't OOM the server, and
@@ -4815,23 +4881,44 @@ func (e *CodeEmitter) emitWiredHandler(ctx *codegen.EmitContext, pkg *ir.Package
 			if param.Type != nil {
 				paramTypeID = param.Type.Typ
 			}
-			if pathArgSet[param.Name.Name] {
-				g.Id(paramName).Op(":=").Add(decodeStringToGo(ctx.Types, paramTypeID, jen.Id("r").Dot("PathValue").Call(jen.Lit(param.Name.Name))))
-				callArgs = append(callArgs, jen.Id(paramName))
-				continue
+			bindKey := param.Name.Name
+			if param.WireBindAs != "" {
+				bindKey = param.WireBindAs
 			}
-			if hasBody {
+			binding := param.WireBinding
+			if binding == "" {
+				if pathArgSet[param.Name.Name] {
+					binding = "path"
+				} else if hasBody {
+					binding = "body"
+				} else {
+					binding = "query"
+				}
+			}
+			switch binding {
+			case "path":
+				g.Id(paramName).Op(":=").Add(decodeStringToGo(ctx.Types, paramTypeID, jen.Id("r").Dot("PathValue").Call(jen.Lit(bindKey))))
+			case "query":
+				g.Id(paramName).Op(":=").Add(decodeStringToGo(ctx.Types, paramTypeID, jen.Id("r").Dot("URL").Dot("Query").Call().Dot("Get").Call(jen.Lit(bindKey))))
+			case "header":
+				g.Id(paramName).Op(":=").Add(decodeStringToGo(ctx.Types, paramTypeID, jen.Id("r").Dot("Header").Dot("Get").Call(jen.Lit(bindKey))))
+			case "cookie":
+				cookieRaw := paramName + "__cookie"
+				g.List(jen.Id(cookieRaw), jen.Id("_")).Op(":=").Id("r").Dot("Cookie").Call(jen.Lit(bindKey))
+				g.Var().Id(paramName + "__val").String()
+				g.If(jen.Id(cookieRaw).Op("!=").Nil()).Block(
+					jen.Id(paramName + "__val").Op("=").Id(cookieRaw).Dot("Value"),
+				)
+				g.Id(paramName).Op(":=").Add(decodeStringToGo(ctx.Types, paramTypeID, jen.Id(paramName+"__val")))
+			case "body":
 				g.Var().Id(paramName).Add(typeToGoWithContext(ctx, pkg, ctx.Types, paramTypeID))
-				g.If(jen.Id("raw").Op(",").Id("ok").Op(":=").Id("__body").Index(jen.Lit(param.Name.Name)).Op(";").Id("ok")).Block(
+				g.If(jen.Id("raw").Op(",").Id("ok").Op(":=").Id("__body").Index(jen.Lit(bindKey)).Op(";").Id("ok")).Block(
 					jen.If(jen.Id("__pErr").Op(":=").Qual("encoding/json", "Unmarshal").Call(jen.Id("raw"), jen.Op("&").Id(paramName)).Op(";").Id("__pErr").Op("!=").Nil()).Block(
-						jen.Id("__sovaRespondBadRequest").Call(jen.Id("w"), jen.Lit("invalid value for '"+param.Name.Name+"': ").Op("+").Id("__pErr").Dot("Error").Call()),
+						jen.Id("__sovaRespondBadRequest").Call(jen.Id("w"), jen.Lit("invalid value for '"+bindKey+"': ").Op("+").Id("__pErr").Dot("Error").Call()),
 						jen.Return(),
 					),
 				)
-				callArgs = append(callArgs, jen.Id(paramName))
-				continue
 			}
-			g.Id(paramName).Op(":=").Add(decodeStringToGo(ctx.Types, paramTypeID, jen.Id("r").Dot("URL").Dot("Query").Call().Dot("Get").Call(jen.Lit(param.Name.Name))))
 			callArgs = append(callArgs, jen.Id(paramName))
 		}
 
@@ -4843,6 +4930,63 @@ func (e *CodeEmitter) emitWiredHandler(ctx *codegen.EmitContext, pkg *ir.Package
 			g.Id(implName).Call(callWithSession...)
 		}
 		g.Id("__sovaSaveSession").Call(jen.Id("w"), jen.Id("__session"))
+
+		typedResp := ""
+		if hasReturn {
+			typedResp = typedResponseKind(ctx, fn)
+		}
+		switch typedResp {
+		case "Redirect":
+			emitTypedRespCookies(g)
+			g.Id("__status").Op(":=").Int().Call(jen.Id("__val").Dot("Status"))
+			g.If(jen.Id("__status").Op("==").Lit(0)).Block(jen.Id("__status").Op("=").Lit(302))
+			g.Id("w").Dot("Header").Call().Dot("Set").Call(jen.Lit("Location"), jen.Id("__val").Dot("Location"))
+			g.Id("w").Dot("Header").Call().Dot("Set").Call(jen.Lit("X-Sova-Wire-Kind"), jen.Lit("redirect"))
+			g.Id("w").Dot("WriteHeader").Call(jen.Id("__status"))
+			return
+		case "Html":
+			emitTypedRespCookies(g)
+			g.Id("__status").Op(":=").Int().Call(jen.Id("__val").Dot("Status"))
+			g.If(jen.Id("__status").Op("==").Lit(0)).Block(jen.Id("__status").Op("=").Lit(200))
+			g.Id("w").Dot("Header").Call().Dot("Set").Call(jen.Lit("Content-Type"), jen.Lit("text/html; charset=utf-8"))
+			g.Id("w").Dot("Header").Call().Dot("Set").Call(jen.Lit("X-Sova-Wire-Kind"), jen.Lit("html"))
+			g.Id("w").Dot("WriteHeader").Call(jen.Id("__status"))
+			g.Id("_").Op(",").Id("_").Op("=").Id("w").Dot("Write").Call(jen.Index().Byte().Call(jen.Id("__val").Dot("Body")))
+			return
+		case "File":
+			emitTypedRespCookies(g)
+			g.Id("__status").Op(":=").Int().Call(jen.Id("__val").Dot("Status"))
+			g.If(jen.Id("__status").Op("==").Lit(0)).Block(jen.Id("__status").Op("=").Lit(200))
+			g.Id("__ct").Op(":=").Id("__val").Dot("ContentType")
+			g.If(jen.Id("__ct").Op("==").Lit("")).Block(jen.Id("__ct").Op("=").Lit("application/octet-stream"))
+			g.Id("w").Dot("Header").Call().Dot("Set").Call(jen.Lit("Content-Type"), jen.Id("__ct"))
+			g.Id("__disp").Op(":=").Lit("attachment")
+			g.If(jen.Id("__val").Dot("Inline")).Block(jen.Id("__disp").Op("=").Lit("inline"))
+			g.If(jen.Id("__val").Dot("Filename").Op("!=").Lit("")).Block(
+				jen.Id("w").Dot("Header").Call().Dot("Set").Call(jen.Lit("Content-Disposition"), jen.Id("__disp").Op("+").Lit("; filename=\"").Op("+").Id("__val").Dot("Filename").Op("+").Lit("\"")),
+			).Else().Block(
+				jen.Id("w").Dot("Header").Call().Dot("Set").Call(jen.Lit("Content-Disposition"), jen.Id("__disp")),
+			)
+			g.Id("w").Dot("Header").Call().Dot("Set").Call(jen.Lit("X-Sova-Wire-Kind"), jen.Lit("file"))
+			g.Id("w").Dot("WriteHeader").Call(jen.Id("__status"))
+			g.Id("_").Op(",").Id("_").Op("=").Id("w").Dot("Write").Call(jen.Id("__val").Dot("Data"))
+			return
+		case "Status":
+			emitTypedRespCookies(g)
+			g.For(jen.List(jen.Id("__hk"), jen.Id("__hv")).Op(":=").Range().Id("__val").Dot("Headers")).Block(
+				jen.Id("w").Dot("Header").Call().Dot("Set").Call(jen.Id("__hk"), jen.Id("__hv")),
+			)
+			g.Id("__status").Op(":=").Int().Call(jen.Id("__val").Dot("Status"))
+			g.If(jen.Id("__status").Op("==").Lit(0)).Block(jen.Id("__status").Op("=").Lit(200))
+			g.Id("w").Dot("Header").Call().Dot("Set").Call(jen.Lit("Content-Type"), jen.Lit("application/json"))
+			g.Id("w").Dot("WriteHeader").Call(jen.Id("__status"))
+			g.Id("_").Op("=").Qual("encoding/json", "NewEncoder").Call(jen.Id("w")).Dot("Encode").Call(jen.Map(jen.String()).Any().Values(jen.Dict{
+				jen.Lit("value"): jen.Id("__val").Dot("Body"),
+				jen.Lit("state"): jen.Int64().Call(jen.Id("WireStateOk")),
+			}))
+			return
+		}
+
 		g.Id("w").Dot("Header").Call().Dot("Set").Call(jen.Lit("Content-Type"), jen.Lit("application/json"))
 		if hasReturn {
 			g.Id("_").Op("=").Qual("encoding/json", "NewEncoder").Call(jen.Id("w")).Dot("Encode").Call(jen.Map(jen.String()).Any().Values(jen.Dict{
@@ -4856,6 +5000,59 @@ func (e *CodeEmitter) emitWiredHandler(ctx *codegen.EmitContext, pkg *ir.Package
 			}))
 		}
 	}))
+}
+
+func emitTypedRespCookies(g *jen.Group) {
+	g.For(jen.List(jen.Id("_"), jen.Id("__c")).Op(":=").Range().Id("__val").Dot("Cookies")).Block(
+		jen.If(jen.Id("__c").Dot("Clear")).Block(
+			jen.Qual("net/http", "SetCookie").Call(jen.Id("w"), jen.Op("&").Qual("net/http", "Cookie").Values(jen.Dict{
+				jen.Id("Name"):     jen.Id("__c").Dot("Name"),
+				jen.Id("Value"):    jen.Lit(""),
+				jen.Id("Path"):     jen.Lit("/"),
+				jen.Id("MaxAge"):   jen.Lit(-1),
+				jen.Id("HttpOnly"): jen.True(),
+			})),
+		).Else().Block(
+			jen.Id("__co").Op(":=").Op("&").Qual("net/http", "Cookie").Values(jen.Dict{
+				jen.Id("Name"):     jen.Id("__c").Dot("Name"),
+				jen.Id("Value"):    jen.Id("__c").Dot("Value"),
+				jen.Id("Path"):     jen.Lit("/"),
+				jen.Id("HttpOnly"): jen.Id("__c").Dot("Opts").Dot("HttpOnly"),
+				jen.Id("Secure"):   jen.Id("__c").Dot("Opts").Dot("Secure"),
+				jen.Id("MaxAge"):   jen.Int().Call(jen.Id("__c").Dot("Opts").Dot("MaxAge")),
+			}),
+			jen.If(jen.Id("__c").Dot("Opts").Dot("Path").Op("!=").Lit("")).Block(
+				jen.Id("__co").Dot("Path").Op("=").Id("__c").Dot("Opts").Dot("Path"),
+			),
+			jen.If(jen.Id("__c").Dot("Opts").Dot("Domain").Op("!=").Lit("")).Block(
+				jen.Id("__co").Dot("Domain").Op("=").Id("__c").Dot("Opts").Dot("Domain"),
+			),
+			jen.Switch(jen.Id("__c").Dot("Opts").Dot("SameSite")).Block(
+				jen.Case(jen.Lit("Lax")).Block(jen.Id("__co").Dot("SameSite").Op("=").Qual("net/http", "SameSiteLaxMode")),
+				jen.Case(jen.Lit("Strict")).Block(jen.Id("__co").Dot("SameSite").Op("=").Qual("net/http", "SameSiteStrictMode")),
+				jen.Case(jen.Lit("None")).Block(jen.Id("__co").Dot("SameSite").Op("=").Qual("net/http", "SameSiteNoneMode")),
+			),
+			jen.Qual("net/http", "SetCookie").Call(jen.Id("w"), jen.Id("__co")),
+		),
+	)
+}
+
+func typedResponseKind(ctx *codegen.EmitContext, fn *ir.FuncDeclStmt) string {
+	if fn.ReturnType == nil || fn.ReturnType.Typ == 0 {
+		return ""
+	}
+	ty, ok := ctx.Types.GetByID(fn.ReturnType.Typ)
+	if !ok || ty == nil || ty.Kind != ir.TK_Struct {
+		return ""
+	}
+	if ty.PackagePath != "std/http" {
+		return ""
+	}
+	switch ty.StructName {
+	case "Redirect", "Html", "File", "Status":
+		return ty.StructName
+	}
+	return ""
 }
 
 // emitWiredWSAdapter emits the WS-call adapter `<handlerName>__ws(*fn____Session, json.RawMessage) (any, WireState)` for a backend wire func with `wire(transport: "ws")`. The adapter mirrors the HTTP handler's authn/authz checks, unpacks the JSON args array, calls the impl, and returns `(value, state)` for the WS dispatcher to wrap into the reply envelope.

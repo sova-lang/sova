@@ -36,6 +36,8 @@ var (
 	ErrWireRawBadSignature            = templateErr(CategorySemantic, "wire(transport: \"raw\") '%s' must take exactly two `any` parameters (`req`, `res`); got %d parameters")
 	ErrWireRawBadParamType            = templateErr(CategorySemantic, "wire(transport: \"raw\") '%s' parameters must be typed `http.Request` and `http.Response` (in that order) — import \"std/http\" and use the typed handles so the compiler can catch swapped arguments at compile time")
 	ErrWireRawBadReturn               = templateErr(CategorySemantic, "wire(transport: \"raw\") '%s' must not return a value — write to the response via `std/http` helpers on the `res` handle instead")
+	ErrWireConflictingParamBinding    = templateErr(CategorySemantic, "wired param '%s' has conflicting bindings (already bound as %s, also annotated as %s); pick one of @query/@path/@header/@cookie/@body")
+	ErrWirePathParamMissing           = templateErr(CategorySemantic, "wired param '%s' is annotated `@path` but `%s` has no `:%[1]s` placeholder; add it to the path or pick a different binding")
 	ErrAnnotationNotConst             = templateErr(CategorySemantic, "annotation '@%s' argument must be a compile-time constant (literal or const-named string/int/bool, or a `+` of those)")
 	ErrExternTypeInSharedFile         = templateErr(CategorySemantic, "extern type/interface '%s' is not allowed in a shared file; native bindings are side-specific. Put them in a backend or frontend file instead.")
 	ErrExternTypeWrongSide            = templateErr(CategorySemantic, "extern type '%s' is %s-only and cannot be referenced from a %s file")

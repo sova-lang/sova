@@ -1448,14 +1448,24 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 	type paramBinding struct {
 		mangled string
 		orig    string
-		isPath  bool
+		binding string
+		bindKey string
 	}
 	var bindings []paramBinding
 	for _, param := range s.Params {
+		key := param.Name.Name
+		if param.WireBindAs != "" {
+			key = param.WireBindAs
+		}
+		b := param.WireBinding
+		if b == "" && pathArgSet[param.Name.Name] {
+			b = "path"
+		}
 		bindings = append(bindings, paramBinding{
 			mangled: symNameWithUnused(ctx, pkg, param.Name.Sym),
 			orig:    param.Name.Name,
-			isPath:  pathArgSet[param.Name.Name],
+			binding: b,
+			bindKey: key,
 		})
 	}
 
@@ -1488,6 +1498,10 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 	for _, a := range s.Wire.PathArgs {
 		var binding paramBinding
 		for _, b := range bindings {
+			if b.binding == "path" && b.bindKey == a {
+				binding = b
+				break
+			}
 			if b.orig == a {
 				binding = b
 				break
@@ -1515,37 +1529,108 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 
 	hasBodyMethod := method != "GET" && method != "DELETE"
 
-	var nonPath []paramBinding
+	var queryBound []paramBinding
+	var headerBound []paramBinding
+	var bodyBound []paramBinding
 	for _, b := range bindings {
-		if !b.isPath {
-			nonPath = append(nonPath, b)
+		switch b.binding {
+		case "path", "cookie":
+			continue
+		case "query":
+			queryBound = append(queryBound, b)
+		case "header":
+			headerBound = append(headerBound, b)
+		case "body":
+			bodyBound = append(bodyBound, b)
+		case "":
+			if hasBodyMethod {
+				bodyBound = append(bodyBound, b)
+			} else {
+				queryBound = append(queryBound, b)
+			}
 		}
 	}
 
-	if !hasBodyMethod && len(nonPath) > 0 {
+	if len(queryBound) > 0 {
 		sb.WriteString("  const __qs = new URLSearchParams();\n")
-		for _, b := range nonPath {
-			sb.WriteString(fmt.Sprintf("  __qs.set(%q, String(%s));\n", b.orig, b.mangled))
+		for _, b := range queryBound {
+			sb.WriteString(fmt.Sprintf("  __qs.set(%q, String(%s));\n", b.bindKey, b.mangled))
 		}
 		sb.WriteString("  const __qsStr = __qs.toString();\n")
-		sb.WriteString("  if (__qsStr) __url += '?' + __qsStr;\n")
+		sb.WriteString("  if (__qsStr) __url += (__url.includes('?') ? '&' : '?') + __qsStr;\n")
 	}
 
-	if hasBodyMethod {
+	sb.WriteString("  const __headers = {};\n")
+	for _, b := range headerBound {
+		sb.WriteString(fmt.Sprintf("  __headers[%q] = String(%s);\n", b.bindKey, b.mangled))
+	}
+
+	typedKind := stubTypedResponseKind(ctx, s)
+	fetchOpts := "credentials: 'include', headers: __headers"
+	if typedKind == "Redirect" {
+		fetchOpts += ", redirect: 'manual'"
+	}
+
+	if len(bodyBound) > 0 {
+		sb.WriteString("  __headers['Content-Type'] = 'application/json';\n")
 		sb.WriteString("  const __body = {};\n")
-		for _, b := range nonPath {
-			sb.WriteString(fmt.Sprintf("  __body[%q] = %s;\n", b.orig, b.mangled))
+		for _, b := range bodyBound {
+			sb.WriteString(fmt.Sprintf("  __body[%q] = %s;\n", b.bindKey, b.mangled))
 		}
-		sb.WriteString(fmt.Sprintf("  const __res = await fetch(__url, { method: %q, credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(__body) });\n", method))
+		sb.WriteString(fmt.Sprintf("  const __res = await fetch(__url, { method: %q, %s, body: JSON.stringify(__body) });\n", method, fetchOpts))
 	} else {
-		sb.WriteString(fmt.Sprintf("  const __res = await fetch(__url, { method: %q, credentials: 'include' });\n", method))
+		sb.WriteString(fmt.Sprintf("  const __res = await fetch(__url, { method: %q, %s });\n", method, fetchOpts))
 	}
 
-	sb.WriteString("  if (!__res.ok) { return [null, __res.status === 401 ? 1 : __res.status === 403 ? 2 : __res.status === 404 ? 3 : 4]; }\n")
-	sb.WriteString("  const __data = await __res.json();\n")
-	sb.WriteString(fmt.Sprintf("  return [__sovaReify(__data.value, %s), __data.state];\n", returnDesc))
+	switch typedKind {
+	case "Redirect":
+		sb.WriteString("  if (__res.type === 'opaqueredirect' || (__res.status >= 300 && __res.status < 400)) {\n")
+		sb.WriteString("    const __loc = __res.headers.get('Location') || '';\n")
+		sb.WriteString("    return [{location: __loc, status: __res.status || 302}, 0];\n")
+		sb.WriteString("  }\n")
+		sb.WriteString("  if (!__res.ok) { return [null, __res.status === 401 ? 1 : __res.status === 403 ? 2 : __res.status === 404 ? 3 : 4]; }\n")
+		sb.WriteString("  const __loc2 = __res.headers.get('Location') || '';\n")
+		sb.WriteString("  return [{location: __loc2, status: __res.status}, 0];\n")
+	case "Html":
+		sb.WriteString("  if (!__res.ok) { return [null, __res.status === 401 ? 1 : __res.status === 403 ? 2 : __res.status === 404 ? 3 : 4]; }\n")
+		sb.WriteString("  const __htmlBody = await __res.text();\n")
+		sb.WriteString("  return [{body: __htmlBody, status: __res.status}, 0];\n")
+	case "File":
+		sb.WriteString("  if (!__res.ok) { return [null, __res.status === 401 ? 1 : __res.status === 403 ? 2 : __res.status === 404 ? 3 : 4]; }\n")
+		sb.WriteString("  const __blob = await __res.blob();\n")
+		sb.WriteString("  const __disp = __res.headers.get('Content-Disposition') || '';\n")
+		sb.WriteString("  const __fnMatch = /filename=\"([^\"]+)\"/.exec(__disp);\n")
+		sb.WriteString("  const __fname = __fnMatch ? __fnMatch[1] : '';\n")
+		sb.WriteString("  return [{data: __blob, filename: __fname, contentType: __res.headers.get('Content-Type') || '', status: __res.status}, 0];\n")
+	case "Status":
+		sb.WriteString("  if (!__res.ok && __res.status !== 422 && (__res.status < 200 || __res.status >= 500)) { return [null, __res.status === 401 ? 1 : __res.status === 403 ? 2 : __res.status === 404 ? 3 : 4]; }\n")
+		sb.WriteString("  const __data = await __res.json();\n")
+		sb.WriteString(fmt.Sprintf("  return [{body: __sovaReify(__data.value, %s), status: __res.status}, __data.state];\n", returnDesc))
+	default:
+		sb.WriteString("  if (!__res.ok) { return [null, __res.status === 401 ? 1 : __res.status === 403 ? 2 : __res.status === 404 ? 3 : 4]; }\n")
+		sb.WriteString("  const __data = await __res.json();\n")
+		sb.WriteString(fmt.Sprintf("  return [__sovaReify(__data.value, %s), __data.state];\n", returnDesc))
+	}
 	sb.WriteString("}")
 	e.jf.Add(jsgen.Raw(sb.String()))
+}
+
+func stubTypedResponseKind(ctx *codegen.EmitContext, s *ir.FuncDeclStmt) string {
+	if s.ReturnType == nil || s.ReturnType.Typ == 0 {
+		return ""
+	}
+	ty, ok := ctx.Types.GetByID(s.ReturnType.Typ)
+	if !ok || ty == nil || ty.Kind != ir.TK_Struct {
+		return ""
+	}
+	if ty.PackagePath != "std/http" {
+		return ""
+	}
+	switch ty.StructName {
+	case "Redirect", "Html", "File", "Status":
+		return ty.StructName
+	}
+	return ""
 }
 
 // emitEmbeddedVar emits the inlined-literal form of an `@embed`-decorated top-level const. The file contents are read from disk at codegen time (using the absolute SourcePath the resolver already validated) and serialised into a JS literal — a plain JSON string for text embeds, or a `Uint8Array` instantiated from a base64-decoded string for binary embeds. P1 always inlines; P3 will rewrite this to `import X from "./__embeds/...?text"` once esbuild is wired and can dedup duplicate embeds across modules.

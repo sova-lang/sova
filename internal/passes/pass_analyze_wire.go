@@ -97,7 +97,7 @@ func (p *PassAnalyzeWire) Run(pc *PassContext) error {
 						effSide = fn.Side.Kind
 					}
 					p.validateWired(pc, pkg, f, fn)
-					p.deriveRoute(pkg, fn)
+					p.deriveRoute(pc, pkg, fn)
 					if effSide == ir.SideFrontend {
 						needsManager = true
 						frontendWires = append(frontendWires, fn)
@@ -725,7 +725,7 @@ func (p *PassAnalyzeWire) upgradeWiredSymType(pc *PassContext, pkg *ir.PackageCo
 	pkg.Syms.SetType(fn.Name.Sym, newFuncTyp)
 }
 
-func (p *PassAnalyzeWire) deriveRoute(pkg *ir.PackageContext, fn *ir.FuncDeclStmt) {
+func (p *PassAnalyzeWire) deriveRoute(pc *PassContext, pkg *ir.PackageContext, fn *ir.FuncDeclStmt) {
 	if fn.Wire == nil {
 		fn.Wire = &ir.WireSpec{Options: map[string]ir.WireOptValue{}}
 	}
@@ -760,15 +760,35 @@ func (p *PassAnalyzeWire) deriveRoute(pkg *ir.PackageContext, fn *ir.FuncDeclStm
 		resourceKebab = pluralize(resourceKebab)
 	}
 
+	p.bindParamAnnotations(pc, fn)
+
 	var pathArgs []string
 	for _, param := range fn.Params {
-		if isPathArgName(param.Name.Name) {
-			pathArgs = append(pathArgs, param.Name.Name)
+		switch param.WireBinding {
+		case "path":
+			pathArgs = append(pathArgs, paramBindName(param))
+		case "query", "header", "cookie", "body":
+		case "":
+			if isPathArgName(param.Name.Name) {
+				pathArgs = append(pathArgs, param.Name.Name)
+			}
 		}
 	}
 	fn.Wire.PathArgs = pathArgs
 
 	if overridePath != "" {
+		validatePathBindings(pc, fn, overridePath)
+		placeholders := map[string]bool{}
+		for _, ph := range extractPathPlaceholders(overridePath) {
+			placeholders[ph] = true
+		}
+		filtered := pathArgs[:0]
+		for _, name := range pathArgs {
+			if placeholders[name] {
+				filtered = append(filtered, name)
+			}
+		}
+		fn.Wire.PathArgs = filtered
 		fn.Wire.Path = overridePath
 		return
 	}
@@ -885,6 +905,85 @@ func isPathArgName(name string) bool {
 		return true
 	}
 	return false
+}
+
+func paramBindName(p *ir.FuncParam) string {
+	if p.WireBindAs != "" {
+		return p.WireBindAs
+	}
+	return p.Name.Name
+}
+
+func (p *PassAnalyzeWire) bindParamAnnotations(pc *PassContext, fn *ir.FuncDeclStmt) {
+	for _, param := range fn.Params {
+		for _, anno := range param.Annotations {
+			binding := ""
+			switch anno.Name.Name {
+			case "query":
+				binding = "query"
+			case "path":
+				binding = "path"
+			case "header":
+				binding = "header"
+			case "cookie":
+				binding = "cookie"
+			case "body":
+				binding = "body"
+			default:
+				continue
+			}
+			if param.WireBinding != "" && param.WireBinding != binding {
+				pc.Diag.Report(diag.ErrWireConflictingParamBinding, param.Name.Span, param.Name.Name, param.WireBinding, binding)
+				continue
+			}
+			param.WireBinding = binding
+			if len(anno.ResolvedArgs) > 0 && anno.ResolvedArgs[0].Kind == ir.AnnotationValueString {
+				param.WireBindAs = anno.ResolvedArgs[0].Str
+			}
+		}
+	}
+}
+
+func validatePathBindings(pc *PassContext, fn *ir.FuncDeclStmt, path string) {
+	placeholders := extractPathPlaceholders(path)
+	declared := map[string]bool{}
+	for _, ph := range placeholders {
+		declared[ph] = true
+	}
+	for _, param := range fn.Params {
+		if param.WireBinding != "path" {
+			continue
+		}
+		name := paramBindName(param)
+		if !declared[name] {
+			pc.Diag.Report(diag.ErrWirePathParamMissing, param.Name.Span, name, path)
+		}
+	}
+}
+
+func extractPathPlaceholders(path string) []string {
+	var out []string
+	i := 0
+	for i < len(path) {
+		if path[i] != ':' {
+			i++
+			continue
+		}
+		i++
+		start := i
+		for i < len(path) {
+			c := path[i]
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+				i++
+				continue
+			}
+			break
+		}
+		if i > start {
+			out = append(out, path[start:i])
+		}
+	}
+	return out
 }
 
 func (p *PassAnalyzeWire) validateWired(pc *PassContext, pkg *ir.PackageContext, f *ir.PreparsedFile, fn *ir.FuncDeclStmt) {
