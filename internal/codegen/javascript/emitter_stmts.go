@@ -395,6 +395,11 @@ func (e *CodeEmitter) emitExternDecl(ctx *codegen.EmitContext, pkg *ir.PackageCo
 	skipMock := pkg != nil && pkg.Path.String() == "std/testing"
 
 	for _, fn := range s.Funcs {
+		if fn.Name.Sym != 0 {
+			if sym, ok := pkg.Syms.GetByID(fn.Name.Sym); ok && sym.Flags&ir.SF_Reachable == 0 {
+				continue
+			}
+		}
 		funcName := symName(ctx, fn.Name.Sym)
 		orig := symOrigName(ctx, fn.Name.Sym)
 

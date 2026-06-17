@@ -24,6 +24,7 @@ const (
 	SF_Const      SymbolFlags = 1 << iota
 	SF_Unused
 	SF_TypeMethod
+	SF_Reachable
 )
 
 // Symbol represents a symbol in the intermediate representation. A symbol is an entity that is declared in any scope like a variable, function, or type.

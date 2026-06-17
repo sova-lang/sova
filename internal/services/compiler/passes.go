@@ -26,6 +26,7 @@ func buildPassManager() *passes.PassManager {
 	pm.Register(&passes.PassInitOrder{})
 	pm.Register(&passes.PassMangle{})
 	pm.Register(&passes.PassDetectUnused{})
+	pm.Register(&passes.PassComputeReachability{})
 	pm.Register(&passes.PassEmitGo{})
 	pm.Register(&passes.PassEmitJS{})
 	pm.Register(&passes.PassTestDiscovery{})
@@ -56,6 +57,7 @@ func TestPipeline() []string {
 		"test_discovery",
 		"init_order",
 		"mangle",
+		"compute_reachability",
 		"emit_go",
 		"emit_js",
 	}
@@ -93,6 +95,7 @@ func compilerPipeline() []string {
 		"init_order",
 		"mangle",
 		"detect_unused",
+		"compute_reachability",
 		"emit_go",
 		"emit_js",
 	}

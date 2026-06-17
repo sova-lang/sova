@@ -135,6 +135,9 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 				continue
 			}
 			for _, st := range file.Hir.Statements {
+				if codegen.TopLevelStmtPrunable(ctx, st) {
+					continue
+				}
 				e.emitStmt(ctx, pkg, file.Hir, st, true)
 			}
 
