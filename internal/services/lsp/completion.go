@@ -843,6 +843,13 @@ func memberCompletions(c *compiler.CompilerContext, file *ir.File, pos protocol.
 		}
 		return nil
 	}
+	if recvText == "this" {
+		cursor := position{line: int(pos.Line) + 1, col: int(pos.Character)}
+		if typ := findEnclosingThisType(c, file, cursor); typ != 0 {
+			return typeMemberCompletions(c, typ, consumerSide)
+		}
+		return nil
+	}
 	if recvText == "()" {
 		dotLine := int(pos.Line) + 1
 		dotCol := int(pos.Character)
@@ -1082,6 +1089,47 @@ func findLocalSymInBlock(b *ir.BlockStmt, name string) ir.SymID {
 		}
 	}
 	return 0
+}
+
+// findEnclosingThisType walks every `TypeDeclStmt` in the file, finds the method or ctor whose body span contains `cursor`, and returns the enclosing type's TypID. Used by `this.<tab>` completion: `this` is a synthetic receiver with no VarRef of its own, so the symbol-by-name fallback misses it - the enclosing type is the only reliable anchor.
+func findEnclosingThisType(c *compiler.CompilerContext, file *ir.File, cursor position) ir.TypID {
+	if file == nil {
+		return 0
+	}
+	for _, st := range file.Statements {
+		td, ok := st.(*ir.TypeDeclStmt)
+		if !ok {
+			continue
+		}
+		for _, m := range td.Methods {
+			if m == nil || m.Func == nil || m.Func.Body == nil {
+				continue
+			}
+			if cursor.inSpan(m.Func.Body.Span()) {
+				return typeIDOfDecl(c, td)
+			}
+		}
+		for _, ctor := range td.Ctors {
+			if ctor == nil || ctor.Body == nil {
+				continue
+			}
+			if cursor.inSpan(ctor.Body.Span()) {
+				return typeIDOfDecl(c, td)
+			}
+		}
+	}
+	return 0
+}
+
+func typeIDOfDecl(c *compiler.CompilerContext, td *ir.TypeDeclStmt) ir.TypID {
+	if c == nil || td == nil || td.Name.Sym == 0 {
+		return 0
+	}
+	sym, _ := lookupSymbol(c, td.Name.Sym)
+	if sym == nil {
+		return 0
+	}
+	return sym.Typ
 }
 
 // structTypeDeclSide returns the file-side that declares the struct type `ty`. Used by `typeMemberCompletions` to decide whether to filter to the shared subset when the consumer file lives on the opposite side. Falls back to `SideShared` when the type has no in-build declaration (extern struct, synthetic compiler type) so cross-side checks for those types do not accidentally filter.

@@ -1755,9 +1755,28 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 	case *ir.GroupedExpr:
 		return jen.Parens(e.buildExpr(ctx, pkg, f, x.Expr))
 	case *ir.OptionUnwrapExpr:
-		return jen.Parens(jen.Op("*").Add(jen.Parens(e.buildExpr(ctx, pkg, f, x.Expr))))
+		cur := e.buildExpr(ctx, pkg, f, x.Expr)
+		storage := x.Expr.GetType()
+		if vr, ok := x.Expr.(*ir.VarRef); ok && vr.Ref.Sym != 0 {
+			if sym, ok := pkg.Syms.GetByID(vr.Ref.Sym); ok {
+				storage = sym.Typ
+			}
+		}
+		for {
+			ty, ok := ctx.Types.GetByID(storage)
+			if !ok || ty.Kind != ir.TK_Option {
+				break
+			}
+			cur = jen.Parens(jen.Op("*").Add(jen.Parens(cur)))
+			storage = ty.ElemType
+		}
+		return cur
 	case *ir.AsExpr:
 		if x.Target == nil || x.Target.Typ == 0 {
+			return e.buildExpr(ctx, pkg, f, x.Expr)
+		}
+		srcTy := x.Expr.GetType()
+		if !x.Safe && srcTy != 0 && srcTy == x.Target.Typ {
 			return e.buildExpr(ctx, pkg, f, x.Expr)
 		}
 		if x.Safe {
@@ -2000,7 +2019,17 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 
 			for i := 0; i < paramCount; i++ {
 				if i < len(x.Args) && x.Args[i].Expr != nil {
-					args[i] = e.buildExpr(ctx, pkg, f, x.Args[i].Expr)
+					if wrapped := tryWrapErasedLambdaArg(ctx, pkg, f, e, funcTypeDef.ParamTypes[i], x.Args[i].Expr); wrapped != nil {
+						args[i] = wrapped
+					} else if wrapped := tryWrapErasedSliceArg(ctx, pkg, f, e, funcTypeDef.ParamTypes[i], x.Args[i].Expr); wrapped != nil {
+						args[i] = wrapped
+					} else {
+						var emitted jen.Code = e.buildExpr(ctx, pkg, f, x.Args[i].Expr)
+						if funcTypeDef.ParamTypes[i] != nil && funcTypeDef.ParamTypes[i].Type != nil && typeContainsTypeParam(ctx.Types, funcTypeDef.ParamTypes[i].Type.Typ) {
+							emitted = wrapPrimitiveForAny(ctx, x.Args[i].Expr, emitted)
+						}
+						args[i] = emitted
+					}
 				} else if funcTypeDef.ParamTypes[i].Default != nil {
 					args[i] = e.buildExpr(ctx, pkg, f, funcTypeDef.ParamTypes[i].Default)
 				} else {
@@ -2057,8 +2086,15 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		return jen.Id(symName(ctx, x.Ref.Sym))
 	case *ir.ArrayLiteral:
 		elements := make([]jen.Code, len(x.Elems))
+		liftToAny := false
+		if litTy, ok := ctx.Types.GetByID(x.GetType()); ok && (litTy.Kind == ir.TK_Slice || litTy.Kind == ir.TK_Array) && litTy.ElemType == ctx.Types.PrimAny() {
+			liftToAny = true
+		}
 		for i, elem := range x.Elems {
 			elements[i] = e.buildExpr(ctx, pkg, f, elem)
+			if liftToAny {
+				elements[i] = wrapPrimitiveForAny(ctx, elem, elements[i])
+			}
 		}
 
 		return typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType()).(*jen.Statement).Values(elements...)
@@ -5145,3 +5181,137 @@ func decodeStringToGo(tt *ir.TypeTable, typID ir.TypID, expr *jen.Statement) *je
 	}
 	return expr
 }
+
+func typeContainsTypeParam(tt *ir.TypeTable, typID ir.TypID) bool {
+	ty, ok := tt.GetByID(typID)
+	if !ok {
+		return false
+	}
+	switch ty.Kind {
+	case ir.TK_TypeParam:
+		return true
+	case ir.TK_Slice, ir.TK_Array, ir.TK_Option, ir.TK_Chan:
+		return typeContainsTypeParam(tt, ty.ElemType)
+	case ir.TK_Map:
+		return typeContainsTypeParam(tt, ty.KeyType) || typeContainsTypeParam(tt, ty.ValueType)
+	case ir.TK_Tuple:
+		for _, fld := range ty.Fields {
+			if typeContainsTypeParam(tt, fld.Type) {
+				return true
+			}
+		}
+	case ir.TK_Function:
+		for _, p := range ty.ParamTypes {
+			if p == nil || p.Type == nil {
+				continue
+			}
+			if typeContainsTypeParam(tt, p.Type.Typ) {
+				return true
+			}
+		}
+		return typeContainsTypeParam(tt, ty.ReturnType)
+	}
+	return false
+}
+
+func tryWrapErasedLambdaArg(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, e *CodeEmitter, paramFp *ir.FuncParam, argExpr ir.Expr) jen.Code {
+	if paramFp == nil || paramFp.Type == nil {
+		return nil
+	}
+	if !typeContainsTypeParam(ctx.Types, paramFp.Type.Typ) {
+		return nil
+	}
+	paramTy, ok := ctx.Types.GetByID(paramFp.Type.Typ)
+	if !ok || paramTy.Kind != ir.TK_Function {
+		return nil
+	}
+	lit, ok := argExpr.(*ir.FuncLitExpr)
+	if !ok {
+		return nil
+	}
+	if len(lit.Params) != len(paramTy.ParamTypes) {
+		return nil
+	}
+	wrapperParams := make([]jen.Code, len(lit.Params))
+	innerArgs := make([]jen.Code, len(lit.Params))
+	for i, p := range lit.Params {
+		tmpName := e.hk.NewTemp()
+		wrapperParams[i] = jen.Id(tmpName).Any()
+		if p.Type != nil && p.Type.Typ != 0 {
+			pTy, ok := ctx.Types.GetByID(p.Type.Typ)
+			if ok && pTy.Kind == ir.TK_PrimitiveAny {
+				innerArgs[i] = jen.Id(tmpName)
+			} else {
+				innerArgs[i] = jen.Id(tmpName).Assert(typeToGoWithContext(ctx, pkg, ctx.Types, p.Type.Typ))
+			}
+		} else {
+			innerArgs[i] = jen.Id(tmpName)
+		}
+	}
+	inner := e.buildExpr(ctx, pkg, f, lit)
+	wrapper := jen.Func().Params(wrapperParams...)
+	hasReturn := lit.ReturnType != nil && lit.ReturnType.Typ != 0 && lit.ReturnType.Typ != ctx.Types.TypNone()
+	if hasReturn {
+		retGoTy := typeToGoWithContext(ctx, pkg, ctx.Types, paramTy.ReturnType)
+		wrapper = wrapper.Add(retGoTy).Block(jen.Return(jen.Parens(inner).Call(innerArgs...)))
+	} else {
+		wrapper = wrapper.Block(jen.Parens(inner).Call(innerArgs...))
+	}
+	return wrapper
+}
+
+func tryWrapErasedSliceArg(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, e *CodeEmitter, paramFp *ir.FuncParam, argExpr ir.Expr) jen.Code {
+	if paramFp == nil || paramFp.Type == nil {
+		return nil
+	}
+	if !typeContainsTypeParam(ctx.Types, paramFp.Type.Typ) {
+		return nil
+	}
+	paramTy, ok := ctx.Types.GetByID(paramFp.Type.Typ)
+	if !ok || paramTy.Kind != ir.TK_Slice {
+		return nil
+	}
+	argTy, ok := ctx.Types.GetByID(argExpr.GetType())
+	if !ok || argTy.Kind != ir.TK_Slice {
+		return nil
+	}
+	if argTy.ElemType == ctx.Types.PrimAny() {
+		return nil
+	}
+	srcCode := e.buildExpr(ctx, pkg, f, argExpr)
+	srcName := e.hk.NewTemp()
+	outName := e.hk.NewTemp()
+	idxName := e.hk.NewTemp()
+	valName := e.hk.NewTemp()
+	return jen.Func().Params().Index().Any().Block(
+		jen.Id(srcName).Op(":=").Add(srcCode),
+		jen.Id(outName).Op(":=").Make(jen.Index().Any(), jen.Len(jen.Id(srcName))),
+		jen.For(jen.List(jen.Id(idxName), jen.Id(valName)).Op(":=").Range().Id(srcName)).Block(
+			jen.Id(outName).Index(jen.Id(idxName)).Op("=").Id(valName),
+		),
+		jen.Return(jen.Id(outName)),
+	).Call()
+}
+
+func wrapPrimitiveForAny(ctx *codegen.EmitContext, expr ir.Expr, emitted jen.Code) jen.Code {
+	if expr == nil {
+		return emitted
+	}
+	ty := expr.GetType()
+	if ty == 0 {
+		return emitted
+	}
+	if ty == ctx.Types.PrimAny() {
+		return emitted
+	}
+	switch ty {
+	case ctx.Types.PrimInt():
+		return jen.Int64().Parens(emitted)
+	case ctx.Types.PrimFloat():
+		return jen.Float64().Parens(emitted)
+	case ctx.Types.PrimByte():
+		return jen.Byte().Parens(emitted)
+	}
+	return emitted
+}
+

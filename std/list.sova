@@ -1,6 +1,7 @@
 package std/list on shared
 
 import "std/sync"
+import "std/streams"
 
 /// A growable, indexed sequence of `T` backed by a native slice. Implements the iterable protocol so `for x in list { ... }` walks the elements in order. After a full iteration the internal cursor auto-resets so the list can be iterated again from the next call site - this means nested iterations on the same list don't behave as you'd expect; use `iter()` to get a fresh, independent iterator for those.
 type List<T> {
@@ -127,6 +128,11 @@ type List<T> {
         let v = this.items[this._cursor]
         this._cursor = this._cursor + 1
         return v
+    }
+
+    // Returns a `Stream<T>` over the list's current contents. The stream is backed by a snapshot of the list at the time of the call, so mutations to the list after calling `stream()` don't affect the stream.
+    func stream(): streams.Stream<T> {
+        return new streams.Stream<T>(this.items)
     }
 }
 

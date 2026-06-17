@@ -139,7 +139,7 @@ typeMember : fieldDecl
            ;
 fieldDecl : annotation* memberModifier* softId typeAnnot ('=' expr)?;
 ctorDecl : annotation* memberModifier* 'new' '(' funcParamList? ')' block?;
-methodDecl : annotation* memberModifier* 'func' methodName '(' funcParamList? ')' typeAnnot? block?;
+methodDecl : annotation* memberModifier* 'func' methodName genericParams? '(' funcParamList? ')' typeAnnot? block?;
 castDecl : annotation* memberModifier* 'cast' '(' ID typeAnnot ')' typeAnnot? block;
 memberModifier : 'private' | 'shared';
 

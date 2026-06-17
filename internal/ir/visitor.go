@@ -3044,6 +3044,11 @@ func (v *HirVisitor) VisitMethodDecl(ctx *parser.MethodDeclContext) any {
 	}
 	fn.Name = NameRef{Name: nameText, Span: nameSpan}
 
+	if gp := ctx.GenericParams(); gp != nil {
+		for _, p := range gp.AllGenericParam() {
+			fn.TypeParams = append(fn.TypeParams, v.buildGenericParamDecl(p))
+		}
+	}
 	if paramListCtx := ctx.FuncParamList(); paramListCtx != nil {
 		for _, paramCtx := range paramListCtx.AllFuncParam() {
 			param := v.Visit(paramCtx).(FuncParam)

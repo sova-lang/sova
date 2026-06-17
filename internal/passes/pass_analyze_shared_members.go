@@ -402,6 +402,19 @@ func isTransferableType(pc *PassContext, t ir.TypID) bool {
 		return true
 	case ir.TK_TypeParam:
 		return true
+	case ir.TK_Function:
+		for _, p := range ty.ParamTypes {
+			if p == nil || p.Type == nil {
+				continue
+			}
+			if !isTransferableType(pc, p.Type.Typ) {
+				return false
+			}
+		}
+		if ty.ReturnType != 0 {
+			return isTransferableType(pc, ty.ReturnType)
+		}
+		return true
 	}
 	return false
 }

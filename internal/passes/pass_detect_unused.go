@@ -197,6 +197,20 @@ func (p *PassDetectUnused) trackUsage(pc *PassContext, st ir.Stmt) {
 	case *ir.WhileStmt:
 		p.trackUsageExpr(pc, s.Cond)
 		p.trackUsage(pc, s.Body)
+	case *ir.GoStmt:
+		if s.Call != nil {
+			p.trackUsageExpr(pc, s.Call)
+		}
+		if s.Body != nil {
+			p.trackUsage(pc, s.Body)
+		}
+	case *ir.DeferStmt:
+		if s.Call != nil {
+			p.trackUsageExpr(pc, s.Call)
+		}
+		if s.Body != nil {
+			p.trackUsage(pc, s.Body)
+		}
 	}
 }
 

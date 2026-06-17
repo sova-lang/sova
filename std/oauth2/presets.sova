@@ -1,0 +1,100 @@
+package std/oauth2/presets on backend
+
+import "std/oauth2"
+
+/// std/oauth2/presets ships pre-configured `Provider` records for
+/// the identity providers Sova apps reach for first. Each preset
+/// includes the standard endpoints + the scopes a typical
+/// "log in with X" flow needs (identity + email). When you need
+/// more scopes, copy the preset and tweak:
+///
+/// ```sova
+/// let p = presets.google
+/// p.scopes = p.scopes + ["https://www.googleapis.com/auth/drive.readonly"]
+/// let client = oauth2.client(p, ..., ..., ...)
+/// ```
+///
+/// All presets use PKCE (`usePKCE = true`). If a specific provider
+/// doesn't tolerate the extra parameters (none of the four below
+/// have that problem today, but the OAuth ecosystem moves) the
+/// fallback is `p.usePKCE = false`.
+
+/// discord is the canonical Discord OAuth2 + Identify+Email config.
+/// Scopes:
+///   - `identify`: id, username, discriminator, avatar, …
+///   - `email`: verified email address
+///
+/// Userinfo endpoint returns the Discord `User` shape — keys to
+/// look for: `id`, `username`, `global_name`, `email`, `avatar`.
+let discord: oauth2.Provider = discordProvider()
+
+/// google is the canonical Google OAuth2 + OpenID Connect config
+/// (`openid email profile`). The userinfo endpoint returns the OIDC
+/// standard shape: `sub`, `email`, `email_verified`, `name`,
+/// `given_name`, `family_name`, `picture`, `locale`.
+let google: oauth2.Provider = googleProvider()
+
+/// github is the canonical GitHub OAuth2 config with the
+/// `read:user user:email` scopes.
+///
+/// Two quirks to know:
+///
+///   - GitHub does NOT issue refresh tokens by default — access
+///     tokens are long-lived. `client.refresh(...)` is a no-op
+///     against GitHub.
+///   - The userinfo endpoint returns the user's profile but emails
+///     are at a separate `/user/emails` endpoint (needs the
+///     `user:email` scope). The preset's `userInfoURL` points at
+///     `/user`; call `/user/emails` separately when you need the
+///     verified email list.
+let github: oauth2.Provider = githubProvider()
+
+/// microsoft is the Microsoft Identity Platform (Entra ID, formerly
+/// Azure AD) OAuth2 + OIDC config. The `common` tenant works for
+/// both personal and work/school accounts; for a single-tenant app,
+/// copy the preset and replace `common` with your tenant ID in the
+/// authorization and token URLs.
+///
+/// Userinfo returns OIDC shape — `sub`, `email`, `name`,
+/// `preferred_username`, …
+let microsoft: oauth2.Provider = microsoftProvider()
+
+func discordProvider(): oauth2.Provider {
+    let p = new oauth2.Provider()
+    p.authorizationURL = "https://discord.com/api/oauth2/authorize"
+    p.tokenURL = "https://discord.com/api/oauth2/token"
+    p.userInfoURL = "https://discord.com/api/users/@me"
+    p.scopes = ["identify", "email"]
+    p.usePKCE = true
+    return p
+}
+
+func googleProvider(): oauth2.Provider {
+    let p = new oauth2.Provider()
+    p.authorizationURL = "https://accounts.google.com/o/oauth2/v2/auth"
+    p.tokenURL = "https://oauth2.googleapis.com/token"
+    p.userInfoURL = "https://openidconnect.googleapis.com/v1/userinfo"
+    p.scopes = ["openid", "email", "profile"]
+    p.usePKCE = true
+    return p
+}
+
+func githubProvider(): oauth2.Provider {
+    let p = new oauth2.Provider()
+    p.authorizationURL = "https://github.com/login/oauth/authorize"
+    p.tokenURL = "https://github.com/login/oauth/access_token"
+    p.userInfoURL = "https://api.github.com/user"
+    p.scopes = ["read:user", "user:email"]
+    p.usePKCE = true
+    return p
+}
+
+func microsoftProvider(): oauth2.Provider {
+    let p = new oauth2.Provider()
+    p.authorizationURL = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+    p.tokenURL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+    p.userInfoURL = "https://graph.microsoft.com/oidc/userinfo"
+    p.scopes = ["openid", "email", "profile"]
+    p.usePKCE = true
+    return p
+}

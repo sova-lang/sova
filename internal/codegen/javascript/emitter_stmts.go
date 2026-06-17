@@ -1417,6 +1417,12 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 		}
 		return target.Op(string(s.Op)).Add(e.buildExpr(ctx, pkg, f, s.Value))
 
+	case *ir.IndexAssignmentStmt:
+		recv := e.buildExpr(ctx, pkg, f, s.Receiver)
+		idx := e.buildExpr(ctx, pkg, f, s.Index)
+		rhs := e.buildExpr(ctx, pkg, f, s.Value)
+		return recv.Index(idx).Op(string(s.Op)).Add(rhs)
+
 	case *ir.IfStmt:
 		return e.buildIfStmt(ctx, pkg, f, s)
 	case *ir.SwitchStmt:

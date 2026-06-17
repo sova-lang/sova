@@ -1,0 +1,368 @@
+package std/streams on shared
+
+/// std/streams gives you a chainable, LINQ-style pipeline over
+/// `[]T` and `List<T>`. Build a stream, chain transformations,
+/// drain it with a terminal operation.
+///
+/// ```sova
+/// import "std/streams"
+///
+/// let names = streams.of(users)
+///     .filter(func(u: User): bool { return u.age >= 18 })
+///     .take(10)
+///     .mapTo(func(u: User): string { return u.name })
+///     .toList()
+/// ```
+///
+/// All operations are **eager**: each step builds a new slice in
+/// memory. For streams of a few thousand items this is the right
+/// trade-off (simpler, predictable, no hidden state machines). For
+/// multi-million-item streams you'd want lazy iteration with
+/// fused stages; that's not what this library is.
+///
+/// Factory:
+///
+/// - `streams.of([]T)` from a raw slice.
+///
+/// Terminal operations come in two flavours:
+///
+/// - **Drain to a value**: `count`, `first`, `last`,
+///   `joinToString`, `allMatch`, `anyMatch`, `noneMatch`,
+///   `reduce`, `fold`.
+/// - **Drain to a collection**: `toSlice`, `forEach`.
+
+/// Stream<T> is the chain handle. Treat it as opaque - construct
+/// via `streams.of` or `streams.from`, never via the `new`
+/// keyword directly.
+type Stream<T> {
+    private items: []T = [ ]
+
+    new() { }
+    new(items: []T) { this.items = items }
+
+    /// filter keeps only elements for which `pred` returns true.
+    /// Element order is preserved.
+    func filter(pred: func(v: T): bool): Stream<T> {
+        let out: []T = [ ]
+        for x in this.items {
+            if pred(x) {
+                out = out + [x]
+            }
+        }
+        return new Stream<T>(out)
+    }
+
+    /// mapTo transforms every element through `fn`, producing a
+    /// new `Stream<U>` of the transformed values. Method-level
+    /// generic on `U` keeps the chain typed.
+    func mapTo<U>(fn: func(v: T): U): Stream<U> {
+        let out: []U = [ ]
+        for x in this.items {
+            out = out + [fn(x)]
+        }
+        return new Stream<U>(out)
+    }
+
+    /// flatMapTo applies `fn` to every element and concatenates
+    /// the resulting slices into one flat `Stream<U>`.
+    func flatMapTo<U>(fn: func(v: T): []U): Stream<U> {
+        let out: []U = [ ]
+        for x in this.items {
+            for y in fn(x) {
+                out = out + [y]
+            }
+        }
+        return new Stream<U>(out)
+    }
+
+    /// take keeps the first `n` elements. If the stream has fewer
+    /// than `n` elements, the result holds all of them.
+    func take(n: int): Stream<T> {
+        if n <= 0 {
+            return new Stream<T>([ ])
+        }
+        let out: []T = [ ]
+        let i = 0
+        for x in this.items {
+            if i >= n {
+                break
+            }
+            out = out + [x]
+            i = i + 1
+        }
+        return new Stream<T>(out)
+    }
+
+    /// skip drops the first `n` elements and keeps the rest.
+    func skip(n: int): Stream<T> {
+        if n <= 0 {
+            return new Stream<T>(this.items)
+        }
+        let out: []T = [ ]
+        let i = 0
+        for x in this.items {
+            if i >= n {
+                out = out + [x]
+            }
+            i = i + 1
+        }
+        return new Stream<T>(out)
+    }
+
+    /// takeWhile keeps elements from the start as long as `pred`
+    /// returns true; stops at the first element where it returns
+    /// false.
+    func takeWhile(pred: func(v: T): bool): Stream<T> {
+        let out: []T = [ ]
+        for x in this.items {
+            if !pred(x) {
+                break
+            }
+            out = out + [x]
+        }
+        return new Stream<T>(out)
+    }
+
+    /// skipWhile drops elements from the start as long as `pred`
+    /// returns true; keeps everything from the first false
+    /// onwards (including subsequent trues).
+    func skipWhile(pred: func(v: T): bool): Stream<T> {
+        let out: []T = [ ]
+        let dropping = true
+        for x in this.items {
+            if dropping && pred(x) {
+                continue
+            }
+            dropping = false
+            out = out + [x]
+        }
+        return new Stream<T>(out)
+    }
+
+    /// peek applies `fn` to every element for its side effect and
+    /// passes the stream through unchanged. Useful for debug
+    /// logging mid-chain.
+    func peek(fn: func(v: T)): Stream<T> {
+        for x in this.items {
+            fn(x)
+        }
+        return new Stream<T>(this.items)
+    }
+
+    /// distinctBy returns elements whose `keyFn` value has not
+    /// been seen before in the stream. First occurrence wins;
+    /// element order is preserved.
+    func distinctBy<K>(keyFn: func(v: T): K): Stream<T> {
+        let out: []T = [ ]
+        let seen: []K = [ ]
+        for x in this.items {
+            let k = keyFn(x)
+            let already = false
+            for s in seen {
+                if k == s {
+                    already = true
+                    break
+                }
+            }
+            if !already {
+                seen = seen + [k]
+                out = out + [x]
+            }
+        }
+        return new Stream<T>(out)
+    }
+
+    /// reverse returns the stream in reverse order.
+    func reverse(): Stream<T> {
+        let out: []T = [ ]
+        let n = len(this.items)
+        let i = n - 1
+        while i >= 0 {
+            out = out + [this.items[i]]
+            i = i - 1
+        }
+        return new Stream<T>(out)
+    }
+
+    /// sortedBy returns a copy sorted by `less` (insertion sort -
+    /// stable, O(n^2), fine up to ~a few thousand items). `less`
+    /// returns true when its first argument should come before
+    /// its second.
+    func sortedBy(less: func(a: T, b: T): bool): Stream<T> {
+        let out: []T = [ ]
+        for x in this.items {
+            let inserted = false
+            let tmp: []T = [ ]
+            for y in out {
+                if !inserted && less(x, y) {
+                    tmp = tmp + [x]
+                    inserted = true
+                }
+                tmp = tmp + [y]
+            }
+            if !inserted {
+                tmp = tmp + [x]
+            }
+            out = tmp
+        }
+        return new Stream<T>(out)
+    }
+
+    /// count returns the number of elements in the stream.
+    func count(): int {
+        return len(this.items)
+    }
+
+    /// isEmpty reports whether the stream has zero elements.
+    func isEmpty(): bool {
+        return len(this.items) == 0
+    }
+
+    /// first returns the first element, or `none` when empty.
+    func first(): option<T> {
+        if len(this.items) == 0 {
+            return none
+        }
+        return this.items[0]
+    }
+
+    /// last returns the last element, or `none` when empty.
+    func last(): option<T> {
+        let n = len(this.items)
+        if n == 0 {
+            return none
+        }
+        return this.items[n - 1]
+    }
+
+    /// firstMatch returns the first element for which `pred`
+    /// returns true, or `none` when no such element exists.
+    func firstMatch(pred: func(v: T): bool): option<T> {
+        for x in this.items {
+            if pred(x) {
+                return x
+            }
+        }
+        return none
+    }
+
+    /// allMatch returns true when every element satisfies `pred`,
+    /// or when the stream is empty.
+    func allMatch(pred: func(v: T): bool): bool {
+        for x in this.items {
+            if !pred(x) {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// anyMatch returns true when at least one element satisfies
+    /// `pred`. Always false for an empty stream.
+    func anyMatch(pred: func(v: T): bool): bool {
+        for x in this.items {
+            if pred(x) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// noneMatch returns true when no element satisfies `pred`.
+    /// True for an empty stream.
+    func noneMatch(pred: func(v: T): bool): bool {
+        for x in this.items {
+            if pred(x) {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// reduce combines elements left-to-right with `combine`,
+    /// starting from `seed`. Use this when the accumulator's type
+    /// differs from the element type.
+    func reduce<R>(seed: R, combine: func(acc: R, v: T): R): R {
+        let acc = seed
+        for x in this.items {
+            acc = combine(acc, x)
+        }
+        return acc
+    }
+
+    /// fold is an alias for `reduce` that mirrors the spelling
+    /// other languages use; both walk the stream and accumulate.
+    func fold<R>(seed: R, combine: func(acc: R, v: T): R): R {
+        return this.reduce(seed, combine)
+    }
+
+    /// forEach applies `fn` to each element for its side effect.
+    func forEach(fn: func(v: T)) {
+        for x in this.items {
+            fn(x)
+        }
+    }
+
+    /// toSlice drains the stream into a `[]T`.
+    func toSlice(): []T {
+        let out: []T = [ ]
+        for x in this.items {
+            out = out + [x]
+        }
+        return out
+    }
+
+    /// joinToString concatenates elements via `render` joined by
+    /// `sep`. The most common terminal for stringly streams.
+    func joinToString(sep: string, render: func(v: T): string): string {
+        let out = ""
+        let first = true
+        for x in this.items {
+            if first {
+                out = render(x)
+                first = false
+            } else {
+                out = out + sep + render(x)
+            }
+        }
+        return out
+    }
+
+    /// groupBy buckets elements by `keyFn`. Returns a Sova `map<K, []T>`
+    /// keyed by the value `keyFn(x)` returned, with bucket order
+    /// reflecting first-encounter of each key.
+    func groupBy<K>(keyFn: func(v: T): K): map<K, []T> {
+        let out: map<K, []T> = { }
+        for x in this.items {
+            let k = keyFn(x)
+            let bucket = out[k]
+            out[k] = bucket + [x]
+        }
+        return out
+    }
+}
+
+/// of builds a `Stream<T>` from a raw slice. The factory the
+/// majority of streams start from.
+func of<T>(items: []T): Stream<T> {
+    return new Stream<T>(items)
+}
+
+/// empty builds a stream with no elements. Useful for default
+/// values and reduction seeds.
+func empty<T>(): Stream<T> {
+    return new Stream<T>([ ])
+}
+
+/// concat joins two streams end-to-end into a single
+/// `Stream<T>`. Both inputs must have the same element type.
+func concat<T>(a: Stream<T>, b: Stream<T>): Stream<T> {
+    let out: []T = [ ]
+    for x in a.toSlice() {
+        out = out + [x]
+    }
+    for x in b.toSlice() {
+        out = out + [x]
+    }
+    return new Stream<T>(out)
+}

@@ -1581,6 +1581,15 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 			return tt.TypError()
 		}
 		dstTy := x.Target.Typ
+		if srcTy != 0 {
+			if srcInfo, ok := tt.GetByID(srcTy); ok && srcInfo.Kind == ir.TK_Option {
+				if dstInfo, ok2 := tt.GetByID(dstTy); !ok2 || dstInfo.Kind != ir.TK_Option {
+					pc.Diag.Report(diag.ErrCastFromOption, x.Span(), typeName(pc, srcInfo.ElemType), typeName(pc, dstTy))
+					x.SetType(tt.TypError())
+					return tt.TypError()
+				}
+			}
+		}
 		if srcTy != 0 && srcTy != tt.PrimAny() && dstTy != tt.PrimAny() && srcTy != dstTy {
 			if !isPrimitiveConversionAllowed(tt, srcTy, dstTy) {
 				if ok, _ := isTypeAssignable(tt, dstTy, srcTy); !ok {
@@ -2530,6 +2539,31 @@ func isTypeAssignable(tt *ir.TypeTable, dst, src ir.TypID) (bool, string) {
 			for _, impl := range srcTy.StructImplements {
 				if impl == dst {
 					return true, "struct implements interface"
+				}
+			}
+		}
+	}
+
+	if dstTy, _ := tt.GetByID(dst); dstTy != nil && dstTy.Kind == ir.TK_Function {
+		if srcTy, _ := tt.GetByID(src); srcTy != nil && srcTy.Kind == ir.TK_Function {
+			if len(dstTy.ParamTypes) == len(srcTy.ParamTypes) {
+				allOK := true
+				for i := range dstTy.ParamTypes {
+					dp := dstTy.ParamTypes[i]
+					sp := srcTy.ParamTypes[i]
+					if dp == nil || sp == nil || dp.Type == nil || sp.Type == nil {
+						allOK = false
+						break
+					}
+					if ok, _ := isTypeAssignable(tt, sp.Type.Typ, dp.Type.Typ); !ok {
+						allOK = false
+						break
+					}
+				}
+				if allOK {
+					if ok, _ := isTypeAssignable(tt, dstTy.ReturnType, srcTy.ReturnType); ok {
+						return true, "function type compatible (param contravariant, return covariant under type-param erasure)"
+					}
 				}
 			}
 		}

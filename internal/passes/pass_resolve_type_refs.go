@@ -187,6 +187,10 @@ func (p *PassResolveTypeRefs) resolveStmts(tt *ir.TypeTable, stmts []ir.Stmt) {
 			}
 			for _, method := range s.Methods {
 				fn := method.Func
+				methodPrevMap := p.genericParamMap
+				if len(fn.TypeParams) > 0 {
+					p.genericParamMap = mergeGenericParams(methodPrevMap, p.currentPkgPath+":"+s.Name.Name+"."+fn.Name.Name, fn.TypeParams, tt)
+				}
 				if fn.ReturnType != nil {
 					fn.ReturnType.Typ = p.resolveTypeRef(tt, fn.ReturnType)
 				}
@@ -201,6 +205,7 @@ func (p *PassResolveTypeRefs) resolveStmts(tt *ir.TypeTable, stmts []ir.Stmt) {
 				if fn.Body != nil {
 					p.resolveStmts(tt, ir.BlockStmts(fn.Body))
 				}
+				p.genericParamMap = methodPrevMap
 			}
 			for _, cast := range s.Casts {
 				if cast.Param != nil && cast.Param.Type != nil {

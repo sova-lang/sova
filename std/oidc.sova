@@ -1,0 +1,219 @@
+package std/oidc on backend
+
+import "std/fetch"
+import "std/json"
+import "std/sync"
+import "std/time"
+
+/// std/oidc is the OpenID Connect verification layer that sits on
+/// top of `std/oauth2`. While `oauth2` gets you an `id_token` JWT
+/// during the token exchange, it does NOT verify the token — the
+/// string just rides back from a trusted endpoint. To trust
+/// `sub` / `email` / `email_verified` for authorization decisions
+/// you must verify the signature against the provider's JWKS,
+/// then check `iss` / `aud` / `exp`. This module does both.
+///
+/// The flow:
+///
+/// ```sova
+/// import "std/oidc"
+///
+/// let google = oidc.verifier(
+///     "https://accounts.google.com",
+///     env.get("GOOGLE_CLIENT_ID"),
+/// )
+///
+/// let token = client.exchange(code, verifier)
+/// let claims = google.verify(token.idToken)
+/// if claims == none {
+///     return http.redirectTo("/login?error=invalid_id_token")
+/// }
+/// let sub = claims!.sub
+/// ```
+///
+/// The `Verifier` caches the provider's JWKS in-memory for one
+/// hour per instance. Hold it at module scope (or behind your own
+/// singleton) so the cache is shared across requests.
+///
+/// Supported signing algorithms: RS256 (every major OIDC provider
+/// uses it; Google, Microsoft, Apple, Auth0 all default to it).
+/// ES256 and PS256 are not yet implemented — open an issue if you
+/// need them.
+
+/// IdToken carries the verified claims of an OIDC `id_token`.
+/// Standard OIDC fields are surfaced as typed members; everything
+/// the provider sent is also available verbatim via `claims` for
+/// provider-specific fields (Google's `hd`, Microsoft's `tid`,
+/// etc.).
+type IdToken {
+    sub: string = ""
+    iss: string = ""
+    aud: string = ""
+    exp: int = 0
+    iat: int = 0
+    nonce: string = ""
+    email: string = ""
+    emailVerified: bool = false
+    name: string = ""
+    picture: string = ""
+    claims: map<string, any> = { }
+}
+
+/// Verifier validates `id_token` JWTs issued by a single OIDC
+/// provider. Construct one per (issuer, audience) pair and reuse
+/// it; the embedded JWKS cache means subsequent verifications
+/// avoid the JWKS round-trip for up to one hour.
+///
+/// The `audience` is your OAuth client ID — the provider stamps
+/// every `id_token` with this value in its `aud` claim, and the
+/// verifier rejects tokens minted for a different application.
+type Verifier {
+    issuer: string = ""
+    audience: string = ""
+    private _jwksUri: string = ""
+    private _jwks: string = ""
+    private _jwksAt: int = 0
+    private _lock: sync.Mutex = new sync.Mutex()
+
+    /// verify checks the JWT signature against the provider's
+    /// current JWKS, then validates `iss`, `aud`, and `exp` against
+    /// the values this verifier was constructed with. On success,
+    /// returns a populated `IdToken`; on any failure (bad
+    /// signature, wrong issuer, wrong audience, expired,
+    /// unsupported algorithm, JWKS unreachable), returns `none`.
+    func verify(idToken: string): option<IdToken> {
+        if idToken == "" {
+            return none
+        }
+        let jwks = this.ensureJwks()
+        if jwks == "" {
+            return none
+        }
+        let claimsJson = __oidcVerify(idToken, jwks, this.issuer, this.audience, time.now())
+        if claimsJson == "" {
+            return none
+        }
+        let decoded = json.decode(claimsJson)
+        if decoded == none {
+            return none
+        }
+        return parseIdToken(decoded as map<string, any>)
+    }
+
+    private func ensureJwks(): string {
+        this._lock.lock()
+        defer this._lock.unlock()
+        let now = time.now()
+        if this._jwks != "" && now - this._jwksAt < 3600 {
+            return this._jwks
+        }
+        let jwksUri = this.ensureJwksUri()
+        if jwksUri == "" {
+            return ""
+        }
+        let resp = fetch.request("GET", jwksUri).send()
+        if !resp.ok() {
+            return this._jwks
+        }
+        this._jwks = resp.body
+        this._jwksAt = now
+        return this._jwks
+    }
+
+    private func ensureJwksUri(): string {
+        if this._jwksUri != "" {
+            return this._jwksUri
+        }
+        let url = trimTrailingSlash(this.issuer) + "/.well-known/openid-configuration"
+        let resp = fetch.request("GET", url).send()
+        if !resp.ok() {
+            return ""
+        }
+        let decoded = json.decode(resp.body)
+        if decoded == none {
+            return ""
+        }
+        this._jwksUri = __oidcString(decoded, "jwks_uri")
+        return this._jwksUri
+    }
+}
+
+/// verifier constructs a `Verifier` bound to a single issuer +
+/// audience. Hold the returned value at module scope so its
+/// JWKS cache is shared across requests.
+func verifier(issuer: string, audience: string): Verifier {
+    let v = new Verifier()
+    v.issuer = issuer
+    v.audience = audience
+    return v
+}
+
+func parseIdToken(claims: map<string, any>): option<IdToken> {
+    let t = new IdToken()
+    t.claims = claims
+    t.sub = __oidcString(claims, "sub")
+    t.iss = __oidcString(claims, "iss")
+    t.aud = __oidcAudString(claims, "aud")
+    t.exp = __oidcInt(claims, "exp")
+    t.iat = __oidcInt(claims, "iat")
+    t.nonce = __oidcString(claims, "nonce")
+    t.email = __oidcString(claims, "email")
+    t.emailVerified = __oidcBool(claims, "email_verified")
+    t.name = __oidcString(claims, "name")
+    t.picture = __oidcString(claims, "picture")
+    return t
+}
+
+func trimTrailingSlash(s: string): string {
+    if len(s) == 0 {
+        return s
+    }
+    if s[len(s) - 1] == 47 {
+        return s[0:len(s) - 1]
+    }
+    return s
+}
+
+extern {
+    /// __oidcVerify runs the full OIDC id_token verification in
+    /// one Go call: split the JWT, decode the header, look up the
+    /// signing key by `kid` against the provided JWKS document,
+    /// verify the RS256 signature, then validate the `iss`/`aud`/
+    /// `exp` claims against the expected values. Returns the
+    /// verified claims as JSON on success, or the empty string on
+    /// any validation failure. Caller MUST treat an empty string
+    /// as "token rejected" and never trust the contents otherwise.
+    func __oidcVerify(idToken: string, jwksJson: string, expectedIssuer: string, expectedAudience: string, nowUnix: int): string = {
+        backend("crypto/rsa"): "func(token string, jwksJson string, expectedIss string, expectedAud string, nowUnix int64) string { parts := strings.Split(token, \".\"); if len(parts) != 3 { return \"\" }; headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0]); if err != nil { return \"\" }; var header struct { Kid string `json:\"kid\"`; Alg string `json:\"alg\"` }; if json.Unmarshal(headerBytes, &header) != nil { return \"\" }; if header.Alg != \"RS256\" { return \"\" }; var doc struct { Keys []struct { Kid string `json:\"kid\"`; Kty string `json:\"kty\"`; N string `json:\"n\"`; E string `json:\"e\"` } `json:\"keys\"` }; if json.Unmarshal([]byte(jwksJson), &doc) != nil { return \"\" }; var pub *rsa.PublicKey; for _, k := range doc.Keys { if k.Kty != \"RSA\" { continue }; if header.Kid != \"\" && k.Kid != header.Kid { continue }; nb, err := base64.RawURLEncoding.DecodeString(k.N); if err != nil { continue }; eb, err := base64.RawURLEncoding.DecodeString(k.E); if err != nil { continue }; eInt := 0; for _, b := range eb { eInt = eInt<<8 | int(b) }; if eInt == 0 { continue }; pub = &rsa.PublicKey{N: new(big.Int).SetBytes(nb), E: eInt}; break }; if pub == nil { return \"\" }; sig, err := base64.RawURLEncoding.DecodeString(parts[2]); if err != nil { return \"\" }; h := sha256.Sum256([]byte(parts[0]+\".\"+parts[1])); if rsa.VerifyPKCS1v15(pub, crypto.SHA256, h[:], sig) != nil { return \"\" }; payload, err := base64.RawURLEncoding.DecodeString(parts[1]); if err != nil { return \"\" }; var claims map[string]any; if json.Unmarshal(payload, &claims) != nil { return \"\" }; if iss, _ := claims[\"iss\"].(string); iss != expectedIss { return \"\" }; audOK := false; switch a := claims[\"aud\"].(type) { case string: audOK = (a == expectedAud); case []any: for _, v := range a { if s, ok := v.(string); ok && s == expectedAud { audOK = true; break } } }; if !audOK { return \"\" }; expOK := false; if v, ok := claims[\"exp\"].(float64); ok { expOK = int64(v) > nowUnix }; if !expOK { return \"\" }; out, err := json.Marshal(claims); if err != nil { return \"\" }; return string(out) }"
+    }
+
+    /// __oidcString reads a string-typed field from a decoded JSON
+    /// map without forcing the Sova caller through `any`-indexing
+    /// gymnastics. Returns the empty string on miss or type
+    /// mismatch.
+    func __oidcString(decoded: any, field: string): string = {
+        backend: "func(d any, k string) string { m, ok := d.(map[string]any); if !ok { return \"\" }; v, ok := m[k]; if !ok { return \"\" }; s, ok := v.(string); if !ok { return \"\" }; return s }"
+    }
+
+    /// __oidcInt reads an int-typed field, accepting either Go's
+    /// JSON-default `float64` or a raw `int64`.
+    func __oidcInt(decoded: any, field: string): int = {
+        backend: "func(d any, k string) int64 { m, ok := d.(map[string]any); if !ok { return 0 }; v, ok := m[k]; if !ok { return 0 }; switch n := v.(type) { case float64: return int64(n); case int64: return n; case int: return int64(n) }; return 0 }"
+    }
+
+    /// __oidcBool reads a bool-typed field. JSON-decoded booleans
+    /// always come back as native `bool` so no type-coercion
+    /// fallback is needed.
+    func __oidcBool(decoded: any, field: string): bool = {
+        backend: "func(d any, k string) bool { m, ok := d.(map[string]any); if !ok { return false }; v, ok := m[k]; if !ok { return false }; b, ok := v.(bool); if !ok { return false }; return b }"
+    }
+
+    /// __oidcAudString reads the `aud` claim, which OIDC permits
+    /// to be either a single string or an array of strings.
+    /// Returns the first element when the claim is an array, the
+    /// raw value when it is a string, and the empty string
+    /// otherwise.
+    func __oidcAudString(decoded: any, field: string): string = {
+        backend: "func(d any, k string) string { m, ok := d.(map[string]any); if !ok { return \"\" }; v, ok := m[k]; if !ok { return \"\" }; switch x := v.(type) { case string: return x; case []any: if len(x) == 0 { return \"\" }; if s, ok := x[0].(string); ok { return s } }; return \"\" }"
+    }
+}

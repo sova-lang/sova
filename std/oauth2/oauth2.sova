@@ -1,0 +1,251 @@
+package std/oauth2 on backend
+
+import "std/fetch"
+import "std/json"
+
+/// std/oauth2 is the consumer (client) side of OAuth 2.0 — the
+/// flow where YOUR app delegates user authentication to a third-
+/// party identity provider (Discord, Google, GitHub, Microsoft,
+/// etc.). For the *provider* side (your app issues tokens to other
+/// apps), see `std/oauth2/server` (planned).
+///
+/// The flow this library implements is **Authorization Code with
+/// PKCE** (RFC 6749 + RFC 7636), the modern recommendation for
+/// every client type. Native, browser, server-side — all get PKCE.
+/// The four steps:
+///
+///   1. **Build the authorize URL** — `client.authorizeURL(state,
+///      verifier)`. Redirect the user's browser there.
+///   2. **Provider sends them back** to your redirect URI with a
+///      `?code=...&state=...` query string and (typically) the same
+///      cookies the browser had before.
+///   3. **Exchange the code for a token** — `client.exchange(code,
+///      verifier)`. Server-to-server POST; never expose
+///      `clientSecret` to the browser.
+///   4. **Fetch user info** — `client.userInfo(accessToken)`.
+///      Returns raw JSON; shape is provider-specific (see
+///      presets/<name>.md when in doubt).
+///
+/// The library is `on backend` because the token exchange + every
+/// API call carries the `clientSecret`. Frontend code triggers the
+/// flow by calling a wired backend function (typically a wire that
+/// returns `http.Redirect` to the authorize URL).
+
+/// Provider describes the endpoints of an OAuth 2.0 / OIDC
+/// identity provider. Construct directly for a custom provider, or
+/// use one of the presets in `std/oauth2/presets`.
+///
+/// `usePKCE` defaults to true — PKCE costs nothing for the
+/// provider but defends against authorization code interception,
+/// and every modern provider supports it. Disable only when
+/// pointing at a legacy provider that breaks on the extra
+/// parameters.
+type Provider {
+    authorizationURL: string = ""
+    tokenURL: string = ""
+    userInfoURL: string = ""
+    scopes: []string = [ ]
+    usePKCE: bool = true
+}
+
+/// Token is the response from the provider's token endpoint.
+/// `accessToken` is what you pass on subsequent API calls.
+/// `refreshToken` is present when the provider supports it
+/// (Discord and Google issue them with `access_type=offline`-ish
+/// equivalents; GitHub doesn't issue them at all by default).
+/// `idToken` is populated only for providers that speak OpenID
+/// Connect AND when the `openid` scope was requested.
+type Token {
+    accessToken: string = ""
+    refreshToken: string = ""
+    tokenType: string = ""
+    expiresIn: int = 0
+    scope: string = ""
+    idToken: string = ""
+    raw: string = ""
+}
+
+/// Client binds a `Provider` together with your app's credentials
+/// + redirect URI. Construct via the package-level `client(...)`
+/// factory and call its methods to drive the flow.
+///
+/// The client carries `clientSecret` — keep instances of this type
+/// strictly backend-side (the `on backend` package marker enforces
+/// this; importing from frontend code is a compile error).
+type Client {
+    provider: Provider = new Provider()
+    clientId: string = ""
+    clientSecret: string = ""
+    redirectURI: string = ""
+
+    /// authorizeURL builds the URL to redirect the user's browser
+    /// to. `state` is a CSRF token you persist (in a cookie) and
+    /// re-check on the callback — `random.hex(16)` is fine.
+    /// `codeVerifier` is the PKCE secret you persist alongside
+    /// state (same cookie pattern); pass an empty string to skip
+    /// PKCE for providers that don't support it. `newCodeVerifier()`
+    /// generates a fresh one.
+    func authorizeURL(state: string, codeVerifier: string): string {
+        let url = this.provider.authorizationURL
+        url = url + "?response_type=code"
+        url = url + "&client_id=" + fetch.urlEncode(this.clientId)
+        url = url + "&redirect_uri=" + fetch.urlEncode(this.redirectURI)
+        url = url + "&state=" + fetch.urlEncode(state)
+        if len(this.provider.scopes) > 0 {
+            url = url + "&scope=" + fetch.urlEncode(joinScopes(this.provider.scopes))
+        }
+        if this.provider.usePKCE && codeVerifier != "" {
+            url = url + "&code_challenge=" + codeChallenge(codeVerifier)
+            url = url + "&code_challenge_method=S256"
+        }
+        return url
+    }
+
+    /// exchange swaps an authorization `code` for a `Token`. Pass
+    /// the same `codeVerifier` you used to build the authorize URL
+    /// (or "" if PKCE wasn't used). Returns a Token with empty
+    /// `accessToken` on failure — check `token.accessToken != ""`
+    /// before using it.
+    func exchange(code: string, codeVerifier: string): Token {
+        let body = "grant_type=authorization_code"
+        body = body + "&code=" + fetch.urlEncode(code)
+        body = body + "&redirect_uri=" + fetch.urlEncode(this.redirectURI)
+        body = body + "&client_id=" + fetch.urlEncode(this.clientId)
+        body = body + "&client_secret=" + fetch.urlEncode(this.clientSecret)
+        if codeVerifier != "" {
+            body = body + "&code_verifier=" + fetch.urlEncode(codeVerifier)
+        }
+        let resp = fetch.postForm(this.provider.tokenURL, body)
+        return parseTokenResponse(resp)
+    }
+
+    /// refresh exchanges a refresh token for a fresh access token.
+    /// The provider may rotate the refresh token (Google does); the
+    /// returned Token's `refreshToken` may differ from the one you
+    /// passed in — always overwrite your stored copy.
+    func refresh(refreshToken: string): Token {
+        let body = "grant_type=refresh_token"
+        body = body + "&refresh_token=" + fetch.urlEncode(refreshToken)
+        body = body + "&client_id=" + fetch.urlEncode(this.clientId)
+        body = body + "&client_secret=" + fetch.urlEncode(this.clientSecret)
+        let resp = fetch.postForm(this.provider.tokenURL, body)
+        return parseTokenResponse(resp)
+    }
+
+    /// userInfo fetches the provider's `/userinfo` endpoint with
+    /// the given access token. Returns the raw decoded JSON as
+    /// `any`; the field shape is provider-specific so navigate
+    /// with `as map<string, any>` and `[key]` lookups. Returns
+    /// `none` on transport failure or non-2xx response.
+    func userInfo(accessToken: string): option<any> {
+        if this.provider.userInfoURL == "" {
+            return none
+        }
+        let resp = fetch.request("GET", this.provider.userInfoURL).bearer(accessToken).send()
+        if !resp.ok() {
+            return none
+        }
+        return json.decode(resp.body)
+    }
+}
+
+/// client builds a `Client` from a `Provider` + credentials. The
+/// most common construction pattern:
+///
+/// ```sova
+/// import "std/oauth2"
+/// import "std/oauth2/presets"
+/// import "std/env"
+///
+/// let discord = oauth2.client(
+///     presets.discord,
+///     env.get("DISCORD_CLIENT_ID"),
+///     env.get("DISCORD_SECRET"),
+///     "https://my.app/login/discord/callback",
+/// )
+/// ```
+func client(provider: Provider, clientId: string, clientSecret: string, redirectURI: string): Client {
+    let c = new Client()
+    c.provider = provider
+    c.clientId = clientId
+    c.clientSecret = clientSecret
+    c.redirectURI = redirectURI
+    return c
+}
+
+/// newCodeVerifier generates a fresh PKCE code verifier per RFC
+/// 7636: 43 cryptographically-random characters from the
+/// URL-safe-base64 alphabet. Persist this alongside `state` (same
+/// cookie) and pass it back into `client.exchange(code, verifier)`.
+func newCodeVerifier(): string {
+    return __codeVerifier()
+}
+
+/// codeChallenge derives the `code_challenge` value (PKCE S256
+/// transform) from a `code_verifier`: base64url(SHA-256(verifier)).
+/// `client.authorizeURL` calls this internally — you typically
+/// only need it when constructing the authorize URL by hand.
+func codeChallenge(verifier: string): string {
+    return __codeChallenge(verifier)
+}
+
+func joinScopes(scopes: []string): string {
+    let out = ""
+    let i = 0
+    while i < len(scopes) {
+        if i > 0 {
+            out = out + " "
+        }
+        out = out + scopes[i]
+        i = i + 1
+    }
+    return out
+}
+
+func parseTokenResponse(resp: fetch.Response): Token {
+    let t = new Token()
+    t.raw = resp.body
+    if !resp.ok() {
+        return t
+    }
+    let decoded = json.decode(resp.body)
+    t.accessToken = __tokenString(decoded, "access_token")
+    t.refreshToken = __tokenString(decoded, "refresh_token")
+    t.tokenType = __tokenString(decoded, "token_type")
+    t.scope = __tokenString(decoded, "scope")
+    t.idToken = __tokenString(decoded, "id_token")
+    t.expiresIn = __tokenInt(decoded, "expires_in")
+    return t
+}
+
+extern {
+    /// __codeVerifier draws 32 cryptographically-secure random
+    /// bytes and base64url-encodes them, producing the 43-char
+    /// PKCE verifier RFC 7636 mandates. The full
+    /// `[A-Z][a-z][0-9]-._~` alphabet is satisfied by the
+    /// URL-safe-base64 alphabet plus the unpadded form.
+    func __codeVerifier(): string = {
+        backend("crypto/rand"): "func() string { b := make([]byte, 32); _, _ = rand.Read(b); return base64.RawURLEncoding.EncodeToString(b) }"
+    }
+
+    /// __codeChallenge runs the S256 PKCE transform:
+    /// base64url(SHA-256(verifier)). Both `crypto/sha256` and
+    /// `encoding/base64` are stdlib so goimports resolves them.
+    func __codeChallenge(verifier: string): string = {
+        backend("crypto/sha256"): "func(v string) string { h := sha256.Sum256([]byte(v)); return base64.RawURLEncoding.EncodeToString(h[:]) }"
+    }
+
+    /// __tokenString and __tokenInt extract typed fields from a
+    /// JSON-decoded token response without forcing the Sova-side
+    /// caller to navigate `any`-typed map indexing. Each accepts
+    /// the raw decoded value (which may be `none` on parse
+    /// failure) and the field name, returning the typed value or
+    /// the zero value when the field is absent / mistyped.
+    func __tokenString(decoded: any, field: string): string = {
+        backend: "func(d any, k string) string { m, ok := d.(map[string]any); if !ok { return \"\" }; v, ok := m[k]; if !ok { return \"\" }; s, ok := v.(string); if !ok { return \"\" }; return s }"
+    }
+
+    func __tokenInt(decoded: any, field: string): int = {
+        backend: "func(d any, k string) int64 { m, ok := d.(map[string]any); if !ok { return 0 }; v, ok := m[k]; if !ok { return 0 }; switch n := v.(type) { case float64: return int64(n); case int64: return n; case int: return int64(n) }; return 0 }"
+    }
+}

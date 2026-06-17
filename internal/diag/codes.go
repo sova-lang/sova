@@ -45,6 +45,7 @@ var (
 	ErrExternModuleVersionInvalid     = templateErr(CategorySemantic, "extern Go module '%s' has an invalid version pin '%s': expected a Go module version such as 'v1.2.3', 'v1.2.3-pre', or 'latest'")
 	ErrImportSideMismatch             = templateErr(CategorySemantic, "cannot import %s package '%s' from a %s file: %s files may only import %s packages")
 	ErrCastNotAllowed                 = templateErr(CategorySemantic, "cannot cast %s to %s: explicit `as` is only supported between compatible concrete types or when one side is `any`")
+	ErrCastFromOption                 = templateErr(CategorySemantic, "cannot cast option<%s> directly to %s: unwrap the option first with `value!` (force-unwrap) or `value ?? fallback` (default), then cast")
 	ErrImplicitAnyNarrowing           = templateErr(CategorySemantic, "implicit conversion from `any` to %s is not allowed; use an explicit cast (`value as %s` or `value as? %s`)")
 	ErrPrivateFieldAccess             = templateErr(CategorySemantic, "field '%s' on type '%s' is private and may only be accessed from the type's own methods (via `this.%s`)")
 	ErrPrivateSymbolAccess            = templateErr(CategorySemantic, "'%s' is package-private (names starting with a single `_` are not visible outside their declaring package); declared in '%s'")
