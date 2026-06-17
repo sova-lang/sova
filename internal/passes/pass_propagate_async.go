@@ -410,6 +410,17 @@ func (p *PassPropagateAsync) upgradeSymTypeToAsync(pc *PassContext, pkg *ir.Pack
 	}
 	newTyp := pc.Types.AsyncFuncOf(ft.ParamTypes, ft.ReturnType)
 	pkg.Syms.SetType(sym, newTyp)
+	
+	for _, ty := range pc.Types.All() {
+		if ty == nil || ty.Kind != ir.TK_Struct {
+			continue
+		}
+		for i := range ty.StructMethods {
+			if ty.StructMethods[i].Sym == sym {
+				ty.StructMethods[i].FuncTyp = newTyp
+			}
+		}
+	}
 }
 
 func (p *PassPropagateAsync) bodyHasAsyncCall(pc *PassContext, pkg *ir.PackageContext, b *ir.BlockStmt) bool {
@@ -823,6 +834,22 @@ func (p *PassPropagateAsync) exprCallsAsync(pc *PassContext, pkg *ir.PackageCont
 }
 
 func (p *PassPropagateAsync) calleeIsAsync(pc *PassContext, pkg *ir.PackageContext, call *ir.FuncCallExpr) bool {
+	if fa, ok := call.Callee.(*ir.FieldAccessExpr); ok && len(fa.Fields) > 0 {
+		recvTy, ok := pc.Types.GetByID(fa.Expr.GetType())
+		if ok && recvTy.Kind == ir.TK_Struct {
+			leaf := fa.Fields[len(fa.Fields)-1].Name
+			for _, m := range recvTy.StructMethods {
+				if m.Name != leaf {
+					continue
+				}
+				if mt, ok := pc.Types.GetByID(m.FuncTyp); ok && mt.IsAsync {
+					call.IsAsync = true
+					return true
+				}
+				return false
+			}
+		}
+	}
 	sym := p.calleeSym(call.Callee)
 	if sym == 0 {
 		if ft, ok := pc.Types.GetByID(call.Callee.GetType()); ok && ft.Kind == ir.TK_Function && ft.IsAsync {

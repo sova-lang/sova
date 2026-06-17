@@ -721,6 +721,9 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 						pc.Pkg.Syms.SetType(param.Name.Sym, pc.Types.TypError())
 						pc.Diag.Report(diag.ErrTypeInferenceFailed, param.Name.Span, fmt.Sprintf("ctor parameter '%s'", param.Name.Name))
 					}
+					if param.Default != nil {
+						_ = p.synthesizeTypeFromExpr(pc, param.Default)
+					}
 				}
 				funcTyp := pc.Types.FuncOf(ctor.Params, structTyp)
 				pc.Pkg.Syms.SetType(ctor.Sym, funcTyp)
@@ -2311,6 +2314,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 		if len(x.Args) > 0 {
 			matchedSym := ir.SymID(0)
 			var matchedArgs []ir.FuncCallArg
+			bestScore := -1
 			for _, ci := range ty.StructCtors {
 				ftDef, ok := tt.GetByID(ci.FuncTyp)
 				if !ok {
@@ -2321,9 +2325,20 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				if !ok {
 					continue
 				}
-				matchedSym = ci.Sym
-				matchedArgs = resolved
-				break
+				score := 0
+				for _, p := range params {
+					if p == nil || p.Type == nil {
+						continue
+					}
+					if p.Type.Typ != tt.PrimAny() {
+						score++
+					}
+				}
+				if score > bestScore {
+					bestScore = score
+					matchedSym = ci.Sym
+					matchedArgs = resolved
+				}
 			}
 			if matchedSym == 0 {
 				pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), "constructor", x.TypeName.Name)

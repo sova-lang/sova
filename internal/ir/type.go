@@ -331,6 +331,18 @@ func (t *TypeTable) GetByID(id TypID) (*Type, bool) {
 	return typ, exists
 }
 
+// All returns a snapshot of every registered type. Callers should treat the result as
+// read-only-ish: mutating fields on the returned `*Type` pointers IS the way passes update
+// the universe (e.g. propagate_async refreshes cached method async-ness here), but the slice
+// itself is a copy so concurrent registrations during iteration don't disturb the walk.
+func (t *TypeTable) All() []*Type {
+	out := make([]*Type, 0, len(t.byID))
+	for _, ty := range t.byID {
+		out = append(out, ty)
+	}
+	return out
+}
+
 // GetByType returns the ID associated with the given type key, if it exists.
 func (t *TypeTable) GetByType(key TypeKey) (TypID, bool) {
 	id, exists := t.types[key]
