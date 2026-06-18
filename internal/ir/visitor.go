@@ -3166,10 +3166,21 @@ func (v *HirVisitor) collectAnnotations(ctxs []parser.IAnnotationContext) []Anno
 			tok := id.GetSymbol()
 			anno.Name = NameRef{Name: tok.GetText(), Span: v.spanFromTok(tok)}
 		}
-		for _, argCtx := range ac.AllExpr() {
-			if e, ok := v.Visit(argCtx).(Expr); ok {
-				anno.Args = append(anno.Args, e)
+		for _, argCtx := range ac.AllAnnotationArg() {
+			exprCtx := argCtx.Expr()
+			if exprCtx == nil {
+				continue
 			}
+			e, ok := v.Visit(exprCtx).(Expr)
+			if !ok {
+				continue
+			}
+			name := ""
+			if sid := argCtx.SoftId(); sid != nil {
+				name = sid.GetText()
+			}
+			anno.Args = append(anno.Args, e)
+			anno.ArgNames = append(anno.ArgNames, name)
 		}
 		out = append(out, anno)
 	}

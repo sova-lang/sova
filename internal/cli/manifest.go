@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"sova/internal/termui"
 
 	"github.com/BurntSushi/toml"
 )
@@ -25,9 +26,22 @@ type manifestProject struct {
 }
 
 type manifestBuild struct {
-	OutputDir  string       `toml:"output_dir"`
-	OutputName string       `toml:"output_name"`
-	SCSS       manifestSCSS `toml:"scss"`
+	OutputDir  string            `toml:"output_dir"`
+	OutputName string            `toml:"output_name"`
+	SCSS       manifestSCSS      `toml:"scss"`
+	Codegen    []manifestCodegen `toml:"codegen"`
+}
+
+// manifestCodegen is one `[[build.codegen]]` table — a pre-build hook that runs an external command to generate Sova source files or assets before the compiler kicks in. Mirrors the Go-`go:generate` pattern: dumb runner, no plugin API, no IPC. The runner re-executes the command when any of `inputs` is newer than any of `outputs` (or when `outputs` is missing entirely); set `always = true` to force every build, or `manual = true` to require an explicit `sova generate` invocation.
+//
+// Path semantics: relative paths are resolved against the project root (the directory containing sova.toml). `outputs` may be either files or directories — a directory's newest-file mtime is used for staleness, and `outputs = ["assets/fonts/"]` works for generators that emit many files into a tree. Globs are not supported (deliberately — they'd hide which files are real outputs); list them explicitly or point at the containing directory.
+type manifestCodegen struct {
+	Name    string   `toml:"name"`
+	Command string   `toml:"command"`
+	Inputs  []string `toml:"inputs"`
+	Outputs []string `toml:"outputs"`
+	Always  bool     `toml:"always"`
+	Manual  bool     `toml:"manual"`
 }
 
 type manifestWire struct {
@@ -120,5 +134,12 @@ func applyManifest(cfg *BuildConfig, m manifest) {
 	}
 	if m.Build.SCSS.Enabled != nil && !*m.Build.SCSS.Enabled {
 		cfg.SCSSDisabled = true
+	}
+	if len(m.Build.Codegen) > 0 {
+		steps, errs := resolveCodegenSteps(m.Build.Codegen, cfg.SourceDir)
+		for _, e := range errs {
+			termui.WarnMsg(e.Error())
+		}
+		cfg.Codegen = steps
 	}
 }

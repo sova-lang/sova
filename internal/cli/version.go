@@ -38,6 +38,11 @@ func newVersionCmd() *cobra.Command {
 			}
 			fmt.Printf("  go:     %s\n", runtime.Version())
 			fmt.Printf("  os:     %s/%s\n", runtime.GOOS, runtime.GOARCH)
+			fmt.Println("\nhost toolchain:")
+			for _, st := range []ToolStatus{probeGo(), probeNode(), probeNPM()} {
+				fmt.Printf("  %-7s %s\n", st.Name+":", st.summary())
+			}
+			fmt.Println("\nrun `sova doctor` for diagnostics and install hints")
 			return nil
 		},
 	}

@@ -272,6 +272,10 @@ func (v *BaseSovaVisitor) VisitAnnotation(ctx *AnnotationContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 
+func (v *BaseSovaVisitor) VisitAnnotationArg(ctx *AnnotationArgContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
 func (v *BaseSovaVisitor) VisitComposableBareChild(ctx *ComposableBareChildContext) interface{} {
 	return v.VisitChildren(ctx)
 }

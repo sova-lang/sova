@@ -21,6 +21,7 @@ func buildPassManager() *passes.PassManager {
 	pm.Register(&passes.PassAnalyzeComposables{})
 	pm.Register(&passes.PassFoldAnnotations{})
 	pm.Register(&passes.PassResolveEmbeds{})
+	pm.Register(&passes.PassResolveAssets{})
 	pm.Register(&passes.PassPropagateAsync{})
 	pm.Register(&passes.PassPopulateBuiltins{})
 	pm.Register(&passes.PassInitOrder{})
@@ -52,6 +53,7 @@ func TestPipeline() []string {
 		"analyze_composables",
 		"fold_annotations",
 		"resolve_embeds",
+		"resolve_assets",
 		"propagate_async",
 		"populate_builtins",
 		"test_discovery",
@@ -90,6 +92,7 @@ func compilerPipeline() []string {
 		"analyze_composables",
 		"fold_annotations",
 		"resolve_embeds",
+		"resolve_assets",
 		"propagate_async",
 		"populate_builtins",
 		"init_order",
@@ -120,6 +123,7 @@ func checkPipeline() []string {
 		"analyze_composables",
 		"fold_annotations",
 		"resolve_embeds",
+		"resolve_assets",
 		"propagate_async",
 	}
 }

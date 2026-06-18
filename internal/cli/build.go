@@ -35,13 +35,17 @@ var runtimeScriptSrcRE = regexp.MustCompile(`(<script[^>]*?\bsrc\s*=\s*["'])/__s
 func runBuild(cfg BuildConfig, targets []buildTarget, distDir string, stripDebug bool) error {
 	cfg.ProdMode = true
 
+	termui.Header("sova build")
+	if _, _, err := runCodegenSteps(&cfg, CodegenModeAuto); err != nil {
+		return err
+	}
+
 	root, files, err := collectSources(cfg)
 	if err != nil {
 		return err
 	}
 	cfg.SourceDir = root
 
-	termui.Header("sova build")
 	npmResult, err := materializeNPMDeps(root)
 	if err != nil {
 		return err
@@ -108,6 +112,10 @@ func runBuild(cfg BuildConfig, targets []buildTarget, distDir string, stripDebug
 		return err
 	}
 	termui.Success(fmt.Sprintf("bundled → assets/%s", bundleResult.EntryJS))
+
+	if err := stageStaticAssets(c, cfg.OutputDir); err != nil {
+		return fmt.Errorf("stage @asset files: %w", err)
+	}
 
 	embedHTML := filepath.Join(bundleResult.AssetsDir, "index.html")
 	webDir := cfg.ServeWebDir

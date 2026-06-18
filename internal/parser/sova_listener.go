@@ -206,6 +206,9 @@ type SovaListener interface {
 	// EnterAnnotation is called when entering the annotation production.
 	EnterAnnotation(c *AnnotationContext)
 
+	// EnterAnnotationArg is called when entering the annotationArg production.
+	EnterAnnotationArg(c *AnnotationArgContext)
+
 	// EnterComposableBareChild is called when entering the ComposableBareChild production.
 	EnterComposableBareChild(c *ComposableBareChildContext)
 
@@ -751,6 +754,9 @@ type SovaListener interface {
 
 	// ExitAnnotation is called when exiting the annotation production.
 	ExitAnnotation(c *AnnotationContext)
+
+	// ExitAnnotationArg is called when exiting the annotationArg production.
+	ExitAnnotationArg(c *AnnotationArgContext)
 
 	// ExitComposableBareChild is called when exiting the ComposableBareChild production.
 	ExitComposableBareChild(c *ComposableBareChildContext)

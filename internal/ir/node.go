@@ -93,6 +93,7 @@ type VarDeclStmt struct {
 	Wire        *WireSpec    // Wire carries the resolved transport metadata for wired vars/const.
 	Annotations []Annotation // Annotations are the `@name(args)` decorations applied to this declaration. `@reactive wire let` triggers the broadcast-on-mutate path; other annotations may be added by libraries.
 	Embed       *EmbedInfo   // Embed is non-nil when this declaration carries `@embed("path")` and has been processed by `pass_resolve_embeds`. The original Init expression is replaced with a placeholder literal at that point; codegen reads the file contents through this struct rather than from Init.
+	Asset       *AssetInfo   // Asset is non-nil when this declaration carries `@asset("path")` and has been processed by `pass_resolve_assets`. The original Init expression is replaced with the resolved URL string literal; codegen emits the literal directly. The file is staged under `<outputDir>/assets/` so the runtime asset handler can serve it at the recorded URL.
 }
 
 // EmbedKind selects which loader the embed resolver and codegen use for a given `@embed`-decorated const. Inferred from the declared type: `string` → text, `[]u8` / `bytes` → binary. Anything else is a diagnostic in `pass_resolve_embeds`.
@@ -111,6 +112,16 @@ type EmbedInfo struct {
 	ContentHash string        // sha256[:16] of the file contents at resolution time.
 	SizeBytes   int64         // File size in bytes at resolution time; used for the size-cap check.
 	Span        diag.TextSpan // Source span of the `@embed(...)` annotation, used by codegen diagnostics for file-staging failures.
+}
+
+// AssetInfo is the URL-mode counterpart to EmbedInfo. Populated by `pass_resolve_assets` for every `@asset(...)`-decorated `string` const. Where @embed inlines the file contents as a literal, @asset stages the file as a regular static asset and exposes a stable, hash-busted URL string. The const's Init expression is replaced with the URL literal so backend/frontend codegen emits it transparently.
+type AssetInfo struct {
+	SourcePath  string        // Absolute path to the source file on disk.
+	ContentHash string        // sha256[:16] of the file contents; used as the URL's cache-busting suffix.
+	URL         string        // Public URL the const evaluates to at runtime — e.g. "/__sova/logo-9f3c2a1b.png".
+	StagedName  string        // Filename under `<outputDir>/assets/` the file is copied to during staging.
+	SizeBytes   int64         // File size in bytes at resolution time.
+	Span        diag.TextSpan // Source span of the `@asset(...)` annotation, used by staging diagnostics.
 }
 
 type VarDeclTarget struct {
@@ -404,6 +415,7 @@ type SideMapping struct {
 type Annotation struct {
 	Name         NameRef
 	Args         []Expr
+	ArgNames     []string // ArgNames[i] holds the user-written `name:` prefix for Args[i]; "" = positional. Parallel slice (always either empty or same length as Args).
 	ResolvedArgs []AnnotationValue
 }
 

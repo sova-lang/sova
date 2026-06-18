@@ -39,6 +39,20 @@ func __sovaDevServeMaybe(mux *http.ServeMux) bool {
 		w.Header().Set("Cache-Control", "no-store")
 		http.ServeFile(w, r, bundlePath+".map")
 	})
+	mux.HandleFunc("/__sova/", func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/__sova/")
+		if name == "" || strings.Contains(name, "..") {
+			http.NotFound(w, r)
+			return
+		}
+		candidate := filepath.Join(filepath.Dir(bundlePath), "assets", name)
+		if info, err := os.Stat(candidate); err != nil || info.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		http.ServeFile(w, r, candidate)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			http.NotFound(w, r)

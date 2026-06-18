@@ -36,6 +36,40 @@ func stageEmbedAssets(c *compiler.CompilerContext, outputDir string) error {
 	return nil
 }
 
+// stageStaticAssets copies every file referenced by an `@asset`-decorated const into `<outputDir>/assets/<StagedName>`, where the prod embed.FS picks them up (the existing `//go:embed assets` directive in prod_helpers.go.tpl covers the whole directory) and where the dev-mode server serves them via the `/__sova/<file>` route. Each asset's StagedName already encodes the content hash, so files are stable across rebuilds and safe to cache indefinitely client-side.
+//
+// Reads the build-wide registry populated by `passes.PassResolveAssets` under `AssetsCacheKey`. No-ops silently when the registry is empty.
+func stageStaticAssets(c *compiler.CompilerContext, outputDir string) error {
+	raw, ok := c.Cache[passes.AssetsCacheKey]
+	if !ok {
+		return nil
+	}
+	records, ok := raw.([]*passes.AssetRecord)
+	if !ok || len(records) == 0 {
+		return nil
+	}
+	stageDir := filepath.Join(outputDir, "assets")
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		return err
+	}
+	for _, rec := range records {
+		if rec == nil || rec.Info == nil {
+			continue
+		}
+		dest := filepath.Join(stageDir, rec.Info.StagedName)
+		if rec.TransformedContent != nil {
+			if err := os.WriteFile(dest, rec.TransformedContent, 0o644); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := copyEmbedFile(rec.Info.SourcePath, dest); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func copyEmbedFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {

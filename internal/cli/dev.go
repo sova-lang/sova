@@ -147,13 +147,17 @@ func resolvePort(host string, start int, strict bool) (int, error) {
 
 // runDev is the entry point for `sova dev`. It compiles once, spawns the backend in dev mode, and respawns on every .sova change. The signal file mechanism lets the running backend push a reload event to connected browsers without a full restart when only the JS bundle changed.
 func runDev(cfg BuildConfig) error {
+	termui.Header("sova dev")
+	if _, _, err := runCodegenSteps(&cfg, CodegenModeAuto); err != nil {
+		return err
+	}
+
 	root, _, err := collectSources(cfg)
 	if err != nil {
 		return err
 	}
 	cfg.SourceDir = root
 
-	termui.Header("sova dev")
 	termui.Step("compiling project")
 	firstCtx, err := compileOnce(cfg)
 	if err != nil {

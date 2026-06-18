@@ -48,6 +48,35 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newVersionCmd())
 	cmd.AddCommand(newUpgradeCmd())
 	cmd.AddCommand(newSynthCmd())
+	cmd.AddCommand(newGenerateCmd())
+	cmd.AddCommand(newDoctorCmd())
+	return cmd
+}
+
+func newGenerateCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "generate",
+		Short: "Run every [[build.codegen]] step declared in sova.toml",
+		Long:  "Executes the codegen entries in declaration order. By default only stale steps run; --force re-runs everything including steps marked `manual = true`.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := resolveConfig(nil, "", "", cmd)
+			if err != nil {
+				return err
+			}
+			mode := CodegenModeAuto
+			if force {
+				mode = CodegenModeForce
+			}
+			ran, skipped, err := runCodegenSteps(&cfg, mode)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("codegen complete — %d ran, %d skipped\n", ran, skipped)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "run every step regardless of staleness or `manual` flag")
 	return cmd
 }
 

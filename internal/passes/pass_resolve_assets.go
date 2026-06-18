@@ -1,0 +1,283 @@
+package passes
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sova/internal/diag"
+	"sova/internal/imagepipe"
+	"sova/internal/ir"
+	"strings"
+)
+
+// AssetsCacheKey holds `[]*AssetRecord` — every `@asset`-decorated const the build saw, with its absolute source path and the staged-name the URL points at. Populated by `PassResolveAssets`; consumed by `internal/cli/build.go` to copy the source files into `<outputDir>/assets/<StagedName>`. Mirrors `EmbedAssetsCacheKey`.
+const AssetsCacheKey = "static_assets"
+
+// defaultAssetMaxBytes caps an individual `@asset` source at 32 MiB so a typo doesn't drag a video into the build. Generous compared to @embed's 8 MiB because assets are served, not inlined.
+const defaultAssetMaxBytes int64 = 32 * 1024 * 1024
+
+// AssetRecord is the build-wide view of one resolved `@asset` — staged-name plus absolute source path so `stageAssets` in build.go can copy without re-resolving anything. PackageRoot mirrors EmbedRecord and is used by file watchers in dev mode. When TransformedContent is non-nil the staging step writes those bytes directly instead of copying the source file (the asset went through the imagepipe).
+type AssetRecord struct {
+	Decl               *ir.VarDeclStmt
+	Info               *ir.AssetInfo
+	PackageRoot        string
+	TransformedContent []byte
+}
+
+// PassResolveAssets walks every `@asset`-decorated `const` declaration, validates the surface (const-only, type must be `string`, relative path, file exists, under size cap), resolves the path against the source file's directory, computes a sha256[:16] content hash, and stores everything on the VarDeclStmt's new `Asset` field. The Init expression is replaced with a string literal carrying the public URL (`/__sova/<basename>-<hash>.<ext>`) so codegen on both sides emits the URL as a plain string with no further special-casing.
+//
+// Runs after `fold_annotations` (so the annotation's `"./path"` argument has been const-folded) and before any codegen pass. Aggregates every resolved record into `AssetsCacheKey` for `stageAssets` in build.go to copy the files into `<outputDir>/assets/` where the prod embed.FS picks them up automatically and the dev server serves them via the `/__sova/` route.
+type PassResolveAssets struct{}
+
+func (p *PassResolveAssets) Name() string       { return "resolve_assets" }
+func (p *PassResolveAssets) Scope() PassScope   { return PerBuild }
+func (p *PassResolveAssets) Requires() []string { return []string{"fold_annotations"} }
+func (p *PassResolveAssets) NoErrors() bool     { return false }
+
+func (p *PassResolveAssets) Run(pc *PassContext) error {
+	sizeCap := defaultAssetMaxBytes
+	projectRoot := ""
+	if raw, ok := pc.Cache[buildConfigCacheKey]; ok {
+		if cfg, ok := raw.(buildConfigGetter); ok {
+			projectRoot = cfg.SourceDirectory()
+		}
+	}
+	if projectRoot == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			projectRoot = cwd
+		}
+	}
+	projectRootAbs, _ := filepath.Abs(projectRoot)
+
+	var records []*AssetRecord
+	for _, pkg := range pc.Pkgs {
+		if pkg == nil {
+			continue
+		}
+		for _, f := range pkg.Files {
+			if f == nil || f.Hir == nil {
+				continue
+			}
+			if f.Hir.Side.Kind == ir.SideSynth {
+				continue
+			}
+			fileDir := resolveSourceFileDir(f, projectRootAbs)
+			for _, st := range f.Hir.Statements {
+				vd, ok := st.(*ir.VarDeclStmt)
+				if !ok {
+					continue
+				}
+				anno := findAssetAnnotation(vd.Annotations)
+				if anno == nil {
+					continue
+				}
+				if record := p.resolveTopLevel(pc, vd, anno, fileDir, projectRootAbs, sizeCap); record != nil {
+					records = append(records, record)
+				}
+			}
+		}
+	}
+	pc.Cache[AssetsCacheKey] = records
+	return nil
+}
+
+func findAssetAnnotation(annos []ir.Annotation) *ir.Annotation {
+	for i := range annos {
+		a := &annos[i]
+		if a.Name.Name == "asset" {
+			return a
+		}
+	}
+	return nil
+}
+
+func (p *PassResolveAssets) resolveTopLevel(pc *PassContext, vd *ir.VarDeclStmt, anno *ir.Annotation, fileDir, projectRoot string, sizeCap int64) *AssetRecord {
+	label := embedDeclLabel(vd)
+	if !vd.IsConst {
+		pc.Diag.Report(diag.ErrAssetNotConst, vd.Span())
+		return nil
+	}
+	if len(vd.Targets) != 1 || vd.Targets[0].Name == nil {
+		pc.Diag.Report(diag.ErrAssetNotConst, vd.Span())
+		return nil
+	}
+	if !isStringTypeRef(vd.Targets[0].TypeAnn) {
+		pc.Diag.Report(diag.ErrAssetBadType, anno.Name.Span, label, formatTypeRefSurface(vd.Targets[0].TypeAnn))
+		return nil
+	}
+	pathLit, ok := annotationPathArg(anno)
+	if !ok {
+		pc.Diag.Report(diag.ErrAssetBadPath, anno.Name.Span, "non-string or missing argument")
+		return nil
+	}
+	if filepath.IsAbs(pathLit) || strings.HasPrefix(pathLit, "/") {
+		pc.Diag.Report(diag.ErrAssetBadPath, anno.Name.Span, fmt.Sprintf("%q", pathLit))
+		return nil
+	}
+	resolved := filepath.Clean(filepath.Join(fileDir, filepath.FromSlash(pathLit)))
+	abs, err := filepath.Abs(resolved)
+	if err != nil {
+		pc.Diag.Report(diag.ErrAssetFileNotFound, anno.Name.Span, label, pathLit, resolved)
+		return nil
+	}
+	if projectRoot != "" {
+		rel, err := filepath.Rel(projectRoot, abs)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			pc.Diag.Report(diag.ErrAssetPathEscapesProject, anno.Name.Span, pathLit)
+			return nil
+		}
+	}
+	stat, err := os.Stat(abs)
+	if err != nil || stat.IsDir() {
+		pc.Diag.Report(diag.ErrAssetFileNotFound, anno.Name.Span, label, pathLit, abs)
+		return nil
+	}
+	if stat.Size() > sizeCap {
+		pc.Diag.Report(diag.ErrAssetFileTooLarge, anno.Name.Span, label, pathLit, stat.Size(), sizeCap)
+		return nil
+	}
+	content, err := os.ReadFile(abs)
+	if err != nil {
+		pc.Diag.Report(diag.ErrAssetFileNotFound, anno.Name.Span, label, pathLit, abs)
+		return nil
+	}
+	opts, ok := parseTransformOpts(pc, anno, label)
+	if !ok {
+		return nil
+	}
+	base := filepath.Base(abs)
+	ext := filepath.Ext(base)
+	var transformed []byte
+	if opts.NeedsTransform() {
+		out, outExt, err := imagepipe.Transform(content, ext, opts)
+		if err != nil {
+			pc.Diag.Report(diag.ErrAssetTransformFailed, anno.Name.Span, label, err.Error())
+			return nil
+		}
+		transformed = out
+		content = out
+		ext = outExt
+	}
+	sum := sha256.Sum256(content)
+	hash := hex.EncodeToString(sum[:])[:16]
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	stem = sanitizeAssetStem(stem)
+	staged := fmt.Sprintf("%s-%s%s", stem, hash, ext)
+	info := &ir.AssetInfo{
+		SourcePath:  abs,
+		ContentHash: hash,
+		URL:         "/__sova/" + staged,
+		StagedName:  staged,
+		SizeBytes:   int64(len(content)),
+		Span:        anno.Name.Span,
+	}
+	vd.Asset = info
+	lit := &ir.LitString{Value: info.URL}
+	nid := ir.NodeID(0)
+	if pc.NodeAlloc != nil {
+		nid = ir.NodeID(pc.NodeAlloc.Next())
+	}
+	setNodeSpan(lit, nid, vd.Span())
+	vd.Init = lit
+	return &AssetRecord{Decl: vd, Info: info, PackageRoot: fileDir, TransformedContent: transformed}
+}
+
+// parseTransformOpts reads the optional `to:`, `quality:`, `maxWidth:`, `maxHeight:` arguments from the @asset annotation. Position 0 is always the path; positions 1..4 OR equivalently the named args resolve to the four transform knobs. Unknown names or wrong-typed values produce a diagnostic.
+func parseTransformOpts(pc *PassContext, a *ir.Annotation, label string) (imagepipe.Options, bool) {
+	var opts imagepipe.Options
+	for i, val := range a.ResolvedArgs {
+		name := ""
+		if i < len(a.ArgNames) {
+			name = a.ArgNames[i]
+		}
+		if i == 0 && name == "" {
+			continue
+		}
+		if name == "" {
+			switch i {
+			case 1:
+				name = "to"
+			case 2:
+				name = "quality"
+			case 3:
+				name = "maxWidth"
+			case 4:
+				name = "maxHeight"
+			default:
+				pc.Diag.Report(diag.ErrAssetBadArg, a.Name.Span, label, fmt.Sprintf("extra positional argument at position %d", i))
+				return opts, false
+			}
+		}
+		switch name {
+		case "path":
+			// already handled by annotationPathArg; ignore here.
+		case "to":
+			if val.Kind != ir.AnnotationValueString {
+				pc.Diag.Report(diag.ErrAssetBadArg, a.Name.Span, label, "`to:` must be a string")
+				return opts, false
+			}
+			f, ok := imagepipe.NormalizeFormat(val.Str)
+			if !ok {
+				pc.Diag.Report(diag.ErrAssetBadArg, a.Name.Span, label, fmt.Sprintf("unknown `to:` format %q (supported: png, jpeg, gif, webp)", val.Str))
+				return opts, false
+			}
+			opts.To = f
+		case "quality":
+			if val.Kind != ir.AnnotationValueInt {
+				pc.Diag.Report(diag.ErrAssetBadArg, a.Name.Span, label, "`quality:` must be an int")
+				return opts, false
+			}
+			if val.Int < 1 || val.Int > 100 {
+				pc.Diag.Report(diag.ErrAssetBadArg, a.Name.Span, label, fmt.Sprintf("`quality:` must be 1..100 (got %d)", val.Int))
+				return opts, false
+			}
+			opts.Quality = int(val.Int)
+		case "maxWidth":
+			if val.Kind != ir.AnnotationValueInt || val.Int < 0 {
+				pc.Diag.Report(diag.ErrAssetBadArg, a.Name.Span, label, "`maxWidth:` must be a non-negative int")
+				return opts, false
+			}
+			opts.MaxWidth = int(val.Int)
+		case "maxHeight":
+			if val.Kind != ir.AnnotationValueInt || val.Int < 0 {
+				pc.Diag.Report(diag.ErrAssetBadArg, a.Name.Span, label, "`maxHeight:` must be a non-negative int")
+				return opts, false
+			}
+			opts.MaxHeight = int(val.Int)
+		default:
+			pc.Diag.Report(diag.ErrAssetBadArg, a.Name.Span, label, fmt.Sprintf("unknown argument %q (supported: to, quality, maxWidth, maxHeight)", name))
+			return opts, false
+		}
+	}
+	return opts, true
+}
+
+// isStringTypeRef returns true when the TypeRef is the plain `string` builtin. We accept nothing else for @asset because the const value at runtime is always the URL string.
+func isStringTypeRef(t *ir.TypeRef) bool {
+	if t == nil {
+		return false
+	}
+	return t.Kind == ir.TK_PrimitiveString
+}
+
+// sanitizeAssetStem strips characters that would be awkward in a URL path segment (whitespace, path separators). Hex hash + extension provide uniqueness; the stem only exists for human readability of staged filenames.
+func sanitizeAssetStem(s string) string {
+	if s == "" {
+		return "asset"
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "asset"
+	}
+	return b.String()
+}

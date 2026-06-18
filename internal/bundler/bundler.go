@@ -83,6 +83,7 @@ func Run(opts Options) (*Result, error) {
 		TreeShaking:       api.TreeShakingTrue,
 		LegalComments:     api.LegalCommentsLinked,
 		NodePaths:         opts.NodePaths,
+		Loader:            staticAssetLoaders(),
 		Write:             true,
 	})
 	if len(result.Errors) > 0 {
@@ -131,6 +132,31 @@ func buildManifest(files []api.OutputFile, assetsDir string) (Manifest, error) {
 		return m, fmt.Errorf("bundler: esbuild produced no .js entry under %s", assetsDir)
 	}
 	return m, nil
+}
+
+// staticAssetLoaders maps common static-asset file extensions to esbuild loaders. The `file` loader copies the file into the assets dir with the configured `AssetNames` hash pattern and rewrites the JS import to the resulting URL string; `text` keeps SVG as inline strings (useful for icon-as-string patterns and inline-CSS background-image data). Anything not listed here falls through to esbuild's defaults — JS/TS/CSS/JSON are handled natively, unknown extensions emit a clear esbuild error.
+func staticAssetLoaders() map[string]api.Loader {
+	return map[string]api.Loader{
+		".png":   api.LoaderFile,
+		".jpg":   api.LoaderFile,
+		".jpeg":  api.LoaderFile,
+		".gif":   api.LoaderFile,
+		".webp":  api.LoaderFile,
+		".avif":  api.LoaderFile,
+		".ico":   api.LoaderFile,
+		".bmp":   api.LoaderFile,
+		".svg":   api.LoaderFile,
+		".woff":  api.LoaderFile,
+		".woff2": api.LoaderFile,
+		".ttf":   api.LoaderFile,
+		".otf":   api.LoaderFile,
+		".eot":   api.LoaderFile,
+		".mp3":   api.LoaderFile,
+		".mp4":   api.LoaderFile,
+		".webm":  api.LoaderFile,
+		".mov":   api.LoaderFile,
+		".pdf":   api.LoaderFile,
+	}
 }
 
 func formatEsbuildMessages(msgs []api.Message) string {

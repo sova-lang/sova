@@ -206,6 +206,9 @@ type SovaVisitor interface {
 	// Visit a parse tree produced by SovaParser#annotation.
 	VisitAnnotation(ctx *AnnotationContext) interface{}
 
+	// Visit a parse tree produced by SovaParser#annotationArg.
+	VisitAnnotationArg(ctx *AnnotationArgContext) interface{}
+
 	// Visit a parse tree produced by SovaParser#ComposableBareChild.
 	VisitComposableBareChild(ctx *ComposableBareChildContext) interface{}
 

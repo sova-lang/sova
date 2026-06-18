@@ -143,7 +143,8 @@ methodDecl : annotation* memberModifier* 'func' methodName genericParams? '(' fu
 castDecl : annotation* memberModifier* 'cast' '(' ID typeAnnot ')' typeAnnot? block;
 memberModifier : 'private' | 'shared';
 
-annotation : '@' ID ('(' (expr (',' expr)*)? ')')?;
+annotation : '@' ID ('(' (annotationArg (',' annotationArg)*)? ')')?;
+annotationArg : (softId ':')? expr;
 
 composableChild : softId ('.' softId)? LBRACE composableChild* RBRACE   #ComposableBareChild
                 | expr                                          #ComposableExprChild

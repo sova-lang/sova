@@ -468,13 +468,31 @@ func (e *synthExpander) expandSite(site synthBind, anns *[]ir.Annotation) bool {
 			_ = i
 		}
 		paramSubs := map[string]ir.Expr{}
+		byName := map[string]ir.Expr{}
+		firstNamedIdx := -1
+		for i, expr := range a.Args {
+			if i < len(a.ArgNames) && a.ArgNames[i] != "" {
+				byName[a.ArgNames[i]] = expr
+				if firstNamedIdx < 0 {
+					firstNamedIdx = i
+				}
+			}
+		}
 		for i, prm := range sd.Params {
 			if prm == nil || prm.Name.Name == "" {
 				continue
 			}
-			if i < len(a.Args) && a.Args[i] != nil {
-				paramSubs[prm.Name.Name] = a.Args[i]
-			} else if prm.Default != nil {
+			if v, ok := byName[prm.Name.Name]; ok {
+				paramSubs[prm.Name.Name] = v
+				continue
+			}
+			if i < len(a.Args) && a.Args[i] != nil && (firstNamedIdx < 0 || i < firstNamedIdx) {
+				if i >= len(a.ArgNames) || a.ArgNames[i] == "" {
+					paramSubs[prm.Name.Name] = a.Args[i]
+					continue
+				}
+			}
+			if prm.Default != nil {
 				paramSubs[prm.Name.Name] = prm.Default
 			}
 		}

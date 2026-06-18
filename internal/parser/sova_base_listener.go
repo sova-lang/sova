@@ -417,6 +417,12 @@ func (s *BaseSovaListener) EnterAnnotation(ctx *AnnotationContext) {}
 // ExitAnnotation is called when production annotation is exited.
 func (s *BaseSovaListener) ExitAnnotation(ctx *AnnotationContext) {}
 
+// EnterAnnotationArg is called when production annotationArg is entered.
+func (s *BaseSovaListener) EnterAnnotationArg(ctx *AnnotationArgContext) {}
+
+// ExitAnnotationArg is called when production annotationArg is exited.
+func (s *BaseSovaListener) ExitAnnotationArg(ctx *AnnotationArgContext) {}
+
 // EnterComposableBareChild is called when production ComposableBareChild is entered.
 func (s *BaseSovaListener) EnterComposableBareChild(ctx *ComposableBareChildContext) {}
 

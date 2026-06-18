@@ -19,6 +19,7 @@ type BuildConfig struct {
 	TestMode                bool
 	SCSSCommand             string // SCSSCommand pins the `sass` / `dart-sass` binary the embed resolver uses for `.scss`/`.sass` files. Empty enables auto-discovery on PATH (looks for `sass`, then `dart-sass`); set explicitly via `[build.scss] command = "..."` in sova.toml when the binary lives outside PATH or has a non-standard name.
 	SCSSDisabled            bool   // SCSSDisabled short-circuits SCSS preprocessing entirely. Set via `[build.scss] enabled = false`; defaults to false so SCSS works as long as a binary is discoverable. `@embed` on `.scss` with SCSS disabled produces a clear diagnostic.
+	Codegen                 []CodegenStep // Codegen is the resolved `[[build.codegen]]` list from sova.toml. Runs before any compile step; see internal/cli/codegen_runner.go for staleness semantics.
 	LoadedEnv             map[string]string
 	LoadedEnvPublicPrefix string // LoadedEnvPublicPrefix is the prefix that gates frontend exposure. Vars whose key starts with this prefix are baked into the frontend bundle; everything else stays backend-only. Empty means "expose nothing to the frontend".
 }
