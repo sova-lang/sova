@@ -163,10 +163,34 @@ func (p *PassComputeReachability) markSym(pc *PassContext, sym ir.SymID) bool {
 				return false
 			}
 			s.Flags |= ir.SF_Reachable
+			p.markOwningType(pc, sym)
 			return true
 		}
 	}
 	return false
+}
+
+// markOwningType propagates reachability from a sym (typically a method or ctor) up to the struct/enum that owns it. Without this, calls that were rewritten to point at a ctor sym (e.g. composable lowering `TrailView() {}` → ctor call) would leave the type declaration unreachable, and codegen would prune the entire `type TrailView { ... }` block — including the very ctor body the call needs.
+func (p *PassComputeReachability) markOwningType(pc *PassContext, sym ir.SymID) {
+	for _, ty := range pc.Types.All() {
+		if ty == nil {
+			continue
+		}
+		if ty.Kind == ir.TK_Struct {
+			for _, c := range ty.StructCtors {
+				if c.Sym == sym {
+					p.markTypeID(pc, ty.ID)
+					return
+				}
+			}
+			for _, m := range ty.StructMethods {
+				if m.Sym == sym {
+					p.markTypeID(pc, ty.ID)
+					return
+				}
+			}
+		}
+	}
 }
 
 func (p *PassComputeReachability) markTypeID(pc *PassContext, typID ir.TypID) bool {
@@ -427,9 +451,24 @@ func (p *PassComputeReachability) markExpr(pc *PassContext, e ir.Expr) bool {
 		if p.markExpr(pc, x.Callee) {
 			changed = true
 		}
+		if p.markSym(pc, x.CtorSym) {
+			changed = true
+		}
 		for _, a := range x.Args {
 			if p.markExpr(pc, a.Expr) {
 				changed = true
+			}
+		}
+		for _, c := range x.Children {
+			if c.Expr != nil {
+				if p.markExpr(pc, c.Expr) {
+					changed = true
+				}
+			}
+			if c.Stmt != nil {
+				if p.markStmt(pc, c.Stmt) {
+					changed = true
+				}
 			}
 		}
 	case *ir.NewExpr:

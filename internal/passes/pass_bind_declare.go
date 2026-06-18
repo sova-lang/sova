@@ -17,10 +17,16 @@ func (p *PassBindDeclare) Run(pc *PassContext) error {
 	pkg := pc.Pkg
 
 	for _, f := range pc.Pkg.Files {
+		if f.Hir.Side.Kind == ir.SideSynth {
+			continue
+		}
 		p.preRegisterTypes(pc, f)
 	}
 
 	for _, f := range pc.Pkg.Files {
+		if f.Hir.Side.Kind == ir.SideSynth {
+			continue
+		}
 		p.validateExterns(pc, f)
 		for _, st := range f.Hir.Statements {
 			if err := p.bindStmtScopes(pkg, st, pkg.Root); err != nil {

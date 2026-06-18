@@ -19,6 +19,9 @@ func (p *PassResolveNames) NoErrors() bool     { return false }
 func (p *PassResolveNames) Run(pc *PassContext) error {
 	pkg := pc.Pkg
 	for _, f := range pkg.Files {
+		if f.Hir.Side.Kind == ir.SideSynth {
+			continue
+		}
 		p.currentFile = f
 		for _, st := range f.Hir.Statements {
 			p.resolveStmtNames(pc, st, pkg)

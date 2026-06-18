@@ -472,7 +472,11 @@ func (e *synthExpander) expandSite(site synthBind, anns *[]ir.Annotation) bool {
 			if prm == nil || prm.Name.Name == "" {
 				continue
 			}
-			paramSubs[prm.Name.Name] = a.Args[i]
+			if i < len(a.Args) && a.Args[i] != nil {
+				paramSubs[prm.Name.Name] = a.Args[i]
+			} else if prm.Default != nil {
+				paramSubs[prm.Name.Name] = prm.Default
+			}
 		}
 		emitted := e.interpretBody(sd.Body, env, sd.Target.BindName, paramSubs)
 		out = append(out, emitted...)
@@ -609,8 +613,80 @@ func (e *synthExpander) injectMethod(env *synthEnv, outerBindName string, paramS
 				m.Func.Params[i].Default = e.substituteExpr(srcParam.Default, env, paramSubs)
 			}
 		}
+		if m.Func.Body != nil {
+			e.substituteStmt(m.Func.Body, env, paramSubs)
+		}
 	}
 	td.Methods = append(td.Methods, m)
+}
+
+// substituteStmt walks a statement tree and replaces every embedded expression with substituteExpr's result. Used for emit method/ctor bodies so synth params (`name`) and type binds (`T.name`) inside `return name == "" ? T.name : name` actually resolve. The clone done by CloneTypeMethodDecl gives us fresh mutable nodes, so in-place reassignment of Expr fields is safe.
+func (e *synthExpander) substituteStmt(st ir.Stmt, env *synthEnv, paramSubs map[string]ir.Expr) {
+	if ir.IsNilStmt(st) {
+		return
+	}
+	switch s := st.(type) {
+	case *ir.BlockStmt:
+		for _, sub := range s.Stmts {
+			e.substituteStmt(sub, env, paramSubs)
+		}
+	case *ir.ReturnStmt:
+		for i := range s.Results {
+			s.Results[i] = e.substituteExpr(s.Results[i], env, paramSubs)
+		}
+	case *ir.VarDeclStmt:
+		if s.Init != nil {
+			s.Init = e.substituteExpr(s.Init, env, paramSubs)
+		}
+	case *ir.ExprStmt:
+		if s.Expr != nil {
+			s.Expr = e.substituteExpr(s.Expr, env, paramSubs)
+		}
+	case *ir.FieldAssignmentStmt:
+		if s.Value != nil {
+			s.Value = e.substituteExpr(s.Value, env, paramSubs)
+		}
+	case *ir.MultiAssignmentStmt:
+		if s.Value != nil {
+			s.Value = e.substituteExpr(s.Value, env, paramSubs)
+		}
+	case *ir.IndexAssignmentStmt:
+		if s.Value != nil {
+			s.Value = e.substituteExpr(s.Value, env, paramSubs)
+		}
+		if s.Index != nil {
+			s.Index = e.substituteExpr(s.Index, env, paramSubs)
+		}
+	case *ir.IfStmt:
+		if s.Cond != nil {
+			s.Cond = e.substituteExpr(s.Cond, env, paramSubs)
+		}
+		if s.Then != nil {
+			e.substituteStmt(s.Then, env, paramSubs)
+		}
+		for i := range s.ElseIfs {
+			if s.ElseIfs[i].Cond != nil {
+				s.ElseIfs[i].Cond = e.substituteExpr(s.ElseIfs[i].Cond, env, paramSubs)
+			}
+			if s.ElseIfs[i].Then != nil {
+				e.substituteStmt(s.ElseIfs[i].Then, env, paramSubs)
+			}
+		}
+		if s.Else != nil {
+			e.substituteStmt(s.Else, env, paramSubs)
+		}
+	case *ir.ForStmt:
+		if s.Body != nil {
+			e.substituteStmt(s.Body, env, paramSubs)
+		}
+	case *ir.WhileStmt:
+		if s.Cond != nil {
+			s.Cond = e.substituteExpr(s.Cond, env, paramSubs)
+		}
+		if s.Body != nil {
+			e.substituteStmt(s.Body, env, paramSubs)
+		}
+	}
 }
 
 func (e *synthExpander) injectCtor(env *synthEnv, outerBindName string, paramSubs map[string]ir.Expr, it *ir.SynthEmitCtor) {
@@ -743,6 +819,25 @@ func (e *synthExpander) substituteExpr(ex ir.Expr, env *synthEnv, paramSubs map[
 				Lit:  part.Lit,
 				Expr: e.substituteExpr(part.Expr, env, paramSubs),
 			})
+		}
+		return out
+	case *ir.TenaryExpr:
+		return &ir.TenaryExpr{
+			Cond: e.substituteExpr(v.Cond, env, paramSubs),
+			Then: e.substituteExpr(v.Then, env, paramSubs),
+			Else: e.substituteExpr(v.Else, env, paramSubs),
+		}
+	case *ir.UnaryExpr:
+		return &ir.UnaryExpr{Op: v.Op, Expr: e.substituteExpr(v.Expr, env, paramSubs)}
+	case *ir.CoalesceExpr:
+		return &ir.CoalesceExpr{
+			Left:    e.substituteExpr(v.Left, env, paramSubs),
+			Default: e.substituteExpr(v.Default, env, paramSubs),
+		}
+	case *ir.FuncCallExpr:
+		out := &ir.FuncCallExpr{Callee: e.substituteExpr(v.Callee, env, paramSubs)}
+		for _, a := range v.Args {
+			out.Args = append(out.Args, ir.FuncCallArg{Name: a.Name, Expr: e.substituteExpr(a.Expr, env, paramSubs)})
 		}
 		return out
 	}

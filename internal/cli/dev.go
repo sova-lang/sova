@@ -187,12 +187,18 @@ func runDev(cfg BuildConfig) error {
 	sigFile.Close()
 	defer os.Remove(sigFile.Name())
 
+	webDir := cfg.ServeWebDir
+	if webDir != "" && !filepath.IsAbs(webDir) {
+		if abs, err := filepath.Abs(filepath.Join(cfg.SourceDir, webDir)); err == nil {
+			webDir = abs
+		}
+	}
 	mgr := &devProcess{
 		outputGo: filepath.Join(cfg.OutputDir, cfg.OutputName+".go"),
 		port:     port,
 		host:     cfg.ServeHost,
 		sigFile:  sigFile.Name(),
-		webDir:   cfg.ServeWebDir,
+		webDir:   webDir,
 	}
 	if err := mgr.start(); err != nil {
 		return fmt.Errorf("spawn backend: %w", err)
