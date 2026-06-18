@@ -273,7 +273,7 @@ func (e *CodeEmitter) emitFuncDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 	funcName := symName(ctx, s.Name.Sym)
 	orig := symOrigName(ctx, s.Name.Sym)
 
-	if orig == "main" && len(s.Params) == 0 && e.mangledMainName == "" {
+	if (orig == "main" || orig == "boot") && len(s.Params) == 0 && e.mangledMainName == "" {
 		e.mangledMainName = funcName
 		e.mainIsAsync = s.IsAsync
 	}

@@ -28,6 +28,7 @@ type Options struct {
 	OutputDir string
 	Minify    bool
 	KeepNames bool
+	NodePaths []string
 }
 
 // Result is what the bundler returns: filenames of the bundled outputs (relative to OutputDir/assets/) plus the path to the written `manifest.json`. The HTML staging step reads these to inject hashed `<script>` tags into `index.html`.
@@ -81,6 +82,7 @@ func Run(opts Options) (*Result, error) {
 		KeepNames:         opts.KeepNames,
 		TreeShaking:       api.TreeShakingTrue,
 		LegalComments:     api.LegalCommentsLinked,
+		NodePaths:         opts.NodePaths,
 		Write:             true,
 	})
 	if len(result.Errors) > 0 {

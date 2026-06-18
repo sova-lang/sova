@@ -20,10 +20,41 @@ type Manifest struct {
 	Package         *PackageMeta              `toml:"package"`
 	Dependencies    map[string]DependencySpec `toml:"dependencies"`
 	DevDependencies map[string]DependencySpec `toml:"dev-dependencies"`
+	NPM             map[string]NPMDepSpec     `toml:"npm-dependencies"`
 	Workspace       *WorkspaceSection         `toml:"workspace"`
 	Overrides       map[string]DependencySpec `toml:"overrides"`
 
 	root string
+}
+
+// NPMDepSpec describes an npm package the Sova compiler should install + translate into a Sova interop binding via the ts2sova-generator pipeline. Accepts the same surface forms as `DependencySpec`: a bare version range (`dayjs = "^1.11"`) or an inline table (`stripe = { version = "^2.0", default = true, package = "@stripe/stripe-js" }`).
+//
+// `Package` overrides the npm package name when it differs from the Sova-side import alias (useful for scoped packages where the alias has no `@`/`/`). `Default` forces ESM default-import emission; left nil to let the generator auto-detect from the lib's .d.ts.
+type NPMDepSpec struct {
+	Version string `toml:"version,omitempty"`
+	Package string `toml:"package,omitempty"`
+	Default *bool  `toml:"default,omitempty"`
+}
+
+// UnmarshalTOML mirrors DependencySpec's polymorphism: scalar string → version, inline table → field-by-field.
+func (n *NPMDepSpec) UnmarshalTOML(data any) error {
+	switch v := data.(type) {
+	case string:
+		n.Version = v
+		return nil
+	case map[string]any:
+		if s, ok := v["version"].(string); ok {
+			n.Version = s
+		}
+		if s, ok := v["package"].(string); ok {
+			n.Package = s
+		}
+		if b, ok := v["default"].(bool); ok {
+			n.Default = &b
+		}
+		return nil
+	}
+	return nil
 }
 
 // PackageMeta describes the package's own identity. Only `Name` is required when the manifest declares `[package]`; everything else is optional metadata.

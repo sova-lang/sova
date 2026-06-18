@@ -1919,22 +1919,37 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 					}
 				}
 				if !found {
-					for _, m := range ty.StructMethods {
-						if m.Name == fld.Name {
-							switch {
-							case ty.IsExtern:
-								cur = jen.Add(cur).Dot(fld.Name)
-							case m.IsPromoted && m.PromotedFromExtern:
-								cur = jen.Add(cur).Dot(fld.Name)
-							case m.Sym != 0:
-								cur = jen.Add(cur).Dot(symName(ctx, m.Sym))
-							default:
-								cur = jen.Add(cur).Dot(m.Name)
+					var chosen *ir.StructMethodInfo
+					if x.MethodSym != 0 {
+						for i := range ty.StructMethods {
+							if ty.StructMethods[i].Sym == x.MethodSym {
+								chosen = &ty.StructMethods[i]
+								break
 							}
-							curType = m.FuncTyp
-							found = true
-							break
 						}
+					}
+					if chosen == nil {
+						for i := range ty.StructMethods {
+							if ty.StructMethods[i].Name == fld.Name {
+								chosen = &ty.StructMethods[i]
+								break
+							}
+						}
+					}
+					if chosen != nil {
+						m := chosen
+						switch {
+						case ty.IsExtern:
+							cur = jen.Add(cur).Dot(fld.Name)
+						case m.IsPromoted && m.PromotedFromExtern:
+							cur = jen.Add(cur).Dot(fld.Name)
+						case m.Sym != 0:
+							cur = jen.Add(cur).Dot(symName(ctx, m.Sym))
+						default:
+							cur = jen.Add(cur).Dot(m.Name)
+						}
+						curType = m.FuncTyp
+						found = true
 					}
 				}
 				if !found {

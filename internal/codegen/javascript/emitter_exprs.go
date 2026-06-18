@@ -248,18 +248,31 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 					}
 				}
 				if !found {
-					for _, m := range ty.StructMethods {
-						if m.Name == field.Name {
-							if m.Sym != 0 {
-								base = base.Dot(symName(ctx, m.Sym))
-							} else {
-								base = base.Dot(m.Name)
+					methodSym := ir.SymID(0)
+					methodFuncTyp := ir.TypID(0)
+					if x.MethodSym != 0 {
+						methodSym = x.MethodSym
+						for _, m := range ty.StructMethods {
+							if m.Sym == x.MethodSym {
+								methodFuncTyp = m.FuncTyp
+								break
 							}
-							curType = m.FuncTyp
-							found = true
-							lastWasMethod = true
-							break
 						}
+					}
+					if methodSym == 0 {
+						for _, m := range ty.StructMethods {
+							if m.Name == field.Name {
+								methodSym = m.Sym
+								methodFuncTyp = m.FuncTyp
+								break
+							}
+						}
+					}
+					if methodSym != 0 {
+						base = base.Dot(symName(ctx, methodSym))
+						curType = methodFuncTyp
+						found = true
+						lastWasMethod = true
 					}
 				}
 				if !found {

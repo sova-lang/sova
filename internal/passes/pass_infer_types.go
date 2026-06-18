@@ -1890,11 +1890,22 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 					}
 				}
 				if !found {
-					for _, m := range ty.StructMethods {
-						if m.Name == fld.Name {
-							found = true
-							cur = m.FuncTyp
-							break
+					if x.MethodSym != 0 {
+						for _, m := range ty.StructMethods {
+							if m.Sym == x.MethodSym {
+								found = true
+								cur = m.FuncTyp
+								break
+							}
+						}
+					}
+					if !found {
+						for _, m := range ty.StructMethods {
+							if m.Name == fld.Name {
+								found = true
+								cur = m.FuncTyp
+								break
+							}
 						}
 					}
 				}
@@ -2031,6 +2042,31 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				bestMatch := p.resolveOverload(pc, candidates, prelimArgTypes)
 				if bestMatch != 0 {
 					varRef.Ref.Sym = bestMatch
+				}
+			}
+		}
+
+		if fa, ok := x.Callee.(*ir.FieldAccessExpr); ok && len(fa.Fields) > 0 {
+			recvTy := p.synthesizeTypeFromExpr(pc, fa.Expr)
+			methodName := fa.Fields[len(fa.Fields)-1].Name
+			if ty, ok := tt.GetByID(recvTy); ok && ty.Kind == ir.TK_Struct {
+				var candidates []ir.SymID
+				for _, m := range ty.StructMethods {
+					if m.Name == methodName && m.Sym != 0 {
+						candidates = append(candidates, m.Sym)
+					}
+				}
+				if len(candidates) > 1 {
+					best := p.resolveOverload(pc, candidates, prelimArgTypes)
+					if best != 0 {
+						fa.MethodSym = best
+						for _, pkg := range pc.Pkgs {
+							if bestSym, ok := pkg.Syms.GetByID(best); ok {
+								fa.SetType(bestSym.Typ)
+								break
+							}
+						}
+					}
 				}
 			}
 		}

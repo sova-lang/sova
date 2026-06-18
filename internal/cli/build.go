@@ -42,6 +42,26 @@ func runBuild(cfg BuildConfig, targets []buildTarget, distDir string, stripDebug
 	cfg.SourceDir = root
 
 	termui.Header("sova build")
+	npmResult, err := materializeNPMDeps(root)
+	if err != nil {
+		return err
+	}
+	if npmResult != nil {
+		ents, _ := os.ReadDir(npmResult.BindingsRoot)
+		for _, ent := range ents {
+			if !ent.IsDir() {
+				continue
+			}
+			subDir := filepath.Join(npmResult.BindingsRoot, ent.Name())
+			_, subFiles, err := collectSources(BuildConfig{SourceDir: subDir, OutputDir: cfg.OutputDir})
+			if err != nil {
+				continue
+			}
+			for _, sf := range subFiles {
+				files = append(files, sourceFile{RelPath: filepath.Join(".sova-npm", ent.Name(), sf.RelPath), Content: sf.Content})
+			}
+		}
+	}
 	termui.Step("compiling Sova sources")
 	c := compiler.New()
 	c.SetBuildConfig(CacheKey, cfg)
@@ -73,11 +93,16 @@ func runBuild(cfg BuildConfig, targets []buildTarget, distDir string, stripDebug
 	}
 
 	termui.Step("bundling frontend (esbuild)")
+	var nodePaths []string
+	if npmResult != nil {
+		nodePaths = []string{npmResult.NodeModulesPath}
+	}
 	bundleResult, err := bundler.Run(bundler.Options{
 		EntryJS:   emittedJS,
 		OutputDir: cfg.OutputDir,
 		Minify:    true,
 		KeepNames: true,
+		NodePaths: nodePaths,
 	})
 	if err != nil {
 		return err

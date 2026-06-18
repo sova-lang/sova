@@ -935,6 +935,7 @@ type FieldAccessExpr struct {
 	Expr        Expr        // Expr is the expression being accessed (e.g., a struct or object).
 	Fields      []FieldName // Fields is the list of field names being accessed in sequence. The first name is the first field, the second name is the field of the first field, and so on. (e.g., obj.field1.field2) translates to Fields = [field1, field2]
 	ResolvedSym SymID       // ResolvedSym, when non-zero, identifies a cross-package member; the codegen emits its mangled name directly instead of a member access chain.
+	MethodSym   SymID       // MethodSym, when non-zero, pins the resolved struct/enum method symbol after overload resolution. Codegen uses it as `recv.<mangledName>` so overloaded methods dispatch to the right body. Distinct from ResolvedSym to keep the standalone cross-package member emit path unaffected.
 }
 
 func (*FieldAccessExpr) exprNode() {}

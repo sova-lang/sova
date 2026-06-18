@@ -11,11 +11,24 @@ func (p *PassMangle) Requires() []string { return []string{"infer_types"} }
 func (p *PassMangle) NoErrors() bool     { return true }
 
 func (p *PassMangle) Run(pc *PassContext) error {
+	type ownerKey struct {
+		owner ir.ScopeID
+		name  string
+	}
+	methodSeen := map[ownerKey]int{}
 	for id, sym := range pc.Pkg.Syms.ByID() {
 		var mangledName string
 		if sym.Kind == ir.SK_Function {
 			if sym.Flags&ir.SF_TypeMethod != 0 {
-				mangledName = sanitizeMethodName(sym.Name)
+				base := sanitizeMethodName(sym.Name)
+				key := ownerKey{owner: sym.Owner, name: base}
+				idx := methodSeen[key]
+				methodSeen[key] = idx + 1
+				if idx == 0 {
+					mangledName = base
+				} else {
+					mangledName = base + "__o" + suffixForInt(idx)
+				}
 			} else {
 				mangledName = p.mangleFunctionName(pc, sym)
 			}
@@ -25,6 +38,18 @@ func (p *PassMangle) Run(pc *PassContext) error {
 		pc.Names.Add(id, sym.Name, mangledName)
 	}
 	return nil
+}
+
+func suffixForInt(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	out := ""
+	for n > 0 {
+		out = string('0'+byte(n%10)) + out
+		n /= 10
+	}
+	return out
 }
 
 func sanitizeMethodName(n string) string {
