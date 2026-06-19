@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/HugoSmits86/nativewebp v1.3.0
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/antlr4-go/antlr/v4 v4.13.1
 	github.com/dave/jennifer v1.7.1
@@ -16,11 +17,11 @@ require (
 	go.lsp.dev/protocol v0.12.0
 	go.lsp.dev/uri v0.3.0
 	go.uber.org/zap v1.21.0
+	golang.org/x/image v0.42.0
 	golang.org/x/tools v0.45.0
 )
 
 require (
-	github.com/HugoSmits86/nativewebp v1.3.0 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
@@ -37,7 +38,6 @@ require (
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/multierr v1.8.0 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
-	golang.org/x/image v0.42.0 // indirect
 	golang.org/x/mod v0.36.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
