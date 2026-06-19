@@ -1735,62 +1735,140 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, expr ir.Expr) *jen.Statement {
 	switch x := expr.(type) {
 	case *ir.WhenExpr:
-		return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).BlockFunc(func(g *jen.Group) {
-			g.Switch(e.buildExpr(ctx, pkg, f, x.Expr)).BlockFunc(func(g *jen.Group) {
-				for _, caseStmt := range x.Cases {
-					g.CaseFunc(func(cg *jen.Group) {
-						for _, caseExpr := range caseStmt.Values {
-							cg.Add(e.buildExpr(ctx, pkg, f, caseExpr))
-						}
-					}).Block(jen.Return(e.buildExpr(ctx, pkg, f, caseStmt.Then)))
-				}
-
-				g.Default().Block(jen.Return(e.buildExpr(ctx, pkg, f, x.Default)))
-			})
-		}).Call()
+		return e.buildWhenExpr(ctx, pkg, f, x)
 	case *ir.UnaryExpr:
-		op := string(x.Op)
-		return jen.Op(op).Add(e.buildExpr(ctx, pkg, f, x.Expr))
+		return jen.Op(string(x.Op)).Add(e.buildExpr(ctx, pkg, f, x.Expr))
 	case *ir.PrefixUnaryExpr:
-		return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).BlockFunc(func(g *jen.Group) {
-			target := e.hk.NewTemp()
-			if v, ok := x.Expr.(*ir.VarRef); ok {
-				target = symName(ctx, v.Ref.Sym)
-			} else {
-				g.Id(target).Op("=").Add(jen.Id(target))
-			}
-
-			switch x.Op {
-			case ir.OpInc:
-				g.Id(target).Op("=").Id(target).Op("+").Lit(1)
-			case ir.OpDec:
-				g.Id(target).Op("=").Id(target).Op("-").Lit(1)
-			}
-
-			g.Return(jen.Id(target))
-		}).Call()
+		return e.buildPrefixUnaryExpr(ctx, pkg, f, x)
 	case *ir.PostfixUnaryExpr:
-		return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).BlockFunc(func(g *jen.Group) {
-			target := e.hk.NewTemp()
-			if v, ok := x.Expr.(*ir.VarRef); ok {
-				target = symName(ctx, v.Ref.Sym)
-			} else {
-				g.Id(target).Op("=").Add(jen.Id(target))
-			}
-
-			orig := e.hk.NewTemp()
-			g.Id(orig).Op(":=").Id(target)
-
-			switch x.Op {
-			case ir.OpInc:
-				g.Id(target).Op("=").Id(target).Op("+").Lit(1)
-			case ir.OpDec:
-				g.Id(target).Op("=").Id(target).Op("-").Lit(1)
-			}
-
-			g.Return(jen.Id(orig))
-		}).Call()
+		return e.buildPostfixUnaryExpr(ctx, pkg, f, x)
 	case *ir.BinaryExpr:
+		return e.buildBinaryExpr(ctx, pkg, f, x)
+	case *ir.CoalesceExpr:
+		return e.buildCoalesceExpr(ctx, pkg, f, x)
+	case *ir.TenaryExpr:
+		return e.buildTenaryExpr(ctx, pkg, f, x)
+	case *ir.GroupedExpr:
+		return jen.Parens(e.buildExpr(ctx, pkg, f, x.Expr))
+	case *ir.OptionUnwrapExpr:
+		return e.buildOptionUnwrapExpr(ctx, pkg, f, x)
+	case *ir.InstanceofExpr:
+		return jen.False()
+	case *ir.AsExpr:
+		return e.buildAsExpr(ctx, pkg, f, x)
+	case *ir.AssignmentExpr:
+		return e.buildAssignmentExpr(ctx, pkg, f, x)
+	case *ir.IndexExpr:
+		return e.buildIndexExpr(ctx, pkg, f, x)
+	case *ir.SliceRangeExpr:
+		return e.buildSliceRangeExpr(ctx, pkg, f, x)
+	case *ir.FieldAccessExpr:
+		return e.buildFieldAccessExpr(ctx, pkg, f, x)
+	case *ir.RangeExpr:
+		return e.buildRangeExpr(ctx, pkg, f, x.GetType(), x.Start, x.End, x.Inc)
+	case *ir.FuncCallExpr:
+		return e.buildFuncCallExpr(ctx, pkg, f, x)
+	case *ir.FuncLitExpr:
+		return e.buildFuncLitExpr(ctx, pkg, f, x)
+	case *ir.LitInt:
+		return jen.Op(strconv.FormatInt(x.Value, 10))
+	case *ir.LitFloat:
+		return jen.Lit(x.Value)
+	case *ir.LitBool:
+		if x.Value {
+			return jen.True()
+		}
+
+		return jen.False()
+	case *ir.LitString:
+		return jen.Lit(x.Value)
+	case *ir.LitChar:
+		return jen.Lit(string(x.Value))
+	case *ir.LitNone:
+		return jen.Nil()
+	case *ir.VarRef:
+		return e.buildVarRef(ctx, x)
+	case *ir.ArrayLiteral:
+		return e.buildArrayLiteral(ctx, pkg, f, x)
+	case *ir.MapLiteral:
+		return e.buildMapLiteral(ctx, pkg, f, x)
+	case *ir.TupleLiteral:
+		return e.buildTupleLiteral(ctx, pkg, f, x)
+	case *ir.StringTemplateExpr:
+		return e.buildStringTemplateExpr(ctx, pkg, f, x)
+	case *ir.SessionExpr:
+		return jen.Id("__session")
+	case *ir.ComposableCallExpr:
+		return e.buildComposableCall(ctx, pkg, f, x)
+	case *ir.ChanInitExpr:
+		return e.buildChanInitExpr(ctx, pkg, f, x)
+	case *ir.NewExpr:
+		return e.buildNewExpr(ctx, pkg, f, x)
+	}
+
+	return jen.Nil()
+}
+
+func (e *CodeEmitter) buildWhenExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.WhenExpr) *jen.Statement {
+	return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).BlockFunc(func(g *jen.Group) {
+		g.Switch(e.buildExpr(ctx, pkg, f, x.Expr)).BlockFunc(func(g *jen.Group) {
+			for _, caseStmt := range x.Cases {
+				g.CaseFunc(func(cg *jen.Group) {
+					for _, caseExpr := range caseStmt.Values {
+						cg.Add(e.buildExpr(ctx, pkg, f, caseExpr))
+					}
+				}).Block(jen.Return(e.buildExpr(ctx, pkg, f, caseStmt.Then)))
+			}
+
+			g.Default().Block(jen.Return(e.buildExpr(ctx, pkg, f, x.Default)))
+		})
+	}).Call()
+}
+
+func (e *CodeEmitter) buildPrefixUnaryExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.PrefixUnaryExpr) *jen.Statement {
+	return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).BlockFunc(func(g *jen.Group) {
+		target := e.hk.NewTemp()
+		if v, ok := x.Expr.(*ir.VarRef); ok {
+			target = symName(ctx, v.Ref.Sym)
+		} else {
+			g.Id(target).Op("=").Add(jen.Id(target))
+		}
+
+		switch x.Op {
+		case ir.OpInc:
+			g.Id(target).Op("=").Id(target).Op("+").Lit(1)
+		case ir.OpDec:
+			g.Id(target).Op("=").Id(target).Op("-").Lit(1)
+		}
+
+		g.Return(jen.Id(target))
+	}).Call()
+}
+
+func (e *CodeEmitter) buildPostfixUnaryExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.PostfixUnaryExpr) *jen.Statement {
+	return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).BlockFunc(func(g *jen.Group) {
+		target := e.hk.NewTemp()
+		if v, ok := x.Expr.(*ir.VarRef); ok {
+			target = symName(ctx, v.Ref.Sym)
+		} else {
+			g.Id(target).Op("=").Add(jen.Id(target))
+		}
+
+		orig := e.hk.NewTemp()
+		g.Id(orig).Op(":=").Id(target)
+
+		switch x.Op {
+		case ir.OpInc:
+			g.Id(target).Op("=").Id(target).Op("+").Lit(1)
+		case ir.OpDec:
+			g.Id(target).Op("=").Id(target).Op("-").Lit(1)
+		}
+
+		g.Return(jen.Id(orig))
+	}).Call()
+}
+
+func (e *CodeEmitter) buildBinaryExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.BinaryExpr) *jen.Statement {
 		if leftTy, ok := ctx.Types.GetByID(x.Left.GetType()); ok && leftTy.Kind == ir.TK_Struct {
 			if methodName, isOp := opOverloadName(x.Op); isOp {
 				for _, m := range leftTy.StructMethods {
@@ -1830,34 +1908,38 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		right := e.buildExpr(ctx, pkg, f, x.Right)
 		op := string(x.Op)
 		return jen.Parens(left).Op(op).Parens(right)
-	case *ir.CoalesceExpr:
-		leftExpr := e.buildExpr(ctx, pkg, f, x.Left)
-		defaultExpr := e.buildExpr(ctx, pkg, f, x.Default)
+}
 
-		return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).BlockFunc(func(g *jen.Group) {
-			temp := e.hk.NewTemp()
-			g.Id(temp).Op(":=").Add(leftExpr)
-			g.If(jen.Id(temp).Op("!=").Nil()).Block(
-				jen.Return(jen.Op("*").Id(temp)),
-			).Else().Block(
-				jen.Return(defaultExpr),
-			)
-		}).Call()
-	case *ir.TenaryExpr:
-		cond := e.buildExpr(ctx, pkg, f, x.Cond)
-		then := e.buildExpr(ctx, pkg, f, x.Then)
-		elsee := e.buildExpr(ctx, pkg, f, x.Else)
+func (e *CodeEmitter) buildCoalesceExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.CoalesceExpr) *jen.Statement {
+	leftExpr := e.buildExpr(ctx, pkg, f, x.Left)
+	defaultExpr := e.buildExpr(ctx, pkg, f, x.Default)
 
-		return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).BlockFunc(func(g *jen.Group) {
-			g.If(cond).Block(
-				jen.Return(then),
-			).Else().Block(
-				jen.Return(elsee),
-			)
-		}).Call()
-	case *ir.GroupedExpr:
-		return jen.Parens(e.buildExpr(ctx, pkg, f, x.Expr))
-	case *ir.OptionUnwrapExpr:
+	return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).BlockFunc(func(g *jen.Group) {
+		temp := e.hk.NewTemp()
+		g.Id(temp).Op(":=").Add(leftExpr)
+		g.If(jen.Id(temp).Op("!=").Nil()).Block(
+			jen.Return(jen.Op("*").Id(temp)),
+		).Else().Block(
+			jen.Return(defaultExpr),
+		)
+	}).Call()
+}
+
+func (e *CodeEmitter) buildTenaryExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.TenaryExpr) *jen.Statement {
+	cond := e.buildExpr(ctx, pkg, f, x.Cond)
+	then := e.buildExpr(ctx, pkg, f, x.Then)
+	elsee := e.buildExpr(ctx, pkg, f, x.Else)
+
+	return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).BlockFunc(func(g *jen.Group) {
+		g.If(cond).Block(
+			jen.Return(then),
+		).Else().Block(
+			jen.Return(elsee),
+		)
+	}).Call()
+}
+
+func (e *CodeEmitter) buildOptionUnwrapExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.OptionUnwrapExpr) *jen.Statement {
 		cur := e.buildExpr(ctx, pkg, f, x.Expr)
 		storage := x.Expr.GetType()
 		if vr, ok := x.Expr.(*ir.VarRef); ok && vr.Ref.Sym != 0 {
@@ -1877,84 +1959,92 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		}
 
 		return cur
-	case *ir.InstanceofExpr:
-		return jen.False()
-	case *ir.AsExpr:
-		if x.Target == nil || x.Target.Typ == 0 {
-			return e.buildExpr(ctx, pkg, f, x.Expr)
-		}
+}
 
-		srcTy := x.Expr.GetType()
-		if !x.Safe && srcTy != 0 && srcTy == x.Target.Typ {
-			return e.buildExpr(ctx, pkg, f, x.Expr)
-		}
+func (e *CodeEmitter) buildAsExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.AsExpr) *jen.Statement {
+	if x.Target == nil || x.Target.Typ == 0 {
+		return e.buildExpr(ctx, pkg, f, x.Expr)
+	}
 
-		if x.Safe {
-			if conv := goSafePrimitiveConversion(ctx, pkg, f, e, x); conv != nil {
-				return conv
-			}
+	srcTy := x.Expr.GetType()
+	if !x.Safe && srcTy != 0 && srcTy == x.Target.Typ {
+		return e.buildExpr(ctx, pkg, f, x.Expr)
+	}
 
-			return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).Block(
-				jen.List(jen.Id("__v"), jen.Id("__ok")).Op(":=").Add(e.buildExpr(ctx, pkg, f, x.Expr)).Assert(typeToGoWithContext(ctx, pkg, ctx.Types, x.Target.Typ)),
-				jen.If(jen.Id("__ok")).Block(
-					jen.Return(jen.Op("&").Id("__v")),
-				),
-				jen.Return(jen.Nil()),
-			).Call()
-		}
-
-		if conv := goPrimitiveConversion(ctx, pkg, f, e, x); conv != nil {
+	if x.Safe {
+		if conv := goSafePrimitiveConversion(ctx, pkg, f, e, x); conv != nil {
 			return conv
 		}
 
-		return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.Target.Typ)).Block(
-			jen.List(jen.Id("__v"), jen.Id("_")).Op(":=").Add(e.buildExpr(ctx, pkg, f, x.Expr)).Assert(typeToGoWithContext(ctx, pkg, ctx.Types, x.Target.Typ)),
-			jen.Return(jen.Id("__v")),
+		return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).Block(
+			jen.List(jen.Id("__v"), jen.Id("__ok")).Op(":=").Add(e.buildExpr(ctx, pkg, f, x.Expr)).Assert(typeToGoWithContext(ctx, pkg, ctx.Types, x.Target.Typ)),
+			jen.If(jen.Id("__ok")).Block(
+				jen.Return(jen.Op("&").Id("__v")),
+			),
+			jen.Return(jen.Nil()),
 		).Call()
-	case *ir.AssignmentExpr:
-		return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).BlockFunc(func(group *jen.Group) {
-			right := e.buildExpr(ctx, pkg, f, x.Right)
-			var lhs *jen.Statement
-			if name, isMethod, ok := e.classMemberLookup(ctx, x.Left.Sym); ok && !isMethod {
-				lhs = jen.Id("this").Dot(name)
-			} else {
-				lhs = jen.Id(symName(ctx, x.Left.Sym))
-			}
+	}
 
-			if x.Op == ir.OpAssign {
-				group.Add(lhs.Clone()).Op("=").Add(right)
-			} else {
-				op := string(x.Op[:len(x.Op)-1])
-				temp := e.hk.NewTemp()
-				group.Id(temp).Op(":=").Add(lhs.Clone()).Op(op).Add(right)
-				group.Add(lhs.Clone()).Op("=").Id(temp)
-			}
+	if conv := goPrimitiveConversion(ctx, pkg, f, e, x); conv != nil {
+		return conv
+	}
 
-			if reactiveWireVarOriginalName(ctx, x.Left.Sym) != "" {
-				group.Id("__sovaPushWireVar").Call(jen.Lit(reactiveWireVarOriginalName(ctx, x.Left.Sym)), lhs.Clone())
-			}
+	return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.Target.Typ)).Block(
+		jen.List(jen.Id("__v"), jen.Id("_")).Op(":=").Add(e.buildExpr(ctx, pkg, f, x.Expr)).Assert(typeToGoWithContext(ctx, pkg, ctx.Types, x.Target.Typ)),
+		jen.Return(jen.Id("__v")),
+	).Call()
+}
 
-			group.Return(lhs.Clone())
-		}).Call()
-	case *ir.IndexExpr:
-		baseTyp := x.Expr.GetType()
-		if baseTy, ok := ctx.Types.GetByID(baseTyp); ok && baseTy.Kind == ir.TK_PrimitiveAny {
-			return jen.Id("__sovaAnyIndex").Call(e.buildExpr(ctx, pkg, f, x.Expr), e.buildExpr(ctx, pkg, f, x.Index))
+func (e *CodeEmitter) buildAssignmentExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.AssignmentExpr) *jen.Statement {
+	return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).BlockFunc(func(group *jen.Group) {
+		right := e.buildExpr(ctx, pkg, f, x.Right)
+		var lhs *jen.Statement
+		if name, isMethod, ok := e.classMemberLookup(ctx, x.Left.Sym); ok && !isMethod {
+			lhs = jen.Id("this").Dot(name)
+		} else {
+			lhs = jen.Id(symName(ctx, x.Left.Sym))
 		}
 
-		return jen.Parens(e.buildExpr(ctx, pkg, f, x.Expr)).Index(e.buildExpr(ctx, pkg, f, x.Index))
-	case *ir.SliceRangeExpr:
-		var lowCode, highCode jen.Code = jen.Empty(), jen.Empty()
-		if x.Low != nil {
-			lowCode = e.buildExpr(ctx, pkg, f, x.Low)
+		if x.Op == ir.OpAssign {
+			group.Add(lhs.Clone()).Op("=").Add(right)
+		} else {
+			op := string(x.Op[:len(x.Op)-1])
+			temp := e.hk.NewTemp()
+			group.Id(temp).Op(":=").Add(lhs.Clone()).Op(op).Add(right)
+			group.Add(lhs.Clone()).Op("=").Id(temp)
 		}
 
-		if x.High != nil {
-			highCode = e.buildExpr(ctx, pkg, f, x.High)
+		if reactiveWireVarOriginalName(ctx, x.Left.Sym) != "" {
+			group.Id("__sovaPushWireVar").Call(jen.Lit(reactiveWireVarOriginalName(ctx, x.Left.Sym)), lhs.Clone())
 		}
 
-		return jen.Parens(e.buildExpr(ctx, pkg, f, x.Expr)).Index(lowCode, highCode)
-	case *ir.FieldAccessExpr:
+		group.Return(lhs.Clone())
+	}).Call()
+}
+
+func (e *CodeEmitter) buildIndexExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.IndexExpr) *jen.Statement {
+	baseTyp := x.Expr.GetType()
+	if baseTy, ok := ctx.Types.GetByID(baseTyp); ok && baseTy.Kind == ir.TK_PrimitiveAny {
+		return jen.Id("__sovaAnyIndex").Call(e.buildExpr(ctx, pkg, f, x.Expr), e.buildExpr(ctx, pkg, f, x.Index))
+	}
+
+	return jen.Parens(e.buildExpr(ctx, pkg, f, x.Expr)).Index(e.buildExpr(ctx, pkg, f, x.Index))
+}
+
+func (e *CodeEmitter) buildSliceRangeExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.SliceRangeExpr) *jen.Statement {
+	var lowCode, highCode jen.Code = jen.Empty(), jen.Empty()
+	if x.Low != nil {
+		lowCode = e.buildExpr(ctx, pkg, f, x.Low)
+	}
+
+	if x.High != nil {
+		highCode = e.buildExpr(ctx, pkg, f, x.High)
+	}
+
+	return jen.Parens(e.buildExpr(ctx, pkg, f, x.Expr)).Index(lowCode, highCode)
+}
+
+func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.FieldAccessExpr) *jen.Statement {
 		var base *jen.Statement
 		var cur *jen.Statement
 		var curType ir.TypID
@@ -2146,254 +2236,241 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		}
 
 		return cur
-	case *ir.RangeExpr:
-		return e.buildRangeExpr(ctx, pkg, f, x.GetType(), x.Start, x.End, x.Inc)
-	case *ir.FuncCallExpr:
-		if chOp, chRecv, ok := matchChanMethod(ctx, x); ok {
-			recvCode := e.buildExpr(ctx, pkg, f, chRecv)
-			switch chOp {
-			case "send":
-				if len(x.Args) == 1 {
-					return jen.Func().Params().Block(recvCode.Clone().Op("<-").Add(e.buildExpr(ctx, pkg, f, x.Args[0].Expr))).Call()
-				}
+}
 
-			case "recv":
-				return jen.Func().Params().Index().Any().Block(
-					jen.List(jen.Id("__v"), jen.Id("__ok")).Op(":=").Op("<-").Add(recvCode),
-					jen.Return(jen.Index().Any().Values(jen.Id("__v"), jen.Id("__ok"))),
-				).Call()
-			case "close":
-				return jen.Func().Params().Block(jen.Id("close").Call(recvCode)).Call()
-			}
-		}
-
-		if intrinsic := lookupBuiltinIntrinsic(ctx, x.Callee); intrinsic != "" {
-			argCodes := make([]jen.Code, len(x.Args))
-			for i, arg := range x.Args {
-				argCodes[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
+func (e *CodeEmitter) buildFuncCallExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.FuncCallExpr) *jen.Statement {
+	if chOp, chRecv, ok := matchChanMethod(ctx, x); ok {
+		recvCode := e.buildExpr(ctx, pkg, f, chRecv)
+		switch chOp {
+		case "send":
+			if len(x.Args) == 1 {
+				return jen.Func().Params().Block(recvCode.Clone().Op("<-").Add(e.buildExpr(ctx, pkg, f, x.Args[0].Expr))).Call()
 			}
 
-			argTypes := make([]ir.TypID, len(x.Args))
-			for i, arg := range x.Args {
-				if arg.Expr != nil {
-					argTypes[i] = arg.Expr.GetType()
-				}
-			}
-
-			if code := emitBuiltinIntrinsicCall(ctx, intrinsic, argCodes, argTypes); code != nil {
-				return code
-			}
+		case "recv":
+			return jen.Func().Params().Index().Any().Block(
+				jen.List(jen.Id("__v"), jen.Id("__ok")).Op(":=").Op("<-").Add(recvCode),
+				jen.Return(jen.Index().Any().Values(jen.Id("__v"), jen.Id("__ok"))),
+			).Call()
+		case "close":
+			return jen.Func().Params().Block(jen.Id("close").Call(recvCode)).Call()
 		}
-
-		callee := e.buildExpr(ctx, pkg, f, x.Callee)
-
-		calleeType := x.Callee.GetType()
-		funcTypeDef, _ := ctx.Types.GetByID(calleeType)
-
-		var args []jen.Code
-		if funcTypeDef != nil && funcTypeDef.Kind == ir.TK_Function {
-			paramCount := len(funcTypeDef.ParamTypes)
-			args = make([]jen.Code, paramCount)
-
-			for i := 0; i < paramCount; i++ {
-				if i < len(x.Args) && x.Args[i].Expr != nil {
-					if wrapped := tryWrapErasedLambdaArg(ctx, pkg, f, e, funcTypeDef.ParamTypes[i], x.Args[i].Expr); wrapped != nil {
-						args[i] = wrapped
-					} else if wrapped := tryWrapErasedSliceArg(ctx, pkg, f, e, funcTypeDef.ParamTypes[i], x.Args[i].Expr); wrapped != nil {
-						args[i] = wrapped
-					} else {
-						var emitted jen.Code = e.buildExpr(ctx, pkg, f, x.Args[i].Expr)
-						if funcTypeDef.ParamTypes[i] != nil && funcTypeDef.ParamTypes[i].Type != nil && typeContainsTypeParam(ctx.Types, funcTypeDef.ParamTypes[i].Type.Typ) {
-							emitted = wrapPrimitiveForAny(ctx, x.Args[i].Expr, emitted)
-						}
-
-						args[i] = emitted
-					}
-				} else if funcTypeDef.ParamTypes[i].Default != nil {
-					args[i] = e.buildExpr(ctx, pkg, f, funcTypeDef.ParamTypes[i].Default)
-				} else {
-					args[i] = jen.Null()
-				}
-			}
-		} else {
-			args = make([]jen.Code, len(x.Args))
-			for i, arg := range x.Args {
-				args[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
-			}
-		}
-
-		return callee.Call(args...)
-	case *ir.FuncLitExpr:
-		params := make([]jen.Code, len(x.Params))
-		for i, param := range x.Params {
-			paramName := symName(ctx, param.Name.Sym)
-			paramType := typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ)
-			params[i] = jen.Id(paramName).Add(paramType)
-		}
-
-		funcStmt := jen.Func().Params(params...)
-		if x.ReturnType != nil && x.ReturnType.Typ != 0 && x.ReturnType.Typ != ctx.Types.TypNone() {
-			funcStmt = funcStmt.Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.ReturnType.Typ))
-		}
-
-		return funcStmt.BlockFunc(func(g *jen.Group) {
-			e.emitBlock(ctx, pkg, f, g, x.Body.Stmts)
-		})
-	case *ir.LitInt:
-		return jen.Op(strconv.FormatInt(x.Value, 10))
-	case *ir.LitFloat:
-		return jen.Lit(x.Value)
-	case *ir.LitBool:
-		if x.Value {
-			return jen.True()
-		}
-
-		return jen.False()
-	case *ir.LitString:
-		return jen.Lit(x.Value)
-	case *ir.LitChar:
-		return jen.Lit(string(x.Value))
-	case *ir.LitNone:
-		return jen.Nil()
-	case *ir.VarRef:
-
-		if orig, ok := ctx.Names.GetOriginalName(x.Ref.Sym); ok && orig == "this" {
-			return jen.Id("this")
-		}
-
-		if name, _, ok := e.classMemberLookup(ctx, x.Ref.Sym); ok {
-			return jen.Id("this").Dot(name)
-		}
-
-		return jen.Id(symName(ctx, x.Ref.Sym))
-	case *ir.ArrayLiteral:
-		elements := make([]jen.Code, len(x.Elems))
-		liftToAny := false
-		if litTy, ok := ctx.Types.GetByID(x.GetType()); ok && (litTy.Kind == ir.TK_Slice || litTy.Kind == ir.TK_Array) && litTy.ElemType == ctx.Types.PrimAny() {
-			liftToAny = true
-		}
-
-		for i, elem := range x.Elems {
-			elements[i] = e.buildExpr(ctx, pkg, f, elem)
-			if liftToAny {
-				elements[i] = wrapPrimitiveForAny(ctx, elem, elements[i])
-			}
-		}
-
-		return typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType()).(*jen.Statement).Values(elements...)
-	case *ir.MapLiteral:
-		dict := jen.Dict{}
-
-		for _, entry := range x.Entries {
-			key := e.buildExpr(ctx, pkg, f, entry.Key)
-			value := e.buildExpr(ctx, pkg, f, entry.Value)
-			dict[key] = value
-		}
-
-		return typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType()).(*jen.Statement).Values(dict)
-	case *ir.TupleLiteral:
-		if len(x.Elems) == 0 {
-			return jen.Index().Any().Values()
-		}
-
-		var elements []jen.Code
-		for _, elem := range x.Elems {
-			elements = append(elements, e.buildExpr(ctx, pkg, f, elem))
-		}
-
-		return jen.Index().Any().Values(elements...)
-
-	case *ir.StringTemplateExpr:
-		var format strings.Builder
-		var args []jen.Code
-		for _, part := range x.Parts {
-			if part.Expr != nil {
-				format.WriteString(fmtSprintfKey(part.Expr.GetType(), ctx.Types))
-				args = append(args, e.buildExpr(ctx, pkg, f, part.Expr))
-			} else {
-				format.WriteString(strings.ReplaceAll(part.Lit, "%", "%%"))
-			}
-		}
-
-		call := []jen.Code{jen.Lit(format.String())}
-
-		call = append(call, args...)
-		return jen.Qual("fmt", "Sprintf").Call(call...)
-
-	case *ir.SessionExpr:
-		return jen.Id("__session")
-	case *ir.ComposableCallExpr:
-		return e.buildComposableCall(ctx, pkg, f, x)
-	case *ir.ChanInitExpr:
-		elem := typeToGoWithContext(ctx, pkg, ctx.Types, x.ElemType.Typ)
-		if x.Capacity != nil {
-			return jen.Make(jen.Chan().Add(elem), e.buildExpr(ctx, pkg, f, x.Capacity))
-		}
-
-		return jen.Make(jen.Chan().Add(elem))
-	case *ir.NewExpr:
-		typeName := symName(ctx, x.TypeName.Sym)
-		if x.CtorSym != 0 {
-			ctorName := symName(ctx, x.CtorSym)
-			ctorPkg := pkg
-			if x.Qualifier != "" {
-				if found := lookupImportedPackage(ctx, pkg, x.Qualifier); found != nil {
-					ctorPkg = found
-				}
-			}
-
-			ctorSym, _ := ctorPkg.Syms.GetByID(x.CtorSym)
-			var ctorFunc *ir.Type
-			if ctorSym != nil {
-				ctorFunc, _ = ctx.Types.GetByID(ctorSym.Typ)
-			}
-
-			args := make([]jen.Code, len(x.Args))
-			for i, arg := range x.Args {
-				if arg.Expr != nil {
-					var paramFp *ir.FuncParam
-					if ctorFunc != nil && i < len(ctorFunc.ParamTypes) {
-						paramFp = ctorFunc.ParamTypes[i]
-					}
-
-					if wrapped := tryWrapErasedLambdaArg(ctx, pkg, f, e, paramFp, arg.Expr); wrapped != nil {
-						args[i] = wrapped
-					} else if wrapped := tryWrapErasedSliceArg(ctx, pkg, f, e, paramFp, arg.Expr); wrapped != nil {
-						args[i] = wrapped
-					} else {
-						var emitted jen.Code = e.buildExpr(ctx, pkg, f, arg.Expr)
-						if paramFp != nil && paramFp.Type != nil && typeContainsTypeParam(ctx.Types, paramFp.Type.Typ) {
-							emitted = wrapPrimitiveForAny(ctx, arg.Expr, emitted)
-						}
-
-						args[i] = emitted
-					}
-				} else if ctorFunc != nil && i < len(ctorFunc.ParamTypes) && ctorFunc.ParamTypes[i].Default != nil {
-					args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.ParamTypes[i].Default)
-				} else {
-					args[i] = jen.Nil()
-				}
-			}
-
-			return jen.Id(ctorName).Call(args...)
-		}
-
-		var inits []jen.Code
-		if decl, ok := e.typeDecls[x.GetType()]; ok {
-			for _, field := range decl.Fields {
-				if field.Default != nil {
-					inits = append(inits, jen.Id(goExportedName(field.Name.Name)).Op(":").Add(e.buildExpr(ctx, pkg, f, field.Default)))
-				}
-			}
-		}
-
-		return jen.Op("&").Id(typeName).Values(inits...)
-
-	default:
-		break
 	}
 
-	return jen.Nil()
+	if intrinsic := lookupBuiltinIntrinsic(ctx, x.Callee); intrinsic != "" {
+		argCodes := make([]jen.Code, len(x.Args))
+		for i, arg := range x.Args {
+			argCodes[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
+		}
+
+		argTypes := make([]ir.TypID, len(x.Args))
+		for i, arg := range x.Args {
+			if arg.Expr != nil {
+				argTypes[i] = arg.Expr.GetType()
+			}
+		}
+
+		if code := emitBuiltinIntrinsicCall(ctx, intrinsic, argCodes, argTypes); code != nil {
+			return code
+		}
+	}
+
+	callee := e.buildExpr(ctx, pkg, f, x.Callee)
+
+	calleeType := x.Callee.GetType()
+	funcTypeDef, _ := ctx.Types.GetByID(calleeType)
+
+	var args []jen.Code
+	if funcTypeDef != nil && funcTypeDef.Kind == ir.TK_Function {
+		paramCount := len(funcTypeDef.ParamTypes)
+		args = make([]jen.Code, paramCount)
+
+		for i := 0; i < paramCount; i++ {
+			if i < len(x.Args) && x.Args[i].Expr != nil {
+				if wrapped := tryWrapErasedLambdaArg(ctx, pkg, f, e, funcTypeDef.ParamTypes[i], x.Args[i].Expr); wrapped != nil {
+					args[i] = wrapped
+				} else if wrapped := tryWrapErasedSliceArg(ctx, pkg, f, e, funcTypeDef.ParamTypes[i], x.Args[i].Expr); wrapped != nil {
+					args[i] = wrapped
+				} else {
+					var emitted jen.Code = e.buildExpr(ctx, pkg, f, x.Args[i].Expr)
+					if funcTypeDef.ParamTypes[i] != nil && funcTypeDef.ParamTypes[i].Type != nil && typeContainsTypeParam(ctx.Types, funcTypeDef.ParamTypes[i].Type.Typ) {
+						emitted = wrapPrimitiveForAny(ctx, x.Args[i].Expr, emitted)
+					}
+
+					args[i] = emitted
+				}
+			} else if funcTypeDef.ParamTypes[i].Default != nil {
+				args[i] = e.buildExpr(ctx, pkg, f, funcTypeDef.ParamTypes[i].Default)
+			} else {
+				args[i] = jen.Null()
+			}
+		}
+	} else {
+		args = make([]jen.Code, len(x.Args))
+		for i, arg := range x.Args {
+			args[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
+		}
+	}
+
+	return callee.Call(args...)
+}
+
+func (e *CodeEmitter) buildFuncLitExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.FuncLitExpr) *jen.Statement {
+	params := make([]jen.Code, len(x.Params))
+	for i, param := range x.Params {
+		paramName := symName(ctx, param.Name.Sym)
+		paramType := typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ)
+		params[i] = jen.Id(paramName).Add(paramType)
+	}
+
+	funcStmt := jen.Func().Params(params...)
+	if x.ReturnType != nil && x.ReturnType.Typ != 0 && x.ReturnType.Typ != ctx.Types.TypNone() {
+		funcStmt = funcStmt.Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.ReturnType.Typ))
+	}
+
+	return funcStmt.BlockFunc(func(g *jen.Group) {
+		e.emitBlock(ctx, pkg, f, g, x.Body.Stmts)
+	})
+}
+
+func (e *CodeEmitter) buildVarRef(ctx *codegen.EmitContext, x *ir.VarRef) *jen.Statement {
+	if orig, ok := ctx.Names.GetOriginalName(x.Ref.Sym); ok && orig == "this" {
+		return jen.Id("this")
+	}
+
+	if name, _, ok := e.classMemberLookup(ctx, x.Ref.Sym); ok {
+		return jen.Id("this").Dot(name)
+	}
+
+	return jen.Id(symName(ctx, x.Ref.Sym))
+}
+
+func (e *CodeEmitter) buildArrayLiteral(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.ArrayLiteral) *jen.Statement {
+	elements := make([]jen.Code, len(x.Elems))
+	liftToAny := false
+	if litTy, ok := ctx.Types.GetByID(x.GetType()); ok && (litTy.Kind == ir.TK_Slice || litTy.Kind == ir.TK_Array) && litTy.ElemType == ctx.Types.PrimAny() {
+		liftToAny = true
+	}
+
+	for i, elem := range x.Elems {
+		elements[i] = e.buildExpr(ctx, pkg, f, elem)
+		if liftToAny {
+			elements[i] = wrapPrimitiveForAny(ctx, elem, elements[i])
+		}
+	}
+
+	return typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType()).(*jen.Statement).Values(elements...)
+}
+
+func (e *CodeEmitter) buildMapLiteral(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.MapLiteral) *jen.Statement {
+	dict := jen.Dict{}
+
+	for _, entry := range x.Entries {
+		key := e.buildExpr(ctx, pkg, f, entry.Key)
+		value := e.buildExpr(ctx, pkg, f, entry.Value)
+		dict[key] = value
+	}
+
+	return typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType()).(*jen.Statement).Values(dict)
+}
+
+func (e *CodeEmitter) buildTupleLiteral(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.TupleLiteral) *jen.Statement {
+	if len(x.Elems) == 0 {
+		return jen.Index().Any().Values()
+	}
+
+	var elements []jen.Code
+	for _, elem := range x.Elems {
+		elements = append(elements, e.buildExpr(ctx, pkg, f, elem))
+	}
+
+	return jen.Index().Any().Values(elements...)
+}
+
+func (e *CodeEmitter) buildStringTemplateExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.StringTemplateExpr) *jen.Statement {
+	var format strings.Builder
+	var args []jen.Code
+	for _, part := range x.Parts {
+		if part.Expr != nil {
+			format.WriteString(fmtSprintfKey(part.Expr.GetType(), ctx.Types))
+			args = append(args, e.buildExpr(ctx, pkg, f, part.Expr))
+		} else {
+			format.WriteString(strings.ReplaceAll(part.Lit, "%", "%%"))
+		}
+	}
+
+	call := []jen.Code{jen.Lit(format.String())}
+
+	call = append(call, args...)
+	return jen.Qual("fmt", "Sprintf").Call(call...)
+}
+
+func (e *CodeEmitter) buildChanInitExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.ChanInitExpr) *jen.Statement {
+	elem := typeToGoWithContext(ctx, pkg, ctx.Types, x.ElemType.Typ)
+	if x.Capacity != nil {
+		return jen.Make(jen.Chan().Add(elem), e.buildExpr(ctx, pkg, f, x.Capacity))
+	}
+
+	return jen.Make(jen.Chan().Add(elem))
+}
+
+func (e *CodeEmitter) buildNewExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.NewExpr) *jen.Statement {
+	typeName := symName(ctx, x.TypeName.Sym)
+	if x.CtorSym != 0 {
+		ctorName := symName(ctx, x.CtorSym)
+		ctorPkg := pkg
+		if x.Qualifier != "" {
+			if found := lookupImportedPackage(ctx, pkg, x.Qualifier); found != nil {
+				ctorPkg = found
+			}
+		}
+
+		ctorSym, _ := ctorPkg.Syms.GetByID(x.CtorSym)
+		var ctorFunc *ir.Type
+		if ctorSym != nil {
+			ctorFunc, _ = ctx.Types.GetByID(ctorSym.Typ)
+		}
+
+		args := make([]jen.Code, len(x.Args))
+		for i, arg := range x.Args {
+			if arg.Expr != nil {
+				var paramFp *ir.FuncParam
+				if ctorFunc != nil && i < len(ctorFunc.ParamTypes) {
+					paramFp = ctorFunc.ParamTypes[i]
+				}
+
+				if wrapped := tryWrapErasedLambdaArg(ctx, pkg, f, e, paramFp, arg.Expr); wrapped != nil {
+					args[i] = wrapped
+				} else if wrapped := tryWrapErasedSliceArg(ctx, pkg, f, e, paramFp, arg.Expr); wrapped != nil {
+					args[i] = wrapped
+				} else {
+					var emitted jen.Code = e.buildExpr(ctx, pkg, f, arg.Expr)
+					if paramFp != nil && paramFp.Type != nil && typeContainsTypeParam(ctx.Types, paramFp.Type.Typ) {
+						emitted = wrapPrimitiveForAny(ctx, arg.Expr, emitted)
+					}
+
+					args[i] = emitted
+				}
+			} else if ctorFunc != nil && i < len(ctorFunc.ParamTypes) && ctorFunc.ParamTypes[i].Default != nil {
+				args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.ParamTypes[i].Default)
+			} else {
+				args[i] = jen.Nil()
+			}
+		}
+
+		return jen.Id(ctorName).Call(args...)
+	}
+
+	var inits []jen.Code
+	if decl, ok := e.typeDecls[x.GetType()]; ok {
+		for _, field := range decl.Fields {
+			if field.Default != nil {
+				inits = append(inits, jen.Id(goExportedName(field.Name.Name)).Op(":").Add(e.buildExpr(ctx, pkg, f, field.Default)))
+			}
+		}
+	}
+
+	return jen.Op("&").Id(typeName).Values(inits...)
 }
 
 func (e *CodeEmitter) buildComposableCall(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.ComposableCallExpr) *jen.Statement {
