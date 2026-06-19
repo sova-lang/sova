@@ -67,35 +67,33 @@ func (p *PassInitOrder) Run(pc *PassContext) error {
 
 	var steps []*InitStep
 
-	for _, pkg := range pc.Pkgs {
-		for _, f := range pkg.Files {
-			seq := 0
-			for _, st := range f.Hir.Statements {
-				add := func(s ir.Stmt, kind InitStepKind) {
-					steps = append(steps, &InitStep{
-						ID: s.ID(), Kind: kind, Pkg: pkg, File: f.Hir, Stmt: s,
-						Seq: seq,
-					})
-					seq++
-				}
+	VisitFiles(pc.Pkgs, StmtVisitOpts{IncludeSynth: true}, func(pkg *ir.PackageContext, f *ir.PreparsedFile) {
+		seq := 0
+		for _, st := range f.Hir.Statements {
+			add := func(s ir.Stmt, kind InitStepKind) {
+				steps = append(steps, &InitStep{
+					ID: s.ID(), Kind: kind, Pkg: pkg, File: f.Hir, Stmt: s,
+					Seq: seq,
+				})
+				seq++
+			}
 
-				switch s := st.(type) {
-				case *ir.BlockStmt:
-					add(s, InitBlock)
-				case *ir.IfStmt:
-					add(s, InitIf)
-				case *ir.SwitchStmt:
-					add(s, InitSwitch)
-				case *ir.ReturnStmt:
-					add(s, InitReturn)
-				case *ir.ExprStmt:
-					add(s, InitExpr)
-				case *ir.WhileStmt:
-					add(s, InitWhile)
-				}
+			switch s := st.(type) {
+			case *ir.BlockStmt:
+				add(s, InitBlock)
+			case *ir.IfStmt:
+				add(s, InitIf)
+			case *ir.SwitchStmt:
+				add(s, InitSwitch)
+			case *ir.ReturnStmt:
+				add(s, InitReturn)
+			case *ir.ExprStmt:
+				add(s, InitExpr)
+			case *ir.WhileStmt:
+				add(s, InitWhile)
 			}
 		}
-	}
+	})
 
 	if len(steps) == 0 {
 		return nil

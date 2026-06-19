@@ -31,15 +31,9 @@ func (p *PassTestDiscovery) NoErrors() bool     { return false }
 
 func (p *PassTestDiscovery) Run(pc *PassContext) error {
 	var entries []TestEntry
-	for _, pkg := range pc.Pkgs {
-		for _, f := range pkg.Files {
-			if f.Hir == nil || f.Hir.Side.Kind != ir.SideTest {
-				continue
-			}
-
-			entries = p.walkStmts(entries, pkg, f, f.Hir.Statements, nil, nil, nil, nil, nil, nil, nil, false, nil)
-		}
-	}
+	VisitFiles(pc.Pkgs, StmtVisitOpts{OnlySide: ir.SideTest}, func(pkg *ir.PackageContext, f *ir.PreparsedFile) {
+		entries = p.walkStmts(entries, pkg, f, f.Hir.Statements, nil, nil, nil, nil, nil, nil, nil, false, nil)
+	})
 
 	pc.Cache[TestRegistryCacheKey] = entries
 	return nil

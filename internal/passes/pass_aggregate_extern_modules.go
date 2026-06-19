@@ -26,41 +26,36 @@ type externModulePin struct {
 func (p *PassAggregateExternModules) Run(pc *PassContext) error {
 	pins := map[string]externModulePin{}
 
-	for _, pkg := range pc.Pkgs {
-		for _, f := range pkg.Files {
-			side := f.Hir.Side.Kind
-			if side == ir.SideFrontend {
+	VisitStatements(pc.Pkgs, StmtVisitOpts{IncludeSynth: true}, func(_ *ir.PackageContext, f *ir.PreparsedFile, st ir.Stmt) {
+		if f.Hir.Side.Kind == ir.SideFrontend {
+			return
+		}
+
+		ext, ok := st.(*ir.ExternDeclStmt)
+		if !ok {
+			return
+		}
+
+		if ext.Module != nil && *ext.Module != "" {
+			p.record(pc, pins, *ext.Module, ext.Version, ext.Span())
+		}
+
+		for _, fn := range ext.Funcs {
+			if fn.Mapping == nil {
 				continue
 			}
 
-			for _, st := range f.Hir.Statements {
-				ext, ok := st.(*ir.ExternDeclStmt)
-				if !ok {
-					continue
-				}
-
-				if ext.Module != nil && *ext.Module != "" {
-					p.record(pc, pins, *ext.Module, ext.Version, ext.Span())
-				}
-
-				for _, fn := range ext.Funcs {
-					if fn.Mapping == nil {
-						continue
-					}
-
-					p.recordFromMapping(pc, pins, fn.Mapping, fn.Span())
-				}
-
-				for _, v := range ext.Vars {
-					if v.Mapping == nil {
-						continue
-					}
-
-					p.recordFromMapping(pc, pins, v.Mapping, v.Span())
-				}
-			}
+			p.recordFromMapping(pc, pins, fn.Mapping, fn.Span())
 		}
-	}
+
+		for _, v := range ext.Vars {
+			if v.Mapping == nil {
+				continue
+			}
+
+			p.recordFromMapping(pc, pins, v.Mapping, v.Span())
+		}
+	})
 
 	out := make(map[string]string, len(pins))
 	for path, pin := range pins {

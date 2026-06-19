@@ -47,50 +47,34 @@ type AnnotatedVarVisitor func(vd *ir.VarDeclStmt, anno *ir.Annotation, fileDir s
 type AnnotatedFieldVisitor func(fld *ir.TypeField, anno *ir.Annotation, fileDir string)
 
 func WalkAnnotatedDecls(pc *PassContext, annoName, projectRoot string, onVar AnnotatedVarVisitor, onField AnnotatedFieldVisitor) {
-	for _, pkg := range pc.Pkgs {
-		if pkg == nil {
-			continue
-		}
-
-		for _, f := range pkg.Files {
-			if f == nil || f.Hir == nil {
-				continue
+	VisitStatements(pc.Pkgs, StmtVisitOpts{}, func(pkg *ir.PackageContext, f *ir.PreparsedFile, st ir.Stmt) {
+		fileDir := resolveSourceFileDir(f, projectRoot)
+		switch s := st.(type) {
+		case *ir.VarDeclStmt:
+			if onVar == nil {
+				return
 			}
 
-			if f.Hir.Side.Kind == ir.SideSynth {
-				continue
+			if anno := FindAnnotationByName(s.Annotations, annoName); anno != nil {
+				onVar(s, anno, fileDir)
 			}
 
-			fileDir := resolveSourceFileDir(f, projectRoot)
-			for _, st := range f.Hir.Statements {
-				switch s := st.(type) {
-				case *ir.VarDeclStmt:
-					if onVar == nil {
-						continue
-					}
+		case *ir.TypeDeclStmt:
+			if onField == nil {
+				return
+			}
 
-					if anno := FindAnnotationByName(s.Annotations, annoName); anno != nil {
-						onVar(s, anno, fileDir)
-					}
+			for _, fld := range s.Fields {
+				if fld == nil {
+					continue
+				}
 
-				case *ir.TypeDeclStmt:
-					if onField == nil {
-						continue
-					}
-
-					for _, fld := range s.Fields {
-						if fld == nil {
-							continue
-						}
-
-						if anno := FindAnnotationByName(fld.Annotations, annoName); anno != nil {
-							onField(fld, anno, fileDir)
-						}
-					}
+				if anno := FindAnnotationByName(fld.Annotations, annoName); anno != nil {
+					onField(fld, anno, fileDir)
 				}
 			}
 		}
-	}
+	})
 }
 
 func FindAnnotationByName(annos []ir.Annotation, name string) *ir.Annotation {

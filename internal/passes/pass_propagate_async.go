@@ -18,118 +18,106 @@ func (p *PassPropagateAsync) NoErrors() bool     { return false }
 func (p *PassPropagateAsync) Run(pc *PassContext) error {
 	for {
 		changed := false
-		for _, pkg := range pc.Pkgs {
-			for _, f := range pkg.Files {
-				for _, st := range f.Hir.Statements {
-					switch x := st.(type) {
-					case *ir.FuncDeclStmt:
-						if x.IsAsync {
-							continue
-						}
-
-						if p.bodyHasAsyncCall(pc, pkg, x.Body) {
-							x.IsAsync = true
-							p.upgradeSymTypeToAsync(pc, pkg, x.Name.Sym)
-							changed = true
-						}
-
-					case *ir.TypeDeclStmt:
-						for _, m := range x.Methods {
-							if m.Func == nil || m.Func.IsAsync {
-								continue
-							}
-
-							if p.bodyHasAsyncCall(pc, pkg, m.Func.Body) {
-								m.Func.IsAsync = true
-								p.upgradeSymTypeToAsync(pc, pkg, m.Func.Name.Sym)
-								changed = true
-							}
-						}
-					}
+		VisitStatements(pc.Pkgs, StmtVisitOpts{IncludeSynth: true}, func(pkg *ir.PackageContext, _ *ir.PreparsedFile, st ir.Stmt) {
+			switch x := st.(type) {
+			case *ir.FuncDeclStmt:
+				if x.IsAsync {
+					return
 				}
-			}
-		}
 
-		for _, pkg := range pc.Pkgs {
-			for _, f := range pkg.Files {
-				for _, st := range f.Hir.Statements {
-					if p.markFuncLitsInStmt(pc, pkg, st) {
+				if p.bodyHasAsyncCall(pc, pkg, x.Body) {
+					x.IsAsync = true
+					p.upgradeSymTypeToAsync(pc, pkg, x.Name.Sym)
+					changed = true
+				}
+
+			case *ir.TypeDeclStmt:
+				for _, m := range x.Methods {
+					if m.Func == nil || m.Func.IsAsync {
+						continue
+					}
+
+					if p.bodyHasAsyncCall(pc, pkg, m.Func.Body) {
+						m.Func.IsAsync = true
+						p.upgradeSymTypeToAsync(pc, pkg, m.Func.Name.Sym)
 						changed = true
 					}
 				}
 			}
-		}
+		})
+
+		VisitStatements(pc.Pkgs, StmtVisitOpts{IncludeSynth: true}, func(pkg *ir.PackageContext, _ *ir.PreparsedFile, st ir.Stmt) {
+			if p.markFuncLitsInStmt(pc, pkg, st) {
+				changed = true
+			}
+		})
 
 		if !changed {
 			break
 		}
 	}
 
-	for _, pkg := range pc.Pkgs {
-		for _, f := range pkg.Files {
-			for _, st := range f.Hir.Statements {
-				switch s := st.(type) {
-				case *ir.FuncDeclStmt:
-					p.markCallsInStmt(pc, pkg, s.Body)
-				case *ir.VarDeclStmt:
-					if s.Init != nil {
-						if p.exprHasAsyncCall(pc, pkg, s.Init) {
-							pc.Diag.Report(diag.ErrAsyncInSyncContext, s.Init.Span(), "top-level initializer")
-						}
-					}
+	VisitStatements(pc.Pkgs, StmtVisitOpts{IncludeSynth: true}, func(pkg *ir.PackageContext, _ *ir.PreparsedFile, st ir.Stmt) {
+		switch s := st.(type) {
+		case *ir.FuncDeclStmt:
+			p.markCallsInStmt(pc, pkg, s.Body)
+		case *ir.VarDeclStmt:
+			if s.Init != nil {
+				if p.exprHasAsyncCall(pc, pkg, s.Init) {
+					pc.Diag.Report(diag.ErrAsyncInSyncContext, s.Init.Span(), "top-level initializer")
+				}
+			}
 
-				case *ir.ExprStmt:
-					if p.exprHasAsyncCall(pc, pkg, s.Expr) {
-						pc.Diag.Report(diag.ErrAsyncInSyncContext, s.Expr.Span(), "top-level statement")
-					}
+		case *ir.ExprStmt:
+			if p.exprHasAsyncCall(pc, pkg, s.Expr) {
+				pc.Diag.Report(diag.ErrAsyncInSyncContext, s.Expr.Span(), "top-level statement")
+			}
 
-				case *ir.TypeDeclStmt:
-					for _, m := range s.Methods {
-						p.markCallsInStmt(pc, pkg, m.Func.Body)
-					}
+		case *ir.TypeDeclStmt:
+			for _, m := range s.Methods {
+				p.markCallsInStmt(pc, pkg, m.Func.Body)
+			}
 
-					for _, ctor := range s.Ctors {
-						p.markCallsInStmt(pc, pkg, ctor.Body)
-					}
+			for _, ctor := range s.Ctors {
+				p.markCallsInStmt(pc, pkg, ctor.Body)
+			}
 
+		case *ir.TestDeclStmt:
+			if s.Body != nil {
+				p.markCallsInStmt(pc, pkg, s.Body)
+			}
+
+		case *ir.GroupDeclStmt:
+			for _, gst := range s.Body {
+				switch gs := gst.(type) {
 				case *ir.TestDeclStmt:
-					if s.Body != nil {
-						p.markCallsInStmt(pc, pkg, s.Body)
-					}
-
-				case *ir.GroupDeclStmt:
-					for _, gst := range s.Body {
-						switch gs := gst.(type) {
-						case *ir.TestDeclStmt:
-							if gs.Body != nil {
-								p.markCallsInStmt(pc, pkg, gs.Body)
-							}
-
-						case *ir.SetupStmt:
-							if gs.Body != nil {
-								p.markCallsInStmt(pc, pkg, gs.Body)
-							}
-
-						case *ir.TeardownStmt:
-							if gs.Body != nil {
-								p.markCallsInStmt(pc, pkg, gs.Body)
-							}
-						}
+					if gs.Body != nil {
+						p.markCallsInStmt(pc, pkg, gs.Body)
 					}
 
 				case *ir.SetupStmt:
-					if s.Body != nil {
-						p.markCallsInStmt(pc, pkg, s.Body)
+					if gs.Body != nil {
+						p.markCallsInStmt(pc, pkg, gs.Body)
 					}
 
 				case *ir.TeardownStmt:
-					if s.Body != nil {
-						p.markCallsInStmt(pc, pkg, s.Body)
+					if gs.Body != nil {
+						p.markCallsInStmt(pc, pkg, gs.Body)
 					}
 				}
 			}
+
+		case *ir.SetupStmt:
+			if s.Body != nil {
+				p.markCallsInStmt(pc, pkg, s.Body)
+			}
+
+		case *ir.TeardownStmt:
+			if s.Body != nil {
+				p.markCallsInStmt(pc, pkg, s.Body)
+			}
 		}
-	}
+	})
 
 	return nil
 }
