@@ -4,12 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"path/filepath"
+	"strings"
+
 	"sova/internal/diag"
 	"sova/internal/imagepipe"
 	"sova/internal/ir"
-	"strings"
 )
 
 const AssetsCacheKey = "static_assets"
@@ -23,79 +23,38 @@ type AssetRecord struct {
 	TransformedContent []byte
 }
 
+var assetCodes = FileAnnotationCodes{
+	BadPath:            diag.ErrAssetBadPath,
+	FileNotFound:       diag.ErrAssetFileNotFound,
+	FileTooLarge:       diag.ErrAssetFileTooLarge,
+	PathEscapesProject: diag.ErrAssetPathEscapesProject,
+}
+
 type PassResolveAssets struct{}
 
-func (p *PassResolveAssets) Name() string       { return "resolve_assets" }
+func (p *PassResolveAssets) Name() string { return "resolve_assets" }
 
-func (p *PassResolveAssets) Scope() PassScope   { return PerBuild }
+func (p *PassResolveAssets) Scope() PassScope { return PerBuild }
 
 func (p *PassResolveAssets) Requires() []string { return []string{"fold_annotations"} }
 
-func (p *PassResolveAssets) NoErrors() bool     { return false }
+func (p *PassResolveAssets) NoErrors() bool { return false }
 
 func (p *PassResolveAssets) Run(pc *PassContext) error {
 	sizeCap := defaultAssetMaxBytes
-	projectRoot := ""
-	if raw, ok := pc.Cache[buildConfigCacheKey]; ok {
-		if cfg, ok := raw.(buildConfigGetter); ok {
-			projectRoot = cfg.SourceDirectory()
-		}
-	}
-
-	if projectRoot == "" {
-		if cwd, err := os.Getwd(); err == nil {
-			projectRoot = cwd
-		}
-	}
-
-	projectRootAbs, _ := filepath.Abs(projectRoot)
+	projectRoot := ResolveProjectRootAndCwd(pc)
 
 	var records []*AssetRecord
-	for _, pkg := range pc.Pkgs {
-		if pkg == nil {
-			continue
-		}
-
-		for _, f := range pkg.Files {
-			if f == nil || f.Hir == nil {
-				continue
+	WalkAnnotatedDecls(pc, "asset", projectRoot,
+		func(vd *ir.VarDeclStmt, anno *ir.Annotation, fileDir string) {
+			if rec := p.resolveTopLevel(pc, vd, anno, fileDir, projectRoot, sizeCap); rec != nil {
+				records = append(records, rec)
 			}
-
-			if f.Hir.Side.Kind == ir.SideSynth {
-				continue
-			}
-
-			fileDir := resolveSourceFileDir(f, projectRootAbs)
-			for _, st := range f.Hir.Statements {
-				vd, ok := st.(*ir.VarDeclStmt)
-				if !ok {
-					continue
-				}
-
-				anno := findAssetAnnotation(vd.Annotations)
-				if anno == nil {
-					continue
-				}
-
-				if record := p.resolveTopLevel(pc, vd, anno, fileDir, projectRootAbs, sizeCap); record != nil {
-					records = append(records, record)
-				}
-			}
-		}
-	}
+		},
+		nil,
+	)
 
 	pc.Cache[AssetsCacheKey] = records
-	return nil
-}
-
-func findAssetAnnotation(annos []ir.Annotation) *ir.Annotation {
-	for i := range annos {
-		a := &annos[i]
-		if a.Name.Name == "asset" {
-			return a
-		}
-	}
-
 	return nil
 }
 
@@ -116,46 +75,8 @@ func (p *PassResolveAssets) resolveTopLevel(pc *PassContext, vd *ir.VarDeclStmt,
 		return nil
 	}
 
-	pathLit, ok := annotationPathArg(anno)
+	fa, ok := ResolveAnnotatedFile(pc, anno, label, fileDir, projectRoot, sizeCap, assetCodes)
 	if !ok {
-		pc.Diag.Report(diag.ErrAssetBadPath, anno.Name.Span, "non-string or missing argument")
-		return nil
-	}
-
-	if filepath.IsAbs(pathLit) || strings.HasPrefix(pathLit, "/") {
-		pc.Diag.Report(diag.ErrAssetBadPath, anno.Name.Span, fmt.Sprintf("%q", pathLit))
-		return nil
-	}
-
-	resolved := filepath.Clean(filepath.Join(fileDir, filepath.FromSlash(pathLit)))
-	abs, err := filepath.Abs(resolved)
-	if err != nil {
-		pc.Diag.Report(diag.ErrAssetFileNotFound, anno.Name.Span, label, pathLit, resolved)
-		return nil
-	}
-
-	if projectRoot != "" {
-		rel, err := filepath.Rel(projectRoot, abs)
-		if err != nil || strings.HasPrefix(rel, "..") {
-			pc.Diag.Report(diag.ErrAssetPathEscapesProject, anno.Name.Span, pathLit)
-			return nil
-		}
-	}
-
-	stat, err := os.Stat(abs)
-	if err != nil || stat.IsDir() {
-		pc.Diag.Report(diag.ErrAssetFileNotFound, anno.Name.Span, label, pathLit, abs)
-		return nil
-	}
-
-	if stat.Size() > sizeCap {
-		pc.Diag.Report(diag.ErrAssetFileTooLarge, anno.Name.Span, label, pathLit, stat.Size(), sizeCap)
-		return nil
-	}
-
-	content, err := os.ReadFile(abs)
-	if err != nil {
-		pc.Diag.Report(diag.ErrAssetFileNotFound, anno.Name.Span, label, pathLit, abs)
 		return nil
 	}
 
@@ -164,8 +85,9 @@ func (p *PassResolveAssets) resolveTopLevel(pc *PassContext, vd *ir.VarDeclStmt,
 		return nil
 	}
 
-	base := filepath.Base(abs)
+	base := filepath.Base(fa.AbsPath)
 	ext := filepath.Ext(base)
+	content := fa.Content
 	var transformed []byte
 	if opts.NeedsTransform() {
 		out, outExt, err := imagepipe.Transform(content, ext, opts)
@@ -185,7 +107,7 @@ func (p *PassResolveAssets) resolveTopLevel(pc *PassContext, vd *ir.VarDeclStmt,
 	stem = sanitizeAssetStem(stem)
 	staged := fmt.Sprintf("%s-%s%s", stem, hash, ext)
 	info := &ir.AssetInfo{
-		SourcePath:  abs,
+		SourcePath:  fa.AbsPath,
 		ContentHash: hash,
 		URL:         "/__sova/" + staged,
 		StagedName:  staged,

@@ -3,13 +3,11 @@ package passes
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
-	"os"
 	"path/filepath"
+
 	"sova/internal/diag"
 	"sova/internal/ir"
 	"sova/internal/scss"
-	"strings"
 )
 
 const EmbedAssetsCacheKey = "embed_assets"
@@ -26,26 +24,28 @@ type embedSizeCapper interface {
 	EmbedMaxBytes() int64
 }
 
+var embedCodes = FileAnnotationCodes{
+	BadPath:            diag.ErrEmbedBadPath,
+	FileNotFound:       diag.ErrEmbedFileNotFound,
+	FileTooLarge:       diag.ErrEmbedFileTooLarge,
+	PathEscapesProject: diag.ErrEmbedPathEscapesProject,
+}
+
 type PassResolveEmbeds struct{}
 
-func (p *PassResolveEmbeds) Name() string       { return "resolve_embeds" }
+func (p *PassResolveEmbeds) Name() string { return "resolve_embeds" }
 
-func (p *PassResolveEmbeds) Scope() PassScope   { return PerBuild }
+func (p *PassResolveEmbeds) Scope() PassScope { return PerBuild }
 
 func (p *PassResolveEmbeds) Requires() []string { return []string{"fold_annotations"} }
 
-func (p *PassResolveEmbeds) NoErrors() bool     { return false }
+func (p *PassResolveEmbeds) NoErrors() bool { return false }
 
 func (p *PassResolveEmbeds) Run(pc *PassContext) error {
 	sizeCap := defaultEmbedMaxBytes
-	projectRoot := ""
 	scssCfg := scss.Config{}
 
 	if raw, ok := pc.Cache[buildConfigCacheKey]; ok {
-		if cfg, ok := raw.(buildConfigGetter); ok {
-			projectRoot = cfg.SourceDirectory()
-		}
-
 		if cfg, ok := raw.(embedSizeCapper); ok {
 			if cap := cfg.EmbedMaxBytes(); cap > 0 {
 				sizeCap = cap
@@ -59,89 +59,24 @@ func (p *PassResolveEmbeds) Run(pc *PassContext) error {
 	}
 
 	sass := scss.New(scssCfg)
-	if projectRoot == "" {
-		if cwd, err := os.Getwd(); err == nil {
-			projectRoot = cwd
-		}
-	}
-
-	projectRootAbs, _ := filepath.Abs(projectRoot)
+	projectRoot := ResolveProjectRootAndCwd(pc)
 
 	var records []*EmbedRecord
-	for _, pkg := range pc.Pkgs {
-		if pkg == nil {
-			continue
-		}
-
-		for _, f := range pkg.Files {
-			if f == nil || f.Hir == nil {
-				continue
+	WalkAnnotatedDecls(pc, "embed", projectRoot,
+		func(vd *ir.VarDeclStmt, anno *ir.Annotation, fileDir string) {
+			if rec := p.resolveTopLevel(pc, vd, anno, fileDir, projectRoot, sizeCap, sass); rec != nil {
+				records = append(records, rec)
 			}
-
-			if f.Hir.Side.Kind == ir.SideSynth {
-				continue
+		},
+		func(fld *ir.TypeField, anno *ir.Annotation, fileDir string) {
+			if rec := p.resolveField(pc, fld, anno, fileDir, projectRoot, sizeCap, sass); rec != nil {
+				records = append(records, rec)
 			}
-
-			fileDir := resolveSourceFileDir(f, projectRootAbs)
-			for _, st := range f.Hir.Statements {
-				switch s := st.(type) {
-				case *ir.VarDeclStmt:
-					if anno := findEmbedAnnotation(s.Annotations); anno != nil {
-						if record := p.resolveTopLevel(pc, s, anno, fileDir, projectRootAbs, sizeCap, sass); record != nil {
-							records = append(records, record)
-						}
-					}
-
-				case *ir.TypeDeclStmt:
-					for _, fld := range s.Fields {
-						if fld == nil {
-							continue
-						}
-
-						anno := findEmbedAnnotation(fld.Annotations)
-						if anno == nil {
-							continue
-						}
-
-						if record := p.resolveField(pc, fld, anno, fileDir, projectRootAbs, sizeCap, sass); record != nil {
-							records = append(records, record)
-						}
-					}
-				}
-			}
-		}
-	}
+		},
+	)
 
 	pc.Cache[EmbedAssetsCacheKey] = records
 	return nil
-}
-
-func findEmbedAnnotation(annos []ir.Annotation) *ir.Annotation {
-	for i := range annos {
-		a := &annos[i]
-		if a.Name.Name == "embed" {
-			return a
-		}
-	}
-
-	return nil
-}
-
-func resolveSourceFileDir(f *ir.PreparsedFile, projectRoot string) string {
-	if filepath.IsAbs(f.Filename) {
-		return filepath.Dir(f.Filename)
-	}
-
-	if projectRoot == "" {
-		abs, err := filepath.Abs(f.Filename)
-		if err != nil {
-			return filepath.Dir(f.Filename)
-		}
-
-		return filepath.Dir(abs)
-	}
-
-	return filepath.Dir(filepath.Join(projectRoot, filepath.FromSlash(f.Filename)))
 }
 
 func (p *PassResolveEmbeds) resolveTopLevel(pc *PassContext, vd *ir.VarDeclStmt, anno *ir.Annotation, fileDir, projectRoot string, sizeCap int64, sass scss.Preprocessor) *EmbedRecord {
@@ -191,76 +126,36 @@ func (p *PassResolveEmbeds) resolveField(pc *PassContext, fld *ir.TypeField, ann
 }
 
 func (p *PassResolveEmbeds) validateAndRead(pc *PassContext, anno *ir.Annotation, label, fileDir, projectRoot string, sizeCap int64, kind ir.EmbedKind, sass scss.Preprocessor) (*ir.EmbedInfo, []byte, bool) {
-	pathLit, ok := annotationPathArg(anno)
+	fa, ok := ResolveAnnotatedFile(pc, anno, label, fileDir, projectRoot, sizeCap, embedCodes)
 	if !ok {
-		pc.Diag.Report(diag.ErrEmbedBadPath, anno.Name.Span, "non-string or missing argument")
 		return nil, nil, false
 	}
 
-	if filepath.IsAbs(pathLit) || strings.HasPrefix(pathLit, "/") {
-		pc.Diag.Report(diag.ErrEmbedBadPath, anno.Name.Span, fmt.Sprintf("%q", pathLit))
-		return nil, nil, false
-	}
-
-	resolved := filepath.Clean(filepath.Join(fileDir, filepath.FromSlash(pathLit)))
-	resolvedAbs, err := filepath.Abs(resolved)
-	if err != nil {
-		pc.Diag.Report(diag.ErrEmbedFileNotFound, anno.Name.Span, label, pathLit, resolved)
-		return nil, nil, false
-	}
-
-	if projectRoot != "" {
-		rel, err := filepath.Rel(projectRoot, resolvedAbs)
-		if err != nil || strings.HasPrefix(rel, "..") {
-			pc.Diag.Report(diag.ErrEmbedPathEscapesProject, anno.Name.Span, pathLit)
-			return nil, nil, false
-		}
-	}
-
-	stat, err := os.Stat(resolvedAbs)
-	if err != nil {
-		pc.Diag.Report(diag.ErrEmbedFileNotFound, anno.Name.Span, label, pathLit, resolvedAbs)
-		return nil, nil, false
-	}
-
-	if stat.IsDir() {
-		pc.Diag.Report(diag.ErrEmbedFileNotFound, anno.Name.Span, label, pathLit, resolvedAbs+" (is a directory)")
-		return nil, nil, false
-	}
-
-	if stat.Size() > sizeCap {
-		pc.Diag.Report(diag.ErrEmbedFileTooLarge, anno.Name.Span, label, pathLit, stat.Size(), sizeCap)
-		return nil, nil, false
-	}
-
-	content, err := os.ReadFile(resolvedAbs)
-	if err != nil {
-		pc.Diag.Report(diag.ErrEmbedFileNotFound, anno.Name.Span, label, pathLit, resolvedAbs)
-		return nil, nil, false
-	}
-
-	if scss.IsSassPath(resolvedAbs) {
+	content := fa.Content
+	size := fa.SizeBytes
+	if scss.IsSassPath(fa.AbsPath) {
 		if !sass.Available() {
-			pc.Diag.Report(diag.ErrEmbedSassUnavailable, anno.Name.Span, label, pathLit)
+			pc.Diag.Report(diag.ErrEmbedSassUnavailable, anno.Name.Span, label, fa.PathLit)
 			return nil, nil, false
 		}
 
-		compiled, err := sass.Compile(resolvedAbs)
+		compiled, err := sass.Compile(fa.AbsPath)
 		if err != nil {
-			pc.Diag.Report(diag.ErrEmbedSassFailed, anno.Name.Span, label, pathLit, err.Error())
+			pc.Diag.Report(diag.ErrEmbedSassFailed, anno.Name.Span, label, fa.PathLit, err.Error())
 			return nil, nil, false
 		}
 
 		content = compiled
+		size = int64(len(compiled))
 	}
 
 	sum := sha256.Sum256(content)
 	hash := hex.EncodeToString(sum[:])[:16]
 	return &ir.EmbedInfo{
-		SourcePath:  resolvedAbs,
+		SourcePath:  fa.AbsPath,
 		Kind:        kind,
 		ContentHash: hash,
-		SizeBytes:   stat.Size(),
+		SizeBytes:   size,
 		Span:        anno.Name.Span,
 	}, content, true
 }
@@ -369,6 +264,23 @@ func embedDeclLabel(vd *ir.VarDeclStmt) string {
 	}
 
 	return vd.Targets[0].Name.Name
+}
+
+func resolveSourceFileDir(f *ir.PreparsedFile, projectRoot string) string {
+	if filepath.IsAbs(f.Filename) {
+		return filepath.Dir(f.Filename)
+	}
+
+	if projectRoot == "" {
+		abs, err := filepath.Abs(f.Filename)
+		if err != nil {
+			return filepath.Dir(f.Filename)
+		}
+
+		return filepath.Dir(abs)
+	}
+
+	return filepath.Dir(filepath.Join(projectRoot, filepath.FromSlash(f.Filename)))
 }
 
 func formatTypeRefSurface(t *ir.TypeRef) string {
