@@ -16,12 +16,10 @@ import (
 	"sova/internal/services/loader"
 )
 
-// scheduleDiagnostics kicks off an async recompute against `snap`. Each scheduled job is keyed by the snapshot ID; if a newer snapshot supersedes this one before the recompute starts, the older job exits early so we don't churn on rapid keystrokes. No debouncing yet - that's a v6 polish item; the snapshot-supersede check is sufficient for the typical "edit, pause, edit, pause" cadence.
 func (s *Server) scheduleDiagnostics(ctx context.Context, snap *Snapshot) {
 	go s.runDiagnostics(ctx, snap)
 }
 
-// runDiagnostics drives one full recompute. Walks the project root to gather source files, layers in editor overlays, runs the compiler's check pipeline, maps each diagnostic onto an LSP `Diagnostic`, and publishes one `PublishDiagnostics` per URI that had any output (plus empty arrays for URIs that were previously errored but are now clean).
 func (s *Server) runDiagnostics(ctx context.Context, snap *Snapshot) {
 	if s.session.Snapshot() != snap {
 		return
@@ -49,38 +47,40 @@ func (s *Server) runDiagnostics(ctx context.Context, snap *Snapshot) {
 			byURI[u] = nil
 		}
 	}
+
 	if c != nil {
 		for u := range byURI {
 			_, file, _ := lookupFileByURI(c, u)
 			if file == nil {
 				continue
 			}
+
 			if extra := cssClassDiagnostics(c, file); len(extra) > 0 {
 				byURI[u] = append(byURI[u], extra...)
 			}
 		}
-		// Also fire for overlay URIs that didn't have any compiler diagnostics
-		// (the loop above only iterates byURI which is seeded from compile output).
-		// Skipped for now — overlays without diags are already in byURI as nil, so
-		// the previous loop already covered them.
+
 	}
 
 	s.diagMu.Lock()
 	if s.publishedURIs == nil {
 		s.publishedURIs = map[string]struct{}{}
 	}
+
 	for prev := range s.publishedURIs {
 		u := uri.URI(prev)
 		if _, ok := byURI[u]; !ok {
 			byURI[u] = nil
 		}
 	}
+
 	nextPublished := make(map[string]struct{}, len(byURI))
 	for u, items := range byURI {
 		if len(items) > 0 {
 			nextPublished[string(u)] = struct{}{}
 		}
 	}
+
 	s.publishedURIs = nextPublished
 	s.diagMu.Unlock()
 
@@ -88,63 +88,53 @@ func (s *Server) runDiagnostics(ctx context.Context, snap *Snapshot) {
 		if items == nil {
 			items = []protocol.Diagnostic{}
 		}
+
 		params := &protocol.PublishDiagnosticsParams{
 			URI:         u,
 			Version:     uint32(s.session.OverlayVersion(u)),
 			Diagnostics: items,
 		}
+
 		if err := s.client.PublishDiagnostics(ctx, params); err != nil {
 			s.logger.Warn("publishDiagnostics failed", zap.Error(err), zap.String("uri", string(u)))
 		}
 	}
 }
 
-// lspBuildConfig is the minimal BuildConfig the LSP installs on every compile so passes that need a project root (`pass_resolve_embeds` is the V1 example, but any future pass with the same dependency picks this up too) can find it. The LSP doesn't reach for the user's real `sova.toml` here — that's `runCompile`'s job — so output/source-base-name fields stay defaulted; only `SourceDirectory()` matters in practice, and only when a pass falls back to the project-root containment check. SCSS preprocessing also stays at its compile-time default (auto-discovery of `sass`/`dart-sass` on PATH), which is the right behavior for the LSP since most editors run with the user's full PATH inherited.
 type lspBuildConfig struct {
 	root string
 }
 
 func (c lspBuildConfig) OutputDirectory() string  { return ".output" }
+
 func (c lspBuildConfig) OutputBaseName() string   { return "output" }
+
 func (c lspBuildConfig) SourceDirectory() string  { return c.root }
+
 func (c lspBuildConfig) SCSSCommandValue() string { return "" }
+
 func (c lspBuildConfig) SCSSDisabledValue() bool  { return false }
 
-// compileSnapshot is the CompileFunc the LSP installs on every snapshot it creates. Lazily invoked by the first navigation request (or by runDiagnostics) - gathers sources, runs the check pipeline, returns the populated CompilerContext + flat diagnostics list. Cached on the snapshot so a hover + a diagnostics publish for the same snapshot share one compile pass.
 func (s *Server) compileSnapshot(snap *Snapshot) (retCtx *compiler.CompilerContext, retDiags []diag.Diagnostic, retErr error) {
 	root := uriToPath(snap.Root)
 	if root == "" {
 		root = "."
 	}
+
 	c := compiler.New()
 	c.SetBuildConfig("build_config", lspBuildConfig{root: root})
 	if root != "" {
-		// Match the CLI's resolution strategy so `import "strix"`,
-		// `import "gorm"`, and any other `[dependencies] path = ...`
-		// entry resolve in the editor the same way they do at
-		// `sova build`. Without this, every external dep silently
-		// failed to load and cascaded into hundreds of "undefined"
-		// diagnostics for symbols that DO exist when the compiler
-		// is invoked through the CLI.
-		//
-		// Std imports are skipped on purpose: `loadStdPackage` is
-		// always invoked first by `resolveImports`, and if its
-		// search-path scan (binary-adjacent / SOVA_HOME / cwd)
-		// turns up nothing — typical in `go test` runs where the
-		// test binary lives in a tmp dir — we want the SAME silent
-		// "no-op" outcome we had pre-fix instead of a hard error
-		// that short-circuits the whole import resolution loop and
-		// blocks every user package after the synthetic
-		// `import "std/__globals__"` injection. The CLI's own
-		// loader has the same behavior; we just keep it explicit.
+
 		realLoader := loader.New(root)
 		c.Loader = func(cc *compiler.CompilerContext, pkgPath string) error {
 			if compiler.IsStdImport(pkgPath) {
 				return nil
 			}
+
 			return realLoader(cc, pkgPath)
 		}
 	}
+
 	defer func() {
 		if r := recover(); r != nil {
 			retCtx = c
@@ -158,15 +148,17 @@ func (s *Server) compileSnapshot(snap *Snapshot) (retCtx *compiler.CompilerConte
 		if err != nil {
 			rel = path
 		}
+
 		c.AddSource(filepath.ToSlash(rel), content)
 	}
+
 	_ = c.Check()
 	return c, c.Diag.Diagnostics(), nil
 }
 
-// collectSources merges on-disk `.sova` files under `root` with any in-memory overlays from the snapshot. Overlays always win for paths they cover. Hidden directories (`.git`, etc.) are skipped - except `.sova/deps/` which IS walked so cross-package imports resolve against the package-manager's materialised view.
 func (s *Server) collectSources(snap *Snapshot, root string) map[string]string {
 	out := map[string]string{}
+
 	if root != "" {
 		walkSovaTree(root, out, true)
 		depsRoot := filepath.Join(root, ".sova", "deps")
@@ -177,23 +169,27 @@ func (s *Server) collectSources(snap *Snapshot, root string) map[string]string {
 				if err == nil {
 					path = resolved
 				}
+
 				if info, err := os.Stat(path); err == nil && info.IsDir() {
 					walkSovaTree(path, out, false)
 				}
 			}
 		}
 	}
+
 	rootAbs := ""
 	if root != "" {
 		if abs, err := filepath.Abs(root); err == nil {
 			rootAbs = abs
 		}
 	}
+
 	for u, text := range snap.overlays {
 		p := uriToPath(u)
 		if p == "" {
 			continue
 		}
+
 		if rootAbs != "" {
 			if pAbs, err := filepath.Abs(p); err == nil {
 				rel, err := filepath.Rel(rootAbs, pAbs)
@@ -202,17 +198,19 @@ func (s *Server) collectSources(snap *Snapshot, root string) map[string]string {
 				}
 			}
 		}
+
 		out[p] = text
 	}
+
 	return out
 }
 
-// walkSovaTree adds every `.sova` file under `root` into `out` (keyed by absolute path). When `skipHidden` is true, directories whose name starts with `.` are pruned - the project tree walk uses this to keep `.git`, `.sova`, `.vscode` etc. out. The dep walk passes false because it starts INSIDE `.sova/deps/` and needs to see the materialised tree.
 func walkSovaTree(root string, out map[string]string, skipHidden bool) {
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
+
 		if d.IsDir() {
 			if skipHidden && path != root {
 				name := d.Name()
@@ -220,42 +218,49 @@ func walkSovaTree(root string, out map[string]string, skipHidden bool) {
 					return fs.SkipDir
 				}
 			}
+
 			return nil
 		}
+
 		if !strings.HasSuffix(path, ".sova") {
 			return nil
 		}
+
 		resolved, err := filepath.EvalSymlinks(path)
 		if err == nil {
 			path = resolved
 		}
+
 		data, rerr := os.ReadFile(path)
 		if rerr != nil {
 			return nil
 		}
+
 		out[path] = string(data)
 		return nil
 	})
 }
 
-// bucketDiagnosticsByURI maps a flat list of compiler diagnostics into a per-URI bucket suitable for `PublishDiagnostics`. Diagnostics without a known file are skipped - the LSP protocol can't render them anyway.
 func (s *Server) bucketDiagnosticsByURI(root string, items []diag.Diagnostic) map[uri.URI][]protocol.Diagnostic {
 	out := map[uri.URI][]protocol.Diagnostic{}
+
 	for _, d := range items {
 		if d.S.File == "" {
 			continue
 		}
+
 		path := d.S.File
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(root, filepath.FromSlash(path))
 		}
+
 		u := pathToURI(path)
 		out[u] = append(out[u], toLSPDiagnostic(d))
 	}
+
 	return out
 }
 
-// toLSPDiagnostic converts one Sova compiler diagnostic into the protocol shape: spans become zero-indexed ranges, severities map onto LSP levels, the diagnostic code goes into the `Code` field so editors can show "ERR.TYP.0001"-style identifiers and filter by them.
 func toLSPDiagnostic(d diag.Diagnostic) protocol.Diagnostic {
 	startLn := uint32(0)
 	startCol := uint32(0)
@@ -264,19 +269,24 @@ func toLSPDiagnostic(d diag.Diagnostic) protocol.Diagnostic {
 	if d.S.StartLn > 0 {
 		startLn = uint32(d.S.StartLn - 1)
 	}
+
 	if d.S.StartCol > 0 {
 		startCol = uint32(d.S.StartCol - 1)
 	}
+
 	if d.S.EndLn > 0 {
 		endLn = uint32(d.S.EndLn - 1)
 	}
+
 	if d.S.EndCol > 0 {
 		endCol = uint32(d.S.EndCol - 1)
 	}
+
 	if endLn < startLn || (endLn == startLn && endCol <= startCol) {
 		endLn = startLn
 		endCol = startCol + 1
 	}
+
 	severity := protocol.DiagnosticSeverityError
 	switch d.Level {
 	case diag.LevelWarning:
@@ -284,6 +294,7 @@ func toLSPDiagnostic(d diag.Diagnostic) protocol.Diagnostic {
 	case diag.LevelInfo:
 		severity = protocol.DiagnosticSeverityInformation
 	}
+
 	return protocol.Diagnostic{
 		Range: protocol.Range{
 			Start: protocol.Position{Line: startLn, Character: startCol},

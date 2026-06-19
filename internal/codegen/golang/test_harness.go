@@ -6,7 +6,6 @@ import (
 	"github.com/dave/jennifer/jen"
 )
 
-// emitTestHarnessStubs emits no-op versions of every test-harness primitive that user code or emitted runtime code may reference at compile time - `__sovaTestHarnessActive` returns false; `__sovaTestNow`/`__sovaTestRandom` fall back to real wall-time entropy; the grace-purge bridge and all mock/snapshot/expect helpers compile to no-ops returning zero values. Only used in non-test builds. Test mode emits the real harness via `emitTestHarness` which would conflict if both were present, hence the explicit gate at the call site.
 func emitTestHarnessStubs(block *jen.Group) {
 	block.Add(jen.Func().Id("__sovaTestHarnessActive").Params().Bool().Block(jen.Return(jen.False())))
 	block.Add(jen.Func().Id("__sovaTestNow").Params().Qual("time", "Time").Block(jen.Return(jen.Qual("time", "Now").Call())))
@@ -34,7 +33,6 @@ func emitTestHarnessStubs(block *jen.Group) {
 	block.Add(jen.Func().Id("__sovaMockHook").Params(jen.Id("name").String(), jen.Id("args").Op("...").Any()).Params(jen.Any(), jen.Bool(), jen.Bool()).Block(jen.Return(jen.Nil(), jen.False(), jen.False())))
 }
 
-// emitTestHarness writes the in-process test harness runtime - a virtual clock, a named-session registry, and the implementations of the `std/testing` extern functions (`__sovaTestSwitchSession`, `__sovaTestDisconnect`, `__sovaTestAdvanceTime`, `__sovaTestAwaitWires`, `__sovaTestUseRealTime`, `__sovaTestUseRealRandom`). Always emitted when test mode is on; relies on the session-manager helpers (forced on in test mode by analyze_wire) for `fn____Session` and `__sovaSetCurrentSession`.
 func emitTestHarness(ctx *codegen.EmitContext, block *jen.Group) {
 	if !isTestMode(ctx) {
 		return

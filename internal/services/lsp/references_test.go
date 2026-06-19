@@ -13,7 +13,6 @@ import (
 	"go.lsp.dev/uri"
 )
 
-// TestReferencesSmoke exercises Phase 3: open a file with a function declared once and called twice, then request References, DocumentHighlight, and workspace/Symbol. Asserts each handler returns the expected entries.
 func TestReferencesSmoke(t *testing.T) {
 	restore := withTerminate(func(int) {})
 	defer restore()
@@ -56,6 +55,7 @@ func main() {
 	}, &initResult); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
+
 	assertCapTrue(t, "referencesProvider", initResult.Capabilities.ReferencesProvider)
 	assertCapTrue(t, "documentHighlightProvider", initResult.Capabilities.DocumentHighlightProvider)
 	assertCapTrue(t, "workspaceSymbolProvider", initResult.Capabilities.WorkspaceSymbolProvider)
@@ -72,7 +72,6 @@ func main() {
 		t.Fatalf("didOpen: %v", err)
 	}
 
-	// References: cursor on `helper` inside the first call (line 7, col 12).
 	refParams := &protocol.ReferenceParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 			TextDocument: protocol.TextDocumentIdentifier{URI: docURI},
@@ -80,38 +79,42 @@ func main() {
 		},
 		Context: protocol.ReferenceContext{IncludeDeclaration: true},
 	}
+
 	var refs []protocol.Location
 	if _, err := clientConn.Call(ctx, protocol.MethodTextDocumentReferences, refParams, &refs); err != nil {
 		t.Fatalf("references: %v", err)
 	}
+
 	if len(refs) < 3 {
 		t.Fatalf("expected at least 3 references (decl + 2 call sites), got %d: %+v", len(refs), refs)
 	}
 
-	// References excluding declaration.
 	refParams.Context.IncludeDeclaration = false
 	var refsNoDecl []protocol.Location
 	if _, err := clientConn.Call(ctx, protocol.MethodTextDocumentReferences, refParams, &refsNoDecl); err != nil {
 		t.Fatalf("references no-decl: %v", err)
 	}
+
 	if len(refsNoDecl) != len(refs)-1 {
 		t.Fatalf("expected exactly one fewer entry when excluding decl; got %d (with decl: %d)", len(refsNoDecl), len(refs))
 	}
 
-	// DocumentHighlight at the same position.
 	hlParams := &protocol.DocumentHighlightParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 			TextDocument: protocol.TextDocumentIdentifier{URI: docURI},
 			Position:     protocol.Position{Line: 7, Character: 14},
 		},
 	}
+
 	var hls []protocol.DocumentHighlight
 	if _, err := clientConn.Call(ctx, protocol.MethodTextDocumentDocumentHighlight, hlParams, &hls); err != nil {
 		t.Fatalf("documentHighlight: %v", err)
 	}
+
 	if len(hls) < 3 {
 		t.Fatalf("expected at least 3 highlights, got %d", len(hls))
 	}
+
 	gotDeclHL := false
 	for _, h := range hls {
 		if h.Kind == protocol.DocumentHighlightKindWrite {
@@ -119,29 +122,32 @@ func main() {
 			break
 		}
 	}
+
 	if !gotDeclHL {
 		t.Fatalf("expected one declaration-kind highlight in the set; got kinds: %+v", hls)
 	}
 
-	// Workspace symbols - empty query returns the file's decls.
 	wsParams := &protocol.WorkspaceSymbolParams{Query: ""}
+
 	var wsSyms []protocol.SymbolInformation
 	if _, err := clientConn.Call(ctx, protocol.MethodWorkspaceSymbol, wsParams, &wsSyms); err != nil {
 		t.Fatalf("workspace/symbol: %v", err)
 	}
+
 	if !workspaceHasSymbol(wsSyms, "helper") || !workspaceHasSymbol(wsSyms, "main") {
 		t.Fatalf("expected workspace symbols to include `helper` and `main`, got %v", symbolNames(wsSyms))
 	}
 
-	// Filtered workspace symbol query.
 	wsParams.Query = "hel"
 	var wsFiltered []protocol.SymbolInformation
 	if _, err := clientConn.Call(ctx, protocol.MethodWorkspaceSymbol, wsParams, &wsFiltered); err != nil {
 		t.Fatalf("workspace/symbol filtered: %v", err)
 	}
+
 	if !workspaceHasSymbol(wsFiltered, "helper") {
 		t.Fatalf("query 'hel' should match `helper`, got %v", symbolNames(wsFiltered))
 	}
+
 	for _, s := range wsFiltered {
 		if !strings.Contains(strings.ToLower(s.Name), "hel") {
 			t.Fatalf("query 'hel' returned non-matching symbol %s", s.Name)
@@ -151,6 +157,7 @@ func main() {
 	if _, err := clientConn.Call(ctx, protocol.MethodShutdown, nil, nil); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
+
 	_ = clientConn.Notify(ctx, protocol.MethodExit, nil)
 	cancel()
 }
@@ -161,6 +168,7 @@ func workspaceHasSymbol(syms []protocol.SymbolInformation, name string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -169,5 +177,6 @@ func symbolNames(syms []protocol.SymbolInformation) []string {
 	for i, s := range syms {
 		out[i] = s.Name
 	}
+
 	return out
 }

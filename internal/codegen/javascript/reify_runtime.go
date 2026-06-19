@@ -1,10 +1,5 @@
 package javascript
 
-// sovaReifyRuntime is the JS snippet that powers cross-tier class-instance reification. Plain JSON arriving from the wire is a graph of objects + arrays + primitives; the receiver does not get instances of the matching Sova classes back unless something rebuilds them. This runtime does that: `__sovaReify(value, descriptor)` walks `value` against a compact descriptor tree (`{kind: "struct", name: ...}`, `{kind: "slice", elem: ...}`, etc.) and produces, for every `struct` node, an instance of the registered class with the right prototype — so methods declared on the class are callable on the reified value.
-//
-// Field descriptors for struct kinds are stored as a static `__sovaFields` property on each emitted class; that lets the recursion read the field shape without baking it into every call site. The registry maps mangled class names to constructor references so the recursion can look up the prototype without holding a class reference per descriptor.
-//
-// The reifier is intentionally permissive: unknown descriptor kinds, missing registry entries, or shape mismatches pass the value through unchanged so a wire whose return type is `any` (or one whose class wasn't emitted on this side, e.g. a backend-only type that briefly leaked through) still produces *something* usable rather than throwing.
 const sovaReifyRuntime = `
 var __sovaTypeRegistry = (typeof globalThis !== 'undefined' && globalThis.__sovaTypeRegistry) || {};
 if (typeof globalThis !== 'undefined') { globalThis.__sovaTypeRegistry = __sovaTypeRegistry; }

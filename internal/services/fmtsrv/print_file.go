@@ -10,7 +10,6 @@ import (
 	"sova/internal/parser"
 )
 
-// Source formats raw Sova source text. Parses, walks the HIR, then emits canonical Sova back out. Returns the original text unchanged when the source has parse errors so the formatter doesn't silently mangle broken code while the user is mid-edit. Comments from the source are preserved as best-effort by interleaving them at statement boundaries.
 func Source(src string) (string, error) {
 	bag := diag.NewBag()
 	is := antlr.NewInputStream(src)
@@ -27,24 +26,26 @@ func Source(src string) (string, error) {
 	if !ok || hir == nil {
 		return src, fmt.Errorf("parse failed")
 	}
+
 	if bag.Errored() {
 		return src, fmt.Errorf("source has parse errors; formatter left it unchanged")
 	}
+
 	return File(hir, src), nil
 }
 
-// File walks a parsed `*ir.File` and emits canonical Sova source. The raw `src` is consumed only to extract comments for interleaving; HIR drives all structural choices (statement order, indentation, etc.). Pass an empty `src` to skip comment preservation.
 func File(f *ir.File, src string) string {
 	p := newPrinter()
 	if src != "" {
 		p.attachComments(extractComments(src))
 	}
+
 	printFile(p, f)
 	return p.String()
 }
 
 func printFile(p *Printer, f *ir.File) {
-	// File header: optional `package x` on the first line, optional `on side` on the second.
+
 	hasPackage := len(f.Package) > 0
 	hasSide := f.Side.Kind != 0
 	if hasPackage {
@@ -55,14 +56,17 @@ func printFile(p *Printer, f *ir.File) {
 				p.write("(" + f.Side.Target + ")")
 			}
 		}
+
 		p.writeNewline()
 	} else if hasSide {
 		p.write("on " + sideKindLabel(f.Side.Kind))
 		if f.Side.Kind == ir.SideBackend && f.Side.Target != "" {
 			p.write("(" + f.Side.Target + ")")
 		}
+
 		p.writeNewline()
 	}
+
 	if hasPackage || hasSide {
 		p.writeNewline()
 	}
@@ -71,8 +75,10 @@ func printFile(p *Printer, f *ir.File) {
 		if i > 0 {
 			p.blankLine()
 		}
+
 		p.printStmt(st)
 	}
+
 	if p.comments != nil {
 		p.comments.flushTrailing(p)
 	}

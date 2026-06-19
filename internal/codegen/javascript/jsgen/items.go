@@ -76,6 +76,7 @@ func (c call) render(indent int) string {
 			args = append(args, arg.render(indent))
 		}
 	}
+
 	return fmt.Sprintf("(%s)", strings.Join(args, ", "))
 }
 
@@ -98,6 +99,7 @@ func (a array) render(indent int) string {
 			elems = append(elems, elem.render(indent))
 		}
 	}
+
 	return fmt.Sprintf("[%s]", strings.Join(elems, ", "))
 }
 
@@ -116,6 +118,7 @@ func (o object) render(indent int) string {
 		if kv.Value != nil {
 			value = kv.Value.render(indent + 1)
 		}
+
 		pairs = append(pairs, fmt.Sprintf("%s: %s", kv.Key, value))
 	}
 
@@ -128,6 +131,7 @@ func (o object) render(indent int) string {
 	for _, pair := range pairs {
 		lines = append(lines, indentStr(indent+1)+pair+",")
 	}
+
 	lines = append(lines, indentStr(indent)+"}")
 	return strings.Join(lines, "\n")
 }
@@ -140,15 +144,18 @@ func (r returnStmt) render(indent int) string {
 	if len(r.expr) == 0 {
 		return "return"
 	}
+
 	if len(r.expr) == 1 {
 		return fmt.Sprintf("return %s", r.expr[0].render(indent))
 	}
+
 	var exprs []string
 	for _, e := range r.expr {
 		if e != nil {
 			exprs = append(exprs, e.render(indent))
 		}
 	}
+
 	return fmt.Sprintf("return [%s]", strings.Join(exprs, ", "))
 }
 
@@ -185,6 +192,7 @@ func (i ifStmt) render(indent int) string {
 			sb.WriteString(";\n")
 		}
 	}
+
 	sb.WriteString(indentStr(indent) + "}")
 
 	if len(i.elseBody) > 0 {
@@ -196,6 +204,7 @@ func (i ifStmt) render(indent int) string {
 				sb.WriteString(";\n")
 			}
 		}
+
 		sb.WriteString(indentStr(indent) + "}")
 	}
 
@@ -216,10 +225,12 @@ func (f forStmt) render(indent int) string {
 	if f.init != nil {
 		initStr = f.init.render(indent)
 	}
+
 	condStr := ""
 	if f.cond != nil {
 		condStr = f.cond.render(indent)
 	}
+
 	postStr := ""
 	if f.post != nil {
 		postStr = f.post.render(indent)
@@ -230,6 +241,7 @@ func (f forStmt) render(indent int) string {
 	} else {
 		sb.WriteString(fmt.Sprintf("for (%s; %s; %s) {\n", initStr, condStr, postStr))
 	}
+
 	for _, stmt := range f.body {
 		if stmt != nil {
 			sb.WriteString(indentStr(indent + 1))
@@ -237,6 +249,7 @@ func (f forStmt) render(indent int) string {
 			sb.WriteString(";\n")
 		}
 	}
+
 	sb.WriteString(indentStr(indent) + "}")
 
 	return sb.String()
@@ -258,6 +271,7 @@ func (w whileStmt) render(indent int) string {
 			sb.WriteString(";\n")
 		}
 	}
+
 	sb.WriteString(indentStr(indent) + "}")
 
 	return sb.String()
@@ -277,6 +291,7 @@ func (f funcDecl) render(indent int) string {
 	if f.isAsync {
 		prefix = "async function"
 	}
+
 	sb.WriteString(fmt.Sprintf("%s %s(%s) {\n",
 		prefix, f.name, strings.Join(f.params, ", ")))
 
@@ -329,6 +344,7 @@ func (a arrowFunc) render(indent int) string {
 				sb.WriteString(";\n")
 			}
 		}
+
 		sb.WriteString(indentStr(indent) + "}")
 	}
 
@@ -361,6 +377,7 @@ func (b blockComment) render(indent int) string {
 		sb.WriteString(line)
 		sb.WriteString("\n")
 	}
+
 	sb.WriteString(indentStr(indent))
 	sb.WriteString(" */")
 	return sb.String()

@@ -12,7 +12,6 @@ import (
 	"go.lsp.dev/uri"
 )
 
-// TestPhase5 covers folding ranges, code lens, code actions (organize imports), and semantic tokens against a representative file.
 func TestPhase5(t *testing.T) {
 	restore := withTerminate(func(int) {})
 	defer restore()
@@ -64,6 +63,7 @@ test "dog greets" {
 	if _, err := cc.Call(ctx, protocol.MethodInitialize, &protocol.InitializeParams{RootURI: rootURI}, &initResult); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
+
 	assertCapTrue(t, "foldingRangeProvider", initResult.Capabilities.FoldingRangeProvider)
 	assertCapTrue(t, "codeLensProvider", initResult.Capabilities.CodeLensProvider)
 	assertCapTrue(t, "codeActionProvider", initResult.Capabilities.CodeActionProvider)
@@ -74,7 +74,6 @@ test "dog greets" {
 		TextDocument: protocol.TextDocumentItem{URI: docURI, LanguageID: "sova", Version: 1, Text: src},
 	})
 
-	// Folding ranges.
 	var fr []protocol.FoldingRange
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentFoldingRange, &protocol.FoldingRangeParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
@@ -83,47 +82,53 @@ test "dog greets" {
 	}, &fr); err != nil {
 		t.Fatalf("foldingRange: %v", err)
 	}
+
 	if len(fr) < 4 {
 		t.Fatalf("expected ≥4 folding ranges (imports + interface + type + main + test), got %d", len(fr))
 	}
+
 	hasImports := false
 	for _, r := range fr {
 		if r.Kind == protocol.ImportsFoldingRange {
 			hasImports = true
 		}
 	}
+
 	if !hasImports {
 		t.Fatalf("expected an imports-kind folding range, got none")
 	}
 
-	// Code lens.
 	var cl []protocol.CodeLens
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentCodeLens, &protocol.CodeLensParams{
 		TextDocument: protocol.TextDocumentIdentifier{URI: docURI},
 	}, &cl); err != nil {
 		t.Fatalf("codeLens: %v", err)
 	}
+
 	hasRunMain := false
 	hasRunTest := false
 	for _, l := range cl {
 		if l.Command == nil {
 			continue
 		}
+
 		if l.Command.Command == "sova.runMain" {
 			hasRunMain = true
 		}
+
 		if l.Command.Command == "sova.runTest" {
 			hasRunTest = true
 		}
 	}
+
 	if !hasRunMain {
 		t.Fatalf("expected a Run-main code lens")
 	}
+
 	if !hasRunTest {
 		t.Fatalf("expected a Run-test code lens")
 	}
 
-	// Code actions: organize imports.
 	var actions []protocol.CodeAction
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentCodeAction, &protocol.CodeActionParams{
 		TextDocument: protocol.TextDocumentIdentifier{URI: docURI},
@@ -132,26 +137,29 @@ test "dog greets" {
 	}, &actions); err != nil {
 		t.Fatalf("codeAction: %v", err)
 	}
+
 	hasOrganize := false
 	for _, a := range actions {
 		if a.Kind == protocol.SourceOrganizeImports {
 			hasOrganize = true
 		}
 	}
+
 	if !hasOrganize {
 		t.Fatalf("expected a Source.OrganizeImports action, got %d actions", len(actions))
 	}
 
-	// Semantic tokens.
 	var stokens protocol.SemanticTokens
 	if _, err := cc.Call(ctx, protocol.MethodSemanticTokensFull, &protocol.SemanticTokensParams{
 		TextDocument: protocol.TextDocumentIdentifier{URI: docURI},
 	}, &stokens); err != nil {
 		t.Fatalf("semanticTokens/full: %v", err)
 	}
+
 	if len(stokens.Data)%5 != 0 {
 		t.Fatalf("semantic tokens data length %d is not a multiple of 5", len(stokens.Data))
 	}
+
 	if len(stokens.Data) < 5 {
 		t.Fatalf("expected at least one semantic token, got %d", len(stokens.Data)/5)
 	}
@@ -159,6 +167,7 @@ test "dog greets" {
 	if _, err := cc.Call(ctx, protocol.MethodShutdown, nil, nil); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodExit, nil)
 	cancel()
 }

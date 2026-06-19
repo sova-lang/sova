@@ -2,12 +2,14 @@ package passes
 
 import "sova/internal/ir"
 
-// PassMangle is a pass that mangles names in the code to avoid naming conflicts.
 type PassMangle struct{}
 
 func (p *PassMangle) Name() string       { return "mangle" }
-func (p *PassMangle) Scope() PassScope   { return PerPackage } // oder build-weit – dann pm.Run über alle pkgs zusammen aggregieren
+
+func (p *PassMangle) Scope() PassScope   { return PerPackage }
+
 func (p *PassMangle) Requires() []string { return []string{"infer_types"} }
+
 func (p *PassMangle) NoErrors() bool     { return true }
 
 func (p *PassMangle) Run(pc *PassContext) error {
@@ -15,13 +17,16 @@ func (p *PassMangle) Run(pc *PassContext) error {
 		owner ir.ScopeID
 		name  string
 	}
+
 	methodSeen := map[ownerKey]int{}
+
 	for id, sym := range pc.Pkg.Syms.ByID() {
 		var mangledName string
 		if sym.Kind == ir.SK_Function {
 			if sym.Flags&ir.SF_TypeMethod != 0 {
 				base := sanitizeMethodName(sym.Name)
 				key := ownerKey{owner: sym.Owner, name: base}
+
 				idx := methodSeen[key]
 				methodSeen[key] = idx + 1
 				if idx == 0 {
@@ -35,8 +40,10 @@ func (p *PassMangle) Run(pc *PassContext) error {
 		} else {
 			mangledName = pc.Names.RandName(p.getManglePrefix(sym.Kind))
 		}
+
 		pc.Names.Add(id, sym.Name, mangledName)
 	}
+
 	return nil
 }
 
@@ -44,11 +51,13 @@ func suffixForInt(n int) string {
 	if n == 0 {
 		return "0"
 	}
+
 	out := ""
 	for n > 0 {
 		out = string('0'+byte(n%10)) + out
 		n /= 10
 	}
+
 	return out
 }
 
@@ -67,6 +76,7 @@ func sanitizeMethodName(n string) string {
 	case "op==":
 		return "opEq"
 	}
+
 	return n
 }
 
@@ -81,12 +91,10 @@ func (p *PassMangle) getManglePrefix(kind ir.SymbolKind) string {
 	}
 }
 
-// mangleFunctionName generates a unique mangled name for a function based on its signature.
-// This ensures that overloaded functions get distinct names in the generated code.
 func (p *PassMangle) mangleFunctionName(pc *PassContext, sym *ir.Symbol) string {
 	funcType, ok := pc.Pkg.Types.GetByID(sym.Typ)
 	if !ok || funcType.Kind != ir.TK_Function {
-		// Fallback to random name if type lookup fails
+
 		return pc.Names.RandName("fn")
 	}
 
@@ -105,10 +113,10 @@ func (p *PassMangle) mangleFunctionName(pc *PassContext, sym *ir.Symbol) string 
 	if sigSuffix != "" {
 		return baseName + "_" + sigSuffix
 	}
+
 	return baseName
 }
 
-// getTypeName returns a short string representation of a type for mangling purposes.
 func (p *PassMangle) getTypeName(pc *PassContext, typID ir.TypID) string {
 	typ, ok := pc.Pkg.Types.GetByID(typID)
 	if !ok {

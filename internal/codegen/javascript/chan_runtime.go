@@ -9,7 +9,6 @@ import (
 	"sova/internal/ir"
 )
 
-// buildSelectStmt lowers a Sova `select { ... }` to an `await __sovaSelect([...], defaultCb)` call. Each case becomes a `{op, chan, value?, cb}` object literal; recv-bind cases destructure the `[value, ok]` tuple in the cb's parameter list so the bindings are visible to the body. The whole expression must be awaited; the surrounding function gets marked async by `propagate_async` (which treats SelectStmt as inherently async on the JS target).
 func (e *CodeEmitter) buildSelectStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.SelectStmt) *jsgen.Statement {
 	e.usesChanRuntime = true
 	var sb strings.Builder
@@ -18,6 +17,7 @@ func (e *CodeEmitter) buildSelectStmt(ctx *codegen.EmitContext, pkg *ir.PackageC
 		if i > 0 {
 			sb.WriteString(",")
 		}
+
 		switch cc.Kind {
 		case ir.SelectCaseSend:
 			sb.WriteString("{op:'send',chan:")
@@ -36,12 +36,15 @@ func (e *CodeEmitter) buildSelectStmt(ctx *codegen.EmitContext, pkg *ir.PackageC
 				if tgt.Name == nil {
 					continue
 				}
+
 				name := symNameWithUnused(ctx, pkg, tgt.Name.Sym)
 				if name == "_" {
 					continue
 				}
+
 				prelude.WriteString(fmt.Sprintf("const %s=__pair[%d];", name, i))
 			}
+
 			sb.WriteString("{")
 			sb.WriteString(prelude.String())
 			sb.WriteString(renderBlockInner(e, ctx, pkg, f, cc.Body))
@@ -55,11 +58,13 @@ func (e *CodeEmitter) buildSelectStmt(ctx *codegen.EmitContext, pkg *ir.PackageC
 			sb.WriteString("}")
 		}
 	}
+
 	sb.WriteString("]")
 	if s.Default != nil {
 		sb.WriteString(",async()=>")
 		sb.WriteString(renderBlock(e, ctx, pkg, f, s.Default))
 	}
+
 	sb.WriteString(")")
 	return jsgen.Raw(sb.String())
 }
@@ -68,6 +73,7 @@ func stmtString(s *jsgen.Statement) string {
 	if s == nil {
 		return ""
 	}
+
 	return s.String()
 }
 
@@ -75,6 +81,7 @@ func renderBlock(e *CodeEmitter, ctx *codegen.EmitContext, pkg *ir.PackageContex
 	if b == nil {
 		return "{}"
 	}
+
 	return "{" + renderBlockInner(e, ctx, pkg, f, b) + "}"
 }
 
@@ -82,6 +89,7 @@ func renderBlockInner(e *CodeEmitter, ctx *codegen.EmitContext, pkg *ir.PackageC
 	if b == nil {
 		return ""
 	}
+
 	var sb strings.Builder
 	for _, st := range b.Stmts {
 		c := e.buildStmtAsCode(ctx, pkg, f, st)
@@ -90,6 +98,7 @@ func renderBlockInner(e *CodeEmitter, ctx *codegen.EmitContext, pkg *ir.PackageC
 			sb.WriteString(";")
 		}
 	}
+
 	return sb.String()
 }
 
@@ -98,18 +107,20 @@ func matchChanMethodJS(ctx *codegen.EmitContext, call *ir.FuncCallExpr) (string,
 	if !ok || len(fa.Fields) != 1 {
 		return "", nil, false
 	}
+
 	method := fa.Fields[0].Name
 	if method != "send" && method != "recv" && method != "close" {
 		return "", nil, false
 	}
+
 	ty, found := ctx.Types.GetByID(fa.Expr.GetType())
 	if !found || ty.Kind != ir.TK_Chan {
 		return "", nil, false
 	}
+
 	return method, fa.Expr, true
 }
 
-// SovaChanRuntime is the JavaScript runtime that backs Sova's `chan<T>` on the frontend. It provides a buffered/unbuffered FIFO with promise-based send/recv, supporting `ch.send(v)`, `ch.recv()` (returns `[value, ok]`), and `ch.close()` (subsequent recv returns the zero-value tuple with ok=false). Single-threaded scheduling: send/recv resolve on the microtask queue.
 const SovaChanRuntime = `
 class __SovaChan {
   constructor(capacity) {

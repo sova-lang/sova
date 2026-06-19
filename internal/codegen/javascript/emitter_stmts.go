@@ -12,13 +12,12 @@ import (
 	"sova/internal/ir"
 )
 
-// emitStmt emits a statement to the output
 func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, st ir.Stmt, topLevel bool) {
 	switch s := st.(type) {
 	case *ir.WireRulesetStmt:
 		_ = s
 	case *ir.TestDeclStmt, *ir.GroupDeclStmt, *ir.SetupStmt, *ir.TeardownStmt:
-		// Handled by the JS-side test driver (see emitJSTestImplFuncs); the regular statement emitter ignores them so `on test` files don't leak stray top-level functions outside the test registry.
+
 		return
 	case *ir.BlockStmt:
 		if topLevel {
@@ -34,6 +33,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 		if jsHasBuiltinAnnotation(s.Annotations) {
 			break
 		}
+
 		if !s.IsWired {
 			side := ir.SideShared
 			if s.Side != nil {
@@ -41,10 +41,12 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			} else if f != nil {
 				side = f.Side.Kind
 			}
+
 			if side == ir.SideBackend {
 				break
 			}
 		}
+
 		e.emitFuncDecl(ctx, pkg, f, s, topLevel)
 
 	case *ir.ExternDeclStmt:
@@ -57,6 +59,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 		if s.IsExtern || jsHasBuiltinAnnotation(s.Annotations) {
 			break
 		}
+
 		e.emitTypeDecl(ctx, pkg, f, s, topLevel)
 
 	case *ir.MixinDeclStmt:
@@ -83,6 +86,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			} else {
 				recvName = symName(ctx, s.Receiver.Sym)
 			}
+
 			if s.Op == ir.OpAssign && len(s.Fields) == 1 && !e.inSyntheticCtor {
 				fld := s.Fields[0]
 				if isReactiveFieldOfJS(ctx, pkg, s.Receiver.Sym, fld.Name) {
@@ -91,10 +95,12 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 					break
 				}
 			}
+
 			target := jsgen.Id(recvName)
 			for _, fld := range s.Fields {
 				target = target.Dot(fld.Name)
 			}
+
 			e.jf.Add(target.Op(string(s.Op)).Add(e.buildExpr(ctx, pkg, f, s.Value)))
 		}
 
@@ -153,7 +159,6 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 		e.emitWhileStmt(ctx, pkg, f, s, topLevel)
 
 	case *ir.TypeAliasStmt:
-		// Aliases are erased at the type-resolution stage; no JS declaration needed.
 
 	default:
 		panic(fmt.Sprintf("javascript codegen: unhandled top-level statement type %T", st))
@@ -165,10 +170,12 @@ func (e *CodeEmitter) emitVarDecl(ctx *codegen.EmitContext, pkg *ir.PackageConte
 		e.emitEmbeddedVar(ctx, pkg, s)
 		return
 	}
+
 	if s.IsWired && topLevel {
 		e.emitWiredVarStub(ctx, pkg, f, s)
 		return
 	}
+
 	if len(s.Targets) == 1 {
 		target := &s.Targets[0]
 
@@ -190,6 +197,7 @@ func (e *CodeEmitter) emitVarDecl(ctx *codegen.EmitContext, pkg *ir.PackageConte
 				if orig != "" {
 					e.jf.Add(jsgen.Comment(fmt.Sprintf("Original name: %s", orig)))
 				}
+
 				e.jf.Add(stmt)
 
 				rhs := e.buildExpr(ctx, pkg, f, s.Init)
@@ -218,12 +226,14 @@ func (e *CodeEmitter) emitVarDecl(ctx *codegen.EmitContext, pkg *ir.PackageConte
 			} else {
 				stmt = jsgen.Let(name)
 			}
+
 			stmt = withPosFromStmt(stmt.Op("=").Add(e.buildExpr(ctx, pkg, f, s.Init)), s)
 
 			orig := symOrigName(ctx, target.Name.Sym)
 			if orig != "" {
 				e.jf.Add(jsgen.Comment(fmt.Sprintf("Original name: %s", orig)))
 			}
+
 			e.jf.Add(stmt)
 		}
 	} else {
@@ -252,6 +262,7 @@ func (e *CodeEmitter) emitVarDecl(ctx *codegen.EmitContext, pkg *ir.PackageConte
 			if s.IsConst {
 				kind = "const"
 			}
+
 			e.jf.Add(withPosFromStmt(jsgen.DestructArray(kind, names, e.buildExpr(ctx, pkg, f, s.Init)), s))
 		}
 	}
@@ -263,13 +274,16 @@ func (e *CodeEmitter) emitFuncDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 		if s.Side != nil {
 			effSide = s.Side.Kind
 		}
+
 		if effSide == ir.SideFrontend {
 			e.emitFrontendWireImpl(ctx, pkg, f, s)
 			return
 		}
+
 		e.emitWiredStub(ctx, pkg, f, s)
 		return
 	}
+
 	funcName := symName(ctx, s.Name.Sym)
 	orig := symOrigName(ctx, s.Name.Sym)
 
@@ -301,27 +315,29 @@ func (e *CodeEmitter) emitFuncDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 	if orig != "" {
 		e.jf.Add(jsgen.Comment(fmt.Sprintf("Original name: %s", orig)))
 	}
+
 	fb := jsgen.Func(funcName).Params(params...)
 	if s.IsAsync {
 		fb = fb.Async()
 	}
+
 	e.jf.Add(withPosFromStmt(fb.Block(body...), s))
 }
 
-// funcBodyContainsDefer reports whether the block contains a top-level DeferStmt. For the v1 JS-side defer support we only handle defers declared directly inside the function body (not inside nested control-flow). Nested defers would require a more invasive transform; flagged as a follow-up.
 func funcBodyContainsDefer(blk *ir.BlockStmt) bool {
 	if blk == nil {
 		return false
 	}
+
 	for _, st := range blk.Stmts {
 		if _, ok := st.(*ir.DeferStmt); ok {
 			return true
 		}
 	}
+
 	return false
 }
 
-// wrapWithDeferDrain wraps the function body with a local `__sovaDeferStack` slot and a try/finally that drains it in LIFO order at function exit. Defers that throw inside the drain are swallowed so a later defer cannot prevent earlier ones from firing (mirrors Go's behaviour where a panicking defer still allows recover to run other defers). Built as a Raw try-statement plus a Raw finally-tail since jsgen has no native try/finally builder; the function-body emitter joins the resulting code slice with `;\n` so the try/finally pairs syntactically.
 func wrapWithDeferDrain(body []jsgen.Code) []jsgen.Code {
 	var bodyStr strings.Builder
 	for _, c := range body {
@@ -331,8 +347,10 @@ func wrapWithDeferDrain(body []jsgen.Code) []jsgen.Code {
 		default:
 			bodyStr.WriteString(fmt.Sprintf("%v", v))
 		}
+
 		bodyStr.WriteString(";\n  ")
 	}
+
 	wrapped := fmt.Sprintf(
 		"const __sovaDeferStack = []; try { %s} finally { for (let __i = __sovaDeferStack.length - 1; __i >= 0; __i--) { try { __sovaDeferStack[__i](); } catch (__e) {} } }",
 		bodyStr.String(),
@@ -340,7 +358,6 @@ func wrapWithDeferDrain(body []jsgen.Code) []jsgen.Code {
 	return []jsgen.Code{jsgen.Raw(wrapped)}
 }
 
-// emitFrontendWireImpl emits the actual JavaScript body of a frontend `wire func` (rather than the backend-side HTTP fetch stub) and registers it with the runtime WS dispatcher so backend-pushed RPC calls can reach it. Same body-emission path as a regular func; the only addition is the registration line.
 func (e *CodeEmitter) emitFrontendWireImpl(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.FuncDeclStmt) {
 	funcName := symName(ctx, s.Name.Sym)
 	orig := symOrigName(ctx, s.Name.Sym)
@@ -363,16 +380,19 @@ func (e *CodeEmitter) emitFrontendWireImpl(ctx *codegen.EmitContext, pkg *ir.Pac
 	if orig != "" {
 		e.jf.Add(jsgen.Comment(fmt.Sprintf("frontend wire: %s", orig)))
 	}
+
 	fb := jsgen.Func(funcName).Params(params...)
 	if s.IsAsync {
 		fb = fb.Async()
 	}
+
 	e.jf.Add(withPosFromStmt(fb.Block(body...), s))
 
 	wireName := orig
 	if wireName == "" {
 		wireName = s.Name.Name
 	}
+
 	paramDescs := make([]string, len(s.Params))
 	for i, p := range s.Params {
 		if p != nil && p.Type != nil && p.Type.Typ != 0 {
@@ -381,6 +401,7 @@ func (e *CodeEmitter) emitFrontendWireImpl(ctx *codegen.EmitContext, pkg *ir.Pac
 			paramDescs[i] = `{kind:"any"}`
 		}
 	}
+
 	descLiteral := "[" + strings.Join(paramDescs, ",") + "]"
 	e.jf.Add(jsgen.Raw(fmt.Sprintf("__sovaRegisterWire(%q, %s, %s);", wireName, funcName, descLiteral)))
 }
@@ -388,7 +409,7 @@ func (e *CodeEmitter) emitFrontendWireImpl(ctx *codegen.EmitContext, pkg *ir.Pac
 func (e *CodeEmitter) emitExternDecl(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.ExternDeclStmt, topLevel bool) {
 	targetSide := ir.SideFrontend
 	if f.Side.Kind == ir.SideBackend {
-		return // Skip backend externs in frontend
+		return
 	}
 
 	testMode := jsTestModeFromCache(ctx)
@@ -400,6 +421,7 @@ func (e *CodeEmitter) emitExternDecl(ctx *codegen.EmitContext, pkg *ir.PackageCo
 				continue
 			}
 		}
+
 		funcName := symName(ctx, fn.Name.Sym)
 		orig := symOrigName(ctx, fn.Name.Sym)
 
@@ -426,11 +448,13 @@ func (e *CodeEmitter) emitExternDecl(ctx *codegen.EmitContext, pkg *ir.PackageCo
 			argList := strings.Join(params, ", ")
 			body = append(body, jsgen.Raw(fmt.Sprintf("var __mockHit = (typeof __sovaJSMockHook === 'function') ? __sovaJSMockHook(%q, [%s]) : null; if (__mockHit) return __mockHit.value", mockableName, argList)))
 		}
+
 		body = append(body, jsgen.Return(e.buildNativeCallWithArgs(nativeCall, argExprs)))
 
 		if orig != "" {
 			e.jf.Add(jsgen.Comment(fmt.Sprintf("Original name: %s", orig)))
 		}
+
 		e.jf.Add(withPosFromStmt(jsgen.Func(funcName).Params(params...).Block(body...), s))
 	}
 
@@ -446,11 +470,13 @@ func (e *CodeEmitter) emitExternDecl(ctx *codegen.EmitContext, pkg *ir.PackageCo
 		} else {
 			stmt = jsgen.Let(varName)
 		}
+
 		stmt = stmt.Op("=").Add(e.buildNativeRef(nativeCall))
 
 		if orig != "" {
 			e.jf.Add(jsgen.Comment(fmt.Sprintf("Original name: %s", orig)))
 		}
+
 		e.jf.Add(withPosFromStmt(stmt, s))
 	}
 }
@@ -470,12 +496,14 @@ func (e *CodeEmitter) emitMultiAssignment(ctx *codegen.EmitContext, pkg *ir.Pack
 			targetExprs = append(targetExprs, jsgen.Id(discardName))
 			continue
 		}
+
 		if symbol, ok := pkg.Syms.GetByID(target.Name.Sym); ok && symbol.Flags&ir.SF_Unused != 0 {
 			discardName := e.nextDiscardName()
 			names = append(names, discardName)
 			targetExprs = append(targetExprs, jsgen.Id(discardName))
 			continue
 		}
+
 		hasNonDiscard = true
 		if memberName, isMethod, ok := e.classMemberLookup(ctx, target.Name.Sym); ok && !isMethod {
 			names = append(names, "this."+memberName)
@@ -494,10 +522,12 @@ func (e *CodeEmitter) emitMultiAssignment(ctx *codegen.EmitContext, pkg *ir.Pack
 	if !hasNonDiscard {
 		return
 	}
+
 	if len(targetExprs) == 1 {
 		e.jf.Add(withPosFromStmt(targetExprs[0].Op("=").Add(e.buildExpr(ctx, pkg, f, s.Value)), s))
 		return
 	}
+
 	e.jf.Add(withPosFromStmt(jsgen.DestructArray("let", names, e.buildExpr(ctx, pkg, f, s.Value)), s))
 }
 
@@ -505,13 +535,10 @@ func (e *CodeEmitter) emitIfStmt(ctx *codegen.EmitContext, pkg *ir.PackageContex
 	if topLevel {
 		return
 	}
+
 	e.jf.Add(e.buildIfStmt(ctx, pkg, f, s))
 }
 
-// buildIfStmt assembles the jsgen statement for an `if/else if/else` chain
-// without emitting it. Used by both emitIfStmt (top-level if) and
-// buildStmtAsCode (nested if inside another statement, where the caller needs
-// the Statement returned rather than appended to the file).
 func (e *CodeEmitter) buildIfStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.IfStmt) *jsgen.Statement {
 	ifStmt := jsgen.If(e.buildExpr(ctx, pkg, f, s.Cond))
 
@@ -519,6 +546,7 @@ func (e *CodeEmitter) buildIfStmt(ctx *codegen.EmitContext, pkg *ir.PackageConte
 	for _, stmt := range s.Then.Stmts {
 		thenBody = append(thenBody, e.buildStmtAsCode(ctx, pkg, f, stmt))
 	}
+
 	ifStmt.Block(thenBody...)
 
 	if len(s.ElseIfs) > 0 || s.Else != nil {
@@ -529,15 +557,19 @@ func (e *CodeEmitter) buildIfStmt(ctx *codegen.EmitContext, pkg *ir.PackageConte
 			for _, stmt := range elif.Then.Stmts {
 				elifBody = append(elifBody, e.buildStmtAsCode(ctx, pkg, f, stmt))
 			}
+
 			elseBody = append(elseBody, elifStmt.Block(elifBody...).ToStatement())
 		}
+
 		if s.Else != nil {
 			for _, stmt := range s.Else.Stmts {
 				elseBody = append(elseBody, e.buildStmtAsCode(ctx, pkg, f, stmt))
 			}
 		}
+
 		return withPosFromStmt(ifStmt.Else(elseBody...), s)
 	}
+
 	return withPosFromStmt(ifStmt.ToStatement(), s)
 }
 
@@ -545,11 +577,10 @@ func (e *CodeEmitter) emitSwitchStmt(ctx *codegen.EmitContext, pkg *ir.PackageCo
 	if topLevel {
 		return
 	}
+
 	e.jf.Add(e.buildSwitchStmt(ctx, pkg, f, s))
 }
 
-// buildSwitchStmt is the Statement-returning counterpart to emitSwitchStmt, so
-// `buildStmtAsCode` can use it when a switch shows up inside a nested context.
 func (e *CodeEmitter) buildSwitchStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.SwitchStmt) *jsgen.Statement {
 	switchBuilder := jsgen.Switch(e.buildExpr(ctx, pkg, f, s.Expr))
 	for _, c := range s.Cases {
@@ -557,17 +588,21 @@ func (e *CodeEmitter) buildSwitchStmt(ctx *codegen.EmitContext, pkg *ir.PackageC
 		for _, stmt := range c.Stmts {
 			caseBody = append(caseBody, e.buildStmtAsCode(ctx, pkg, f, stmt))
 		}
+
 		if len(c.Values) > 0 {
 			switchBuilder.Case(e.buildExpr(ctx, pkg, f, c.Values[0]), caseBody...)
 		}
 	}
+
 	if len(s.Default) > 0 {
 		var defaultBody []jsgen.Code
 		for _, stmt := range s.Default {
 			defaultBody = append(defaultBody, e.buildStmtAsCode(ctx, pkg, f, stmt))
 		}
+
 		return switchBuilder.Default(defaultBody...)
 	}
+
 	return switchBuilder.ToStatement()
 }
 
@@ -616,6 +651,7 @@ func (e *CodeEmitter) emitGuardStmt(ctx *codegen.EmitContext, pkg *ir.PackageCon
 		for _, ret := range s.Returns {
 			exprs = append(exprs, e.buildExpr(ctx, pkg, f, ret))
 		}
+
 		guardBody = append(guardBody, jsgen.Return(jsgen.Array(exprs...)))
 	}
 
@@ -643,6 +679,7 @@ func (e *CodeEmitter) emitForStmt(ctx *codegen.EmitContext, pkg *ir.PackageConte
 		for _, stmt := range s.Body.Stmts {
 			body = append(body, e.buildStmtAsCode(ctx, pkg, f, stmt))
 		}
+
 		loopStmt = jsgen.While(jsgen.Lit(true)).Block(body...)
 
 	} else if s.CondType == ir.ForCondInt {
@@ -737,7 +774,6 @@ func (e *CodeEmitter) emitForStmt(ctx *codegen.EmitContext, pkg *ir.PackageConte
 	e.jf.Add(loopStmt)
 }
 
-// buildIterableLoop lowers `for x in iter { body }` (and the optional `for x, idx in iter` form) into a JS while-loop that calls `iter.<next>()` once per iteration, breaks when the option is null, and exposes the unwrapped value as `x`. Used by both emitForStmt and buildForStmt so nested iterables stay self-contained.
 func (e *CodeEmitter) buildIterableLoop(ctx *codegen.EmitContext, s *ir.ForStmt, iterExpr *jsgen.Statement, inFirstVar, inSecondVar string, body []jsgen.Code) *jsgen.Statement {
 	nextName := symName(ctx, s.CondIn.IterNextSym)
 	optName := "__sovaIterNext_" + inFirstVar
@@ -746,12 +782,14 @@ func (e *CodeEmitter) buildIterableLoop(ctx *codegen.EmitContext, s *ir.ForStmt,
 		jsgen.Raw(fmt.Sprintf("if (%s == null) break;", optName)),
 		jsgen.Let(inFirstVar).Op("=").Id(optName),
 	}
+
 	if inSecondVar != "" {
 		idxName := "__sovaIterIdx_" + inFirstVar
 		inner = append(inner, jsgen.Raw(idxName+"++"), jsgen.Let(inSecondVar).Op("=").Id(idxName))
 		loop := jsgen.While(jsgen.Lit(true)).Block(append(inner, body...)...)
 		return jsgen.Raw(fmt.Sprintf("{ let %s = -1; ", idxName)).Add(loop).Add(jsgen.Raw(" }"))
 	}
+
 	return jsgen.While(jsgen.Lit(true)).Block(append(inner, body...)...)
 }
 
@@ -783,10 +821,6 @@ func (e *CodeEmitter) emitWhileStmt(ctx *codegen.EmitContext, pkg *ir.PackageCon
 	e.jf.Add(loopStmt)
 }
 
-// buildForStmt mirrors emitForStmt but returns the resulting statement instead
-// of appending it. Loop-label and loop-depth bookkeeping happens here so a
-// nested `break N` referencing this loop still resolves correctly when it is
-// emitted via buildStmtAsCode.
 func (e *CodeEmitter) buildForStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.ForStmt) *jsgen.Statement {
 	e.loopDepth++
 	defer func() { e.loopDepth-- }()
@@ -804,6 +838,7 @@ func (e *CodeEmitter) buildForStmt(ctx *codegen.EmitContext, pkg *ir.PackageCont
 		for _, stmt := range s.Body.Stmts {
 			body = append(body, e.buildStmtAsCode(ctx, pkg, f, stmt))
 		}
+
 		loopStmt = jsgen.While(jsgen.Lit(true)).Block(body...)
 	} else if s.CondType == ir.ForCondInt {
 		initVarName := symNameWithUnused(ctx, pkg, s.CondInt.Init.Targets[0].Name.Sym)
@@ -814,6 +849,7 @@ func (e *CodeEmitter) buildForStmt(ctx *codegen.EmitContext, pkg *ir.PackageCont
 		for _, stmt := range s.Body.Stmts {
 			body = append(body, e.buildStmtAsCode(ctx, pkg, f, stmt))
 		}
+
 		loopStmt = jsgen.For(initStmt, condExpr, postExpr).Block(body...)
 	} else if s.CondType == ir.ForCondRange {
 		rangeVar := symNameWithUnused(ctx, pkg, s.CondRange.RangeVar.Sym)
@@ -822,6 +858,7 @@ func (e *CodeEmitter) buildForStmt(ctx *codegen.EmitContext, pkg *ir.PackageCont
 		for _, stmt := range s.Body.Stmts {
 			body = append(body, e.buildStmtAsCode(ctx, pkg, f, stmt))
 		}
+
 		loopStmt = jsgen.For(jsgen.Const(rangeVar).Op("of").Add(rangeExpr), nil, nil).Block(body...)
 	} else if s.CondType == ir.ForCondIn {
 		inFirstVar := symNameWithUnused(ctx, pkg, s.CondIn.InFirstVar.Sym)
@@ -829,6 +866,7 @@ func (e *CodeEmitter) buildForStmt(ctx *codegen.EmitContext, pkg *ir.PackageCont
 		if s.CondIn.InSecondVar != nil {
 			inSecondVar = symNameWithUnused(ctx, pkg, s.CondIn.InSecondVar.Sym)
 		}
+
 		iterExpr := e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)
 		isMap := ctx.Types.IsTypeOfKind(s.CondIn.IterExpr.GetType(), ir.TK_Map)
 		isIterable := s.CondIn.IterNextSym != 0
@@ -836,6 +874,7 @@ func (e *CodeEmitter) buildForStmt(ctx *codegen.EmitContext, pkg *ir.PackageCont
 		for _, stmt := range s.Body.Stmts {
 			body = append(body, e.buildStmtAsCode(ctx, pkg, f, stmt))
 		}
+
 		if isIterable {
 			loopStmt = e.buildIterableLoop(ctx, s, iterExpr, inFirstVar, inSecondVar, body)
 		} else if isMap {
@@ -860,10 +899,10 @@ func (e *CodeEmitter) buildForStmt(ctx *codegen.EmitContext, pkg *ir.PackageCont
 	if needsLabel {
 		loopStmt = jsgen.Id(label).Op(":").Add(loopStmt)
 	}
+
 	return loopStmt
 }
 
-// buildWhileStmt is the Statement-returning counterpart to emitWhileStmt.
 func (e *CodeEmitter) buildWhileStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.WhileStmt) *jsgen.Statement {
 	e.loopDepth++
 	defer func() { e.loopDepth-- }()
@@ -878,10 +917,12 @@ func (e *CodeEmitter) buildWhileStmt(ctx *codegen.EmitContext, pkg *ir.PackageCo
 	for _, stmt := range s.Body.Stmts {
 		body = append(body, e.buildStmtAsCode(ctx, pkg, f, stmt))
 	}
+
 	loopStmt := jsgen.While(e.buildExpr(ctx, pkg, f, s.Cond)).Block(body...)
 	if needsLabel {
 		loopStmt = jsgen.Id(label).Op(":").Add(loopStmt)
 	}
+
 	return loopStmt
 }
 
@@ -896,23 +937,28 @@ func (e *CodeEmitter) emitTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 		if ref.Sym == 0 {
 			continue
 		}
+
 		symPkg := pkg
 		if ref.Qualifier != "" {
 			if found := lookupImportedPackage(ctx, pkg, ref.Qualifier); found != nil {
 				symPkg = found
 			}
 		}
+
 		embedSym, ok := symPkg.Syms.GetByID(ref.Sym)
 		if !ok || embedSym.Typ == 0 {
 			continue
 		}
+
 		embedTy, ok := ctx.Types.GetByID(embedSym.Typ)
 		if !ok || embedTy.Kind != ir.TK_Struct {
 			continue
 		}
+
 		if parentClass != "" {
 			break
 		}
+
 		if embedTy.IsExtern {
 			parentClass = embedTy.StructName
 		} else {
@@ -943,18 +989,22 @@ func (e *CodeEmitter) emitTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 				paramNames = append(paramNames, name)
 			}
 		}
+
 		sb.WriteString(fmt.Sprintf("  constructor(%s) {\n", strings.Join(paramNames, ", ")))
 		if parentClass != "" {
 			sb.WriteString("    super();\n")
 		}
+
 		for _, field := range s.Fields {
 			reactive := fieldHasReactiveAnnotationJS(field.Annotations)
 			if reactive {
 				sb.WriteString(fmt.Sprintf("    this.__obs%s = [];\n", upperFirstJS(field.Name.Name)))
 			}
+
 			if field.Default == nil {
 				continue
 			}
+
 			valStr := e.buildExpr(ctx, pkg, f, field.Default).String()
 			if reactive {
 				sb.WriteString(fmt.Sprintf("    this._%s = %s;\n", field.Name.Name, valStr))
@@ -962,16 +1012,19 @@ func (e *CodeEmitter) emitTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 				sb.WriteString(fmt.Sprintf("    this.%s = %s;\n", field.Name.Name, valStr))
 			}
 		}
+
 		prevSynth := e.inSyntheticCtor
 		if primaryCtor.IsSynthetic {
 			e.inSyntheticCtor = true
 		}
+
 		for _, stmt := range primaryCtor.Body.Stmts {
 			code := e.buildStmtAsCode(ctx, pkg, f, stmt)
 			if stmtCode, ok := code.(*jsgen.Statement); ok {
 				sb.WriteString("    " + stmtCode.String() + ";\n")
 			}
 		}
+
 		e.inSyntheticCtor = prevSynth
 		sb.WriteString("  }\n")
 	} else {
@@ -979,23 +1032,27 @@ func (e *CodeEmitter) emitTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 		if parentClass != "" {
 			sb.WriteString("    super();\n")
 		}
+
 		for _, field := range s.Fields {
 			reactive := fieldHasReactiveAnnotationJS(field.Annotations)
 			if reactive {
 				sb.WriteString(fmt.Sprintf("    this.__obs%s = [];\n", upperFirstJS(field.Name.Name)))
 			}
+
 			var valStr string
 			if field.Default != nil {
 				valStr = e.buildExpr(ctx, pkg, f, field.Default).String()
 			} else {
 				valStr = jsZeroFor(ctx, field.Type)
 			}
+
 			if reactive {
 				sb.WriteString(fmt.Sprintf("    this._%s = %s;\n", field.Name.Name, valStr))
 			} else {
 				sb.WriteString(fmt.Sprintf("    this.%s = %s;\n", field.Name.Name, valStr))
 			}
 		}
+
 		sb.WriteString("  }\n")
 	}
 
@@ -1003,6 +1060,7 @@ func (e *CodeEmitter) emitTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 		if !fieldHasReactiveAnnotationJS(field.Annotations) {
 			continue
 		}
+
 		fieldName := field.Name.Name
 		exported := upperFirstJS(fieldName)
 		obsName := "__obs" + exported
@@ -1037,20 +1095,25 @@ func (e *CodeEmitter) emitTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 		if fn.Name.Name == "toString" {
 			hasUserToString = true
 		}
+
 		if fn.Name.Name == "hashCode" {
 			hasUserHashCode = true
 		}
+
 		params := ""
 		for i, param := range fn.Params {
 			if i > 0 {
 				params += ", "
 			}
+
 			params += symNameWithUnused(ctx, pkg, param.Name.Sym)
 		}
+
 		prefix := ""
 		if fn.IsAsync {
 			prefix = "async "
 		}
+
 		sb.WriteString(fmt.Sprintf("  %s%s(%s) {\n", prefix, methodName, params))
 		for _, stmt := range fn.Body.Stmts {
 			code := e.buildStmtAsCode(ctx, pkg, f, stmt)
@@ -1058,6 +1121,7 @@ func (e *CodeEmitter) emitTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 				sb.WriteString("    " + stmtCode.String() + ";\n")
 			}
 		}
+
 		sb.WriteString("  }\n")
 	}
 
@@ -1069,17 +1133,21 @@ func (e *CodeEmitter) emitTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 			if i > 0 {
 				inner.WriteString(", ")
 			}
+
 			inner.WriteString(fmt.Sprintf("%s: ${this.%s}", field.Name.Name, field.Name.Name))
 		}
+
 		inner.WriteString("}")
 		sb.WriteString(fmt.Sprintf("  toString() { return `%s`; }\n", inner.String()))
 	}
+
 	if !hasUserHashCode {
 		var repr strings.Builder
 		repr.WriteString(s.Name.Name)
 		for _, field := range s.Fields {
 			repr.WriteString(fmt.Sprintf("|${this.%s}", field.Name.Name))
 		}
+
 		sb.WriteString(fmt.Sprintf("  hashCode() { let h = 5381; const r = `%s`; for (let i = 0; i < r.length; i++) { h = ((h << 5) + h) + r.charCodeAt(i); } return h | 0; }\n", repr.String()))
 	}
 
@@ -1097,22 +1165,27 @@ func (e *CodeEmitter) emitTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 			params[j] = symNameWithUnused(ctx, pkg, param.Name.Sym)
 			argRefs[j] = jsgen.Id(params[j])
 		}
+
 		if i == 0 {
 			body := []jsgen.Code{
 				jsgen.Return(jsgen.Raw(fmt.Sprintf("new %s", typeName)).Call(argRefs...)),
 			}
+
 			e.jf.Add(jsgen.Func(ctorName).Params(params...).Block(body...))
 			continue
 		}
+
 		thisName := symName(ctx, ctor.ThisSym)
 		var body []jsgen.Code
 		body = append(body, jsgen.Let(thisName).Op("=").Raw(fmt.Sprintf("new %s()", typeName)))
 		for _, stmt := range ctor.Body.Stmts {
 			body = append(body, e.buildStmtAsCode(ctx, pkg, f, stmt))
 		}
+
 		body = append(body, jsgen.Return(jsgen.Id(thisName)))
 		e.jf.Add(jsgen.Func(ctorName).Params(params...).Block(body...))
 	}
+
 	for _, cast := range s.Casts {
 		castName := symName(ctx, cast.Sym)
 		paramName := symNameWithUnused(ctx, pkg, cast.Param.Name.Sym)
@@ -1122,8 +1195,10 @@ func (e *CodeEmitter) emitTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 				body = append(body, e.buildStmtAsCode(ctx, pkg, f, stmt))
 			}
 		}
+
 		e.jf.Add(jsgen.Func(castName).Params(paramName).Block(body...))
 	}
+
 	e.suppressThisKeyword = prevSuppress
 }
 
@@ -1131,6 +1206,7 @@ func jsZeroFor(ctx *codegen.EmitContext, tr *ir.TypeRef) string {
 	if tr == nil {
 		return "null"
 	}
+
 	if ty, ok := ctx.Types.GetByID(tr.Typ); ok {
 		switch ty.Kind {
 		case ir.TK_PrimitiveInt, ir.TK_PrimitiveFloat:
@@ -1145,6 +1221,7 @@ func jsZeroFor(ctx *codegen.EmitContext, tr *ir.TypeRef) string {
 			return "{}"
 		}
 	}
+
 	return "null"
 }
 
@@ -1153,7 +1230,7 @@ func (e *CodeEmitter) emitEnumDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 	enumTyp, _ := ctx.Types.GetByID(typeOfSym(pkg, s.Name.Sym))
 
 	if enumTyp != nil && enumTyp.IsNumeric {
-		// Numeric enum: Object.freeze with numeric values as a single statement
+
 		var sb strings.Builder
 		sb.WriteString("Object.freeze({\n")
 		for i, c := range enumTyp.EnumCases {
@@ -1161,36 +1238,35 @@ func (e *CodeEmitter) emitEnumDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 			if i < len(enumTyp.EnumCases)-1 {
 				sb.WriteString(",")
 			}
+
 			sb.WriteString("\n")
 		}
+
 		sb.WriteString("})")
 		e.jf.Add(jsgen.Const(enumName).Op("=").Raw(sb.String()))
 	} else if enumTyp != nil {
-		// Payload enum: Class with __ordinal, __name, fields, and methods
-		// Build class as a single string
+
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("class %s {\n", enumName))
 
-		// Constructor
 		constructorParams := "__ordinal, __name"
 		for _, fld := range enumTyp.EnumFields {
 			constructorParams += ", " + fld.Name
 		}
+
 		sb.WriteString(fmt.Sprintf("  constructor(%s) {\n", constructorParams))
 		sb.WriteString("    this.__ordinal = __ordinal;\n")
 		sb.WriteString("    this.__name = __name;\n")
 		for _, fld := range enumTyp.EnumFields {
 			sb.WriteString(fmt.Sprintf("    this.%s = %s;\n", fld.Name, fld.Name))
 		}
+
 		sb.WriteString("  }\n")
 
-		// toString method
 		sb.WriteString("  toString() { return this.__name; }\n")
 
-		// hashCode method
 		sb.WriteString("  hashCode() { return this.__ordinal; }\n")
 
-		// User-defined methods
 		for _, method := range s.Methods {
 			methodName := symName(ctx, method.Name.Sym)
 
@@ -1199,6 +1275,7 @@ func (e *CodeEmitter) emitEnumDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 				if i > 0 {
 					params += ", "
 				}
+
 				params += symNameWithUnused(ctx, pkg, param.Name.Sym)
 			}
 
@@ -1209,20 +1286,20 @@ func (e *CodeEmitter) emitEnumDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 					sb.WriteString("    " + stmtCode.String() + ";\n")
 				}
 			}
+
 			sb.WriteString("  }\n")
 		}
 
 		sb.WriteString("}")
 		e.jf.Add(jsgen.Raw(sb.String()))
 
-		// Case instances
 		for i, c := range s.Cases {
 			args := fmt.Sprintf("%d, \"%s\"", i, c.Name.Name)
 			for _, arg := range c.Args {
 				argStr := e.buildExpr(ctx, pkg, f, arg).String()
 				args += ", " + argStr
 			}
-			// Fill defaults for missing args
+
 			for j := len(c.Args); j < len(s.Fields); j++ {
 				if s.Fields[j].Default != nil {
 					defStr := e.buildExpr(ctx, pkg, f, s.Fields[j].Default).String()
@@ -1233,23 +1310,24 @@ func (e *CodeEmitter) emitEnumDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 			e.jf.Add(jsgen.Const(enumName + c.Name.Name).Op("=").Raw(fmt.Sprintf("new %s(%s)", enumName, args)))
 		}
 
-		// Values array for iteration
 		var caseNames []string
 		for _, c := range s.Cases {
 			caseNames = append(caseNames, enumName+c.Name.Name)
 		}
+
 		caseNamesStr := ""
 		for i, name := range caseNames {
 			if i > 0 {
 				caseNamesStr += ", "
 			}
+
 			caseNamesStr += name
 		}
+
 		e.jf.Add(jsgen.Const(enumName + "Values").Op("=").Raw(fmt.Sprintf("Object.freeze([%s])", caseNamesStr)))
 	}
 }
 
-// buildStmtAsCode builds a statement as a Code interface for use in blocks
 func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, st ir.Stmt) jsgen.Code {
 	switch s := st.(type) {
 	case *ir.AssertStmt:
@@ -1261,6 +1339,7 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 				inner = append(inner, e.buildStmtAsCode(ctx, pkg, f, st))
 			}
 		}
+
 		return jsgen.Raw("(").Add(jsgen.Arrow().Block(inner...)).Add(jsgen.Raw(")()"))
 	case *ir.GoStmt:
 		var body []jsgen.Code
@@ -1271,6 +1350,7 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 				body = append(body, e.buildStmtAsCode(ctx, pkg, f, st))
 			}
 		}
+
 		return jsgen.Raw("Promise.resolve().then(async ").Add(jsgen.Arrow().Block(body...)).Add(jsgen.Raw(")"))
 	case *ir.DeferStmt:
 		var body []jsgen.Code
@@ -1281,6 +1361,7 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 				body = append(body, e.buildStmtAsCode(ctx, pkg, f, st))
 			}
 		}
+
 		return jsgen.Raw("__sovaDeferStack.push(").Add(jsgen.Arrow().Block(body...)).Add(jsgen.Raw(")"))
 	case *ir.SelectStmt:
 		return e.buildSelectStmt(ctx, pkg, f, s)
@@ -1294,6 +1375,7 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 			for _, result := range s.Results {
 				exprs = append(exprs, e.buildExpr(ctx, pkg, f, result))
 			}
+
 			return jsgen.Return(jsgen.Array(exprs...))
 		}
 
@@ -1301,6 +1383,7 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 		if e.composableDepth > 0 {
 			return jsgen.Id("__c").Dot("children").Dot("push").Call(e.buildExpr(ctx, pkg, f, s.Expr))
 		}
+
 		return e.buildExpr(ctx, pkg, f, s.Expr)
 
 	case *ir.VarDeclStmt:
@@ -1308,6 +1391,7 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 			if s.Targets[0].Name == nil {
 				return e.buildExpr(ctx, pkg, f, s.Init)
 			}
+
 			var name string
 			if symbol, ok := pkg.Syms.GetByID(s.Targets[0].Name.Sym); ok {
 				if symbol.Flags&ir.SF_Unused != 0 {
@@ -1325,6 +1409,7 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 			} else {
 				stmt = jsgen.Let(name)
 			}
+
 			return stmt.Op("=").Add(e.buildExpr(ctx, pkg, f, s.Init))
 		}
 
@@ -1344,10 +1429,12 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 				}
 			}
 		}
+
 		kind := "let"
 		if s.IsConst {
 			kind = "const"
 		}
+
 		return jsgen.DestructArray(kind, names, e.buildExpr(ctx, pkg, f, s.Init))
 
 	case *ir.BreakStmt:
@@ -1368,6 +1455,7 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 			for _, ret := range s.Returns {
 				exprs = append(exprs, e.buildExpr(ctx, pkg, f, ret))
 			}
+
 			guardBody = append(guardBody, jsgen.Return(jsgen.Array(exprs...)))
 		}
 
@@ -1382,24 +1470,29 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 				targetExprs = append(targetExprs, nil)
 				continue
 			}
+
 			if memberName, isMethod, ok := e.classMemberLookup(ctx, target.Name.Sym); ok && !isMethod {
 				names = append(names, "this."+memberName)
 				targetExprs = append(targetExprs, jsgen.Raw("this.").Add(jsgen.Id(memberName)))
 				continue
 			}
+
 			if reactiveWireVarOriginalNameJS(ctx, target.Name.Sym) != "" {
 				cellName := symName(ctx, target.Name.Sym)
 				names = append(names, cellName+".value")
 				targetExprs = append(targetExprs, jsgen.Id(cellName).Dot("value"))
 				continue
 			}
+
 			plain := symName(ctx, target.Name.Sym)
 			names = append(names, plain)
 			targetExprs = append(targetExprs, jsgen.Id(plain))
 		}
+
 		if len(targetExprs) == 1 && targetExprs[0] != nil {
 			return targetExprs[0].Op("=").Add(e.buildExpr(ctx, pkg, f, s.Value))
 		}
+
 		return jsgen.DestructAssign(names, e.buildExpr(ctx, pkg, f, s.Value))
 
 	case *ir.FieldAssignmentStmt:
@@ -1409,6 +1502,7 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 		} else {
 			recvName = symName(ctx, s.Receiver.Sym)
 		}
+
 		if s.Op == ir.OpAssign && len(s.Fields) == 1 && !e.inSyntheticCtor {
 			fld := s.Fields[0]
 			if isReactiveFieldOfJS(ctx, pkg, s.Receiver.Sym, fld.Name) {
@@ -1416,10 +1510,12 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 				return jsgen.Id(recvName).Dot(setterName).Call(e.buildExpr(ctx, pkg, f, s.Value))
 			}
 		}
+
 		target := jsgen.Id(recvName)
 		for _, fld := range s.Fields {
 			target = target.Dot(fld.Name)
 		}
+
 		return target.Op(string(s.Op)).Add(e.buildExpr(ctx, pkg, f, s.Value))
 
 	case *ir.IndexAssignmentStmt:
@@ -1441,17 +1537,16 @@ func (e *CodeEmitter) buildStmtAsCode(ctx *codegen.EmitContext, pkg *ir.PackageC
 	}
 }
 
-// emitWiredStub emits the frontend fetch-based stub for a wired function. The stub builds the URL from the WireSpec path (substituting :name placeholders), serializes non-path arguments either as a query string (GET/DELETE) or a JSON body (POST/PUT/PATCH), awaits the response, and returns the [value, state] tuple.
-//
-// `wire(transport: "raw")` handlers are skipped here: they live exclusively on the backend (analyze_wire rejects raw on frontend), they have no JSON contract to generate a stub against, and they are reached either via a browser navigation (OAuth redirects, form posts) or via a hand-written `fetch` from the frontend. Emitting a stub would produce a function nothing can sensibly call.
 func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.FuncDeclStmt) {
 	if s.Wire != nil && s.Wire.Transport == "raw" {
 		return
 	}
+
 	funcName := symName(ctx, s.Name.Sym)
 	orig := symOrigName(ctx, s.Name.Sym)
 
 	pathArgSet := map[string]bool{}
+
 	for _, a := range s.Wire.PathArgs {
 		pathArgSet[a] = true
 	}
@@ -1462,16 +1557,19 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 		binding string
 		bindKey string
 	}
+
 	var bindings []paramBinding
 	for _, param := range s.Params {
 		key := param.Name.Name
 		if param.WireBindAs != "" {
 			key = param.WireBindAs
 		}
+
 		b := param.WireBinding
 		if b == "" && pathArgSet[param.Name.Name] {
 			b = "path"
 		}
+
 		bindings = append(bindings, paramBinding{
 			mangled: symNameWithUnused(ctx, pkg, param.Name.Sym),
 			orig:    param.Name.Name,
@@ -1490,11 +1588,13 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 		if orig != "" {
 			sb.WriteString(fmt.Sprintf("// wire(transport: \"ws\") %s\n", orig))
 		}
+
 		sb.WriteString(fmt.Sprintf("async function %s(", funcName))
 		paramNames := make([]string, len(bindings))
 		for i, b := range bindings {
 			paramNames[i] = b.mangled
 		}
+
 		sb.WriteString(strings.Join(paramNames, ", "))
 		sb.WriteString(") {\n")
 		sb.WriteString(fmt.Sprintf("  const __r = await __sovaWSCall(%q, [%s]);\n", orig, strings.Join(paramNames, ", ")))
@@ -1513,11 +1613,13 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 				binding = b
 				break
 			}
+
 			if b.orig == a {
 				binding = b
 				break
 			}
 		}
+
 		placeholder := ":" + a
 		repl := "${encodeURIComponent(String(" + binding.mangled + "))}"
 		rawPath = strings.ReplaceAll(rawPath, placeholder, repl)
@@ -1527,13 +1629,16 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 	if orig != "" {
 		sb.WriteString(fmt.Sprintf("// Wired %s %s -> %s\n", method, s.Wire.Path, orig))
 	}
+
 	sb.WriteString(fmt.Sprintf("async function %s(", funcName))
 	for i, b := range bindings {
 		if i > 0 {
 			sb.WriteString(", ")
 		}
+
 		sb.WriteString(b.mangled)
 	}
+
 	sb.WriteString(") {\n")
 	sb.WriteString("  const __base = (typeof process !== 'undefined' && process.env && process.env.WIRE_BACKEND) || window.WIRE_BACKEND || window.location.origin || '';\n")
 	sb.WriteString(fmt.Sprintf("  let __url = __base + `%s`;\n", rawPath))
@@ -1567,6 +1672,7 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 		for _, b := range queryBound {
 			sb.WriteString(fmt.Sprintf("  __qs.set(%q, String(%s));\n", b.bindKey, b.mangled))
 		}
+
 		sb.WriteString("  const __qsStr = __qs.toString();\n")
 		sb.WriteString("  if (__qsStr) __url += (__url.includes('?') ? '&' : '?') + __qsStr;\n")
 	}
@@ -1588,6 +1694,7 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 		for _, b := range bodyBound {
 			sb.WriteString(fmt.Sprintf("  __body[%q] = %s;\n", b.bindKey, b.mangled))
 		}
+
 		sb.WriteString(fmt.Sprintf("  const __res = await fetch(__url, { method: %q, %s, body: JSON.stringify(__body) });\n", method, fetchOpts))
 	} else {
 		sb.WriteString(fmt.Sprintf("  const __res = await fetch(__url, { method: %q, %s });\n", method, fetchOpts))
@@ -1622,6 +1729,7 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 		sb.WriteString("  const __data = await __res.json();\n")
 		sb.WriteString(fmt.Sprintf("  return [__sovaReify(__data.value, %s), __data.state];\n", returnDesc))
 	}
+
 	sb.WriteString("}")
 	e.jf.Add(jsgen.Raw(sb.String()))
 }
@@ -1630,35 +1738,41 @@ func stubTypedResponseKind(ctx *codegen.EmitContext, s *ir.FuncDeclStmt) string 
 	if s.ReturnType == nil || s.ReturnType.Typ == 0 {
 		return ""
 	}
+
 	ty, ok := ctx.Types.GetByID(s.ReturnType.Typ)
 	if !ok || ty == nil || ty.Kind != ir.TK_Struct {
 		return ""
 	}
+
 	if ty.PackagePath != "std/http" {
 		return ""
 	}
+
 	switch ty.StructName {
 	case "Redirect", "Html", "File", "Status":
 		return ty.StructName
 	}
+
 	return ""
 }
 
-// emitEmbeddedVar emits the inlined-literal form of an `@embed`-decorated top-level const. The file contents are read from disk at codegen time (using the absolute SourcePath the resolver already validated) and serialised into a JS literal — a plain JSON string for text embeds, or a `Uint8Array` instantiated from a base64-decoded string for binary embeds. P1 always inlines; P3 will rewrite this to `import X from "./__embeds/...?text"` once esbuild is wired and can dedup duplicate embeds across modules.
 func (e *CodeEmitter) emitEmbeddedVar(ctx *codegen.EmitContext, pkg *ir.PackageContext, s *ir.VarDeclStmt) {
 	if s.Embed == nil || len(s.Targets) == 0 || s.Targets[0].Name == nil {
 		return
 	}
+
 	target := &s.Targets[0]
 	name := symName(ctx, target.Name.Sym)
 	data, err := os.ReadFile(s.Embed.SourcePath)
 	if err != nil {
 		return
 	}
+
 	orig := symOrigName(ctx, target.Name.Sym)
 	if orig != "" {
 		e.jf.Add(jsgen.Comment(fmt.Sprintf("@embed %s (%d bytes)", orig, s.Embed.SizeBytes)))
 	}
+
 	switch s.Embed.Kind {
 	case ir.EmbedKindText:
 		encoded, _ := json.Marshal(string(data))
@@ -1672,11 +1786,11 @@ func (e *CodeEmitter) emitEmbeddedVar(ctx *codegen.EmitContext, pkg *ir.PackageC
 	}
 }
 
-// emitWiredVarStub emits a frontend fetch-based stub for a wired top-level var/const declaration. The stub is exposed as an async function returning the [value, state] tuple, matching the backend's GET <route> handler shape. For `@reactive wire let` declarations the emitter instead drops a mutable mirror variable, an async loader that primes it from the same GET endpoint, and an `__sovaOnWireVar` subscription that updates the mirror whenever the backend pushes a new value.
 func (e *CodeEmitter) emitWiredVarStub(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.VarDeclStmt) {
 	if s.Wire == nil || len(s.Targets) == 0 || s.Targets[0].Name == nil {
 		return
 	}
+
 	target := &s.Targets[0]
 	funcName := symName(ctx, target.Name.Sym)
 	orig := symOrigName(ctx, target.Name.Sym)
@@ -1685,6 +1799,7 @@ func (e *CodeEmitter) emitWiredVarStub(ctx *codegen.EmitContext, pkg *ir.Package
 	if method == "" {
 		method = "GET"
 	}
+
 	rawPath := s.Wire.Path
 
 	isReactive := false
@@ -1705,6 +1820,7 @@ func (e *CodeEmitter) emitWiredVarStub(ctx *codegen.EmitContext, pkg *ir.Package
 		if orig != "" {
 			sb.WriteString(fmt.Sprintf("// @reactive wire let %s (%s %s)\n", orig, method, rawPath))
 		}
+
 		sb.WriteString(fmt.Sprintf("const %s = __sovaMakeReactiveWireCell(%q);\n", funcName, orig))
 		sb.WriteString("(async () => {\n")
 		sb.WriteString("  const __base = (typeof process !== 'undefined' && process.env && process.env.WIRE_BACKEND) || (typeof window !== 'undefined' && window.WIRE_BACKEND) || (typeof window !== 'undefined' && window.location && window.location.origin) || '';\n")
@@ -1722,6 +1838,7 @@ func (e *CodeEmitter) emitWiredVarStub(ctx *codegen.EmitContext, pkg *ir.Package
 	if orig != "" {
 		sb.WriteString(fmt.Sprintf("// Wired var %s %s -> %s\n", method, rawPath, orig))
 	}
+
 	sb.WriteString(fmt.Sprintf("async function %s() {\n", funcName))
 	sb.WriteString("  const __base = (typeof process !== 'undefined' && process.env && process.env.WIRE_BACKEND) || window.WIRE_BACKEND || window.location.origin || '';\n")
 	sb.WriteString(fmt.Sprintf("  const __url = __base + `%s`;\n", rawPath))

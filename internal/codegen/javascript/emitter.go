@@ -9,7 +9,6 @@ import (
 	"sova/internal/ir"
 )
 
-// CodeEmitter implements the codegen.Emitter interface for JavaScript.
 type CodeEmitter struct {
 	hk                  *codegen.HoistKit[jsgen.Code]
 	jf                  *jsgen.File
@@ -29,7 +28,6 @@ type CodeEmitter struct {
 	usesChanRuntime     bool
 }
 
-// moduleBind tracks the local identifier the emitter chose for a host-language module and the import form (default vs. namespace).
 type moduleBind struct {
 	Name      string
 	IsDefault bool
@@ -39,7 +37,6 @@ func (e *CodeEmitter) Init(ctx *codegen.EmitContext) error {
 	e.hk = codegen.NewHoistKit[jsgen.Code]("_t")
 	e.jf = jsgen.NewFile()
 
-	// Enable source maps
 	outputFileName := filepath.Base(ctx.OutPath)
 	e.jf.EnableSourceMap(outputFileName)
 
@@ -47,31 +44,33 @@ func (e *CodeEmitter) Init(ctx *codegen.EmitContext) error {
 }
 
 func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
-	// Add source file contents for source maps
+
 	for _, pkg := range ctx.Pkgs {
 		for _, file := range pkg.Files {
-			// Add source file content (already available in PreparsedFile)
+
 			if file.Filename != "" && file.Content != "" {
 				e.jf.AddSourceContent(file.Filename, file.Content)
 			}
 		}
 	}
 
-	// Pre-register module imports so the emitted JS file starts with an `import` header. We walk all extern decls in user packages and assign each module a local bind name; later `@mod` substitutions reuse the same bind.
 	for _, pkg := range ctx.Pkgs {
 		for _, file := range pkg.Files {
 			if file.Hir.Side.Kind == ir.SideSynth {
 				continue
 			}
+
 			for _, st := range file.Hir.Statements {
 				ext, ok := st.(*ir.ExternDeclStmt)
 				if !ok || ext.Module == nil || *ext.Module == "" {
 					continue
 				}
+
 				e.bindForModule(*ext.Module, ext.IsDefaultImport)
 			}
 		}
 	}
+
 	for _, module := range e.moduleOrder {
 		bind := e.moduleBinds[module]
 		var importLine string
@@ -80,6 +79,7 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 		} else {
 			importLine = fmt.Sprintf("import * as %s from %q;", bind.Name, module)
 		}
+
 		e.jf.Add(jsgen.Raw(importLine))
 	}
 
@@ -100,26 +100,29 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 		emitJSTestRuntime(e.jf)
 	}
 
-	// Emit wired-func stubs from the other side (e.g. backend files): the JS frontend never gets the implementation, but it needs callable fetch stubs so cross-side calls resolve to the gemangelt symbol name. Same loop also emits the shared subset of any cross-side TypeDecl: when a backend type carries `shared` members (Stage 3 of the GORM-friendly Sova design), the JS side gets a parallel class with only the shared fields + methods so the wire layer can hand back real class instances rather than property bags.
 	for _, pkg := range ctx.TransPkgs {
 		for _, file := range pkg.Files {
 			if file.Hir.Side.Kind == ir.SideSynth {
 				continue
 			}
+
 			for _, st := range file.Hir.Statements {
 				switch v := st.(type) {
 				case *ir.FuncDeclStmt:
 					if v.IsWired {
 						e.emitWiredStub(ctx, pkg, file.Hir, v)
 					}
+
 				case *ir.VarDeclStmt:
 					if v.IsWired {
 						e.emitWiredVarStub(ctx, pkg, file.Hir, v)
 					}
+
 				case *ir.TypeDeclStmt:
 					if v.IsExtern || jsHasBuiltinAnnotation(v.Annotations) {
 						continue
 					}
+
 					if filtered := sharedSubsetTypeDecl(ctx, pkg, v); filtered != nil {
 						e.emitTypeDecl(ctx, pkg, file.Hir, filtered, true)
 					}
@@ -128,22 +131,24 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 		}
 	}
 
-	// Emit code
 	for _, pkg := range ctx.Pkgs {
 		for _, file := range pkg.Files {
 			if file.Hir.Side.Kind == ir.SideSynth {
 				continue
 			}
+
 			for _, st := range file.Hir.Statements {
 				if codegen.TopLevelStmtPrunable(ctx, st) {
 					continue
 				}
+
 				e.emitStmt(ctx, pkg, file.Hir, st, true)
 			}
 
 			for _, init := range e.deferredInits {
 				e.jf.Add(init)
 			}
+
 			e.deferredInits = nil
 		}
 	}

@@ -7,65 +7,68 @@ import (
 	"time"
 )
 
-// PassManager manages the execution of compiler passes.
 type PassManager struct {
-	passes map[string]Pass // passes holds all registered compiler passes.
-	order  []string        // order holds the topological order of passes.
+	passes map[string]Pass
+	order  []string
 }
 
-// NewPassManager creates a new PassManager instance.
 func NewPassManager() *PassManager {
 	return &PassManager{passes: make(map[string]Pass)}
 }
 
-// Register adds a new pass to the manager.
 func (pm *PassManager) Register(p Pass) {
 	name := p.Name()
 	if _, exists := pm.passes[name]; exists {
 		panic("duplicate pass: " + name)
 	}
+
 	pm.passes[name] = p
 }
 
-// BuildOrder creates a topological order of the passes based on their dependencies.
 func (pm *PassManager) BuildOrder(selected []string) error {
 	seen := map[string]bool{}
+
 	temp := map[string]bool{}
+
 	var out []string
 	var visit func(n string) error
 	visit = func(n string) error {
 		if seen[n] {
 			return nil
 		}
+
 		if temp[n] {
 			return fmt.Errorf("cyclic pass dependency at %s", n)
 		}
+
 		p, ok := pm.passes[n]
 		if !ok {
 			return fmt.Errorf("unknown pass: %s", n)
 		}
+
 		temp[n] = true
 		for _, dep := range p.Requires() {
 			if err := visit(dep); err != nil {
 				return err
 			}
 		}
+
 		temp[n] = false
 		seen[n] = true
 		out = append(out, n)
 		return nil
 	}
+
 	for _, n := range selected {
 		if err := visit(n); err != nil {
 			return err
 		}
 	}
+
 	pm.order = out
 	return nil
 }
 
-// Run executes all registered passes in the manager.
-// Run executes the pre-built pass order. Each individual pass invocation is recovered into a clean error so a panic during one pass (almost always a downstream nil-deref caused by an earlier parse failure that the upstream `NoErrors() && diag.Errored()` gate didn't catch) surfaces as a diagnostic instead of crashing the CLI. The recover converts to an `ErrPassPanic` diagnostic and aborts the pipeline; the diagnostics bag's existing errors still get printed by the caller.
 func (pm *PassManager) Run(bag *diag.DiagnosticsBag, pkgs []*ir.PackageContext, types *ir.TypeTable, symAlloc *ir.IdAlloc, scAlloc *ir.IdAlloc, nodeAlloc *ir.IdAlloc, nameMap *ir.NameMap, cache map[string]any) error {
 	startAll := time.Now()
 	for _, passName := range pm.order {
@@ -80,21 +83,26 @@ func (pm *PassManager) Run(bag *diag.DiagnosticsBag, pkgs []*ir.PackageContext, 
 		case PerPackage:
 			for _, pkg := range pkgs {
 				pc := &PassContext{Diag: bag, Pkgs: pkgs, Pkg: pkg, Types: types, SymAlloc: symAlloc, ScAlloc: scAlloc, NodeAlloc: nodeAlloc, Names: nameMap, Cache: cache}
+
 				if err := runPassWithRecover(p, pc, passName); err != nil {
 					return err
 				}
 			}
+
 		case PerFile:
 			for _, pkg := range pkgs {
 				for _, f := range pkg.Files {
 					pc := &PassContext{Diag: bag, Pkgs: pkgs, Pkg: pkg, File: f, Types: types, SymAlloc: symAlloc, ScAlloc: scAlloc, NodeAlloc: nodeAlloc, Names: nameMap, Cache: cache}
+
 					if err := runPassWithRecover(p, pc, passName); err != nil {
 						return err
 					}
 				}
 			}
+
 		case PerBuild:
 			pc := &PassContext{Diag: bag, Pkgs: pkgs, Types: types, SymAlloc: symAlloc, ScAlloc: scAlloc, NodeAlloc: nodeAlloc, Names: nameMap, Cache: cache}
+
 			if err := runPassWithRecover(p, pc, passName); err != nil {
 				return err
 			}
@@ -102,6 +110,7 @@ func (pm *PassManager) Run(bag *diag.DiagnosticsBag, pkgs []*ir.PackageContext, 
 
 		_ = stepStart
 	}
+
 	_ = startAll
 	return nil
 }
@@ -113,12 +122,14 @@ func runPassWithRecover(p Pass, pc *PassContext, passName string) (out error) {
 				out = fmt.Errorf("[%s] aborted (upstream diagnostic; pass body bailed out)", passName)
 				return
 			}
+
 			pc.Diag.Report(diag.ErrPassPanic, diag.NoSpan, passName, fmt.Sprint(r))
-			out = fmt.Errorf("[%s] panic: %v (a syntax error earlier in the file usually causes this — fix the diagnostics above first)", passName, r)
+			out = fmt.Errorf("[%s] panic: %v (a syntax error earlier in the file usually causes this - fix the diagnostics above first)", passName, r)
 		}
 	}()
 	if err := p.Run(pc); err != nil {
 		return fmt.Errorf("[%s] %w", passName, err)
 	}
+
 	return nil
 }

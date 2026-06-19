@@ -11,20 +11,20 @@ import (
 	"sova/internal/ir"
 )
 
-// jsTestModeFromCache reports whether the JS emitter should produce a test bundle (one function per discovered test plus a `__sovaJSTestRun` lookup) instead of a regular bundle.
 func jsTestModeFromCache(ctx *codegen.EmitContext) bool {
 	if ctx == nil || ctx.Cache == nil {
 		return false
 	}
+
 	raw, ok := ctx.Cache["build_config"]
 	if !ok {
 		return false
 	}
+
 	cfg, ok := raw.(interface{ TestModeValue() bool })
 	return ok && cfg.TestModeValue()
 }
 
-// jsHashTestName mirrors the Go-side `hashTestName`: same algorithm and same prefix so Go-side and JS-side test functions for one test share an identifier. Used to keep the bridge between the Go test driver and the goja-loaded JS bundle deterministic.
 func jsHashTestName(pkgPath string, groupPath []string, name string) string {
 	h := sha1.New()
 	h.Write([]byte(pkgPath))
@@ -32,6 +32,7 @@ func jsHashTestName(pkgPath string, groupPath []string, name string) string {
 		h.Write([]byte("/"))
 		h.Write([]byte(g))
 	}
+
 	h.Write([]byte("/"))
 	h.Write([]byte(name))
 	return hex.EncodeToString(h.Sum(nil))[:12]
@@ -41,10 +42,10 @@ func jsFullTestName(groupPath []string, name string) string {
 	if len(groupPath) == 0 {
 		return name
 	}
+
 	return strings.Join(groupPath, " > ") + " > " + name
 }
 
-// emitJSTestRuntime drops the JS-side test runtime helpers - a per-runtime `__sovaJSTestCtx`, `__sovaJSTestRun(name)` lookup, and the assertion recorder - at the top of the bundle so the goja runtime created by the Go test driver can drive tests by name. It also installs a minimal `console` shim because goja's bare runtime has no console object, and Sova's `print`/`println` builtins lower to `console.log`.
 func emitJSTestRuntime(file *jsgen.File) {
 	file.Add(jsgen.Raw(`
 if (typeof console === 'undefined') {
@@ -116,17 +117,19 @@ function __sovaJSTestRecordCompare(ctx, source, lhs, rhs, location, vars) {
 `))
 }
 
-// emitJSTestImplFuncs writes one JS function per discovered test and registers it in `__sovaJSTestRegistry`. Each function receives the same `__t` context the runtime helpers expect, fires inherited setupAlls once per group via `__sovaJSFireOnce`, runs per-test setup bodies, the test body, then per-test teardown bodies. teardownAlls fire at suite exit (the goja runner calls them after the last test in the bundle is registered).
 func (e *CodeEmitter) emitJSTestImplFuncs(ctx *codegen.EmitContext) {
 	entries := readJSTestRegistryView(ctx)
 
 	setupAllSeen := map[ir.NodeID]bool{}
+
 	teardownAllSeen := map[ir.NodeID]bool{}
+
 	for _, entry := range entries {
 		for _, s := range entry.SetupAlls {
 			if setupAllSeen[s.ID()] {
 				continue
 			}
+
 			setupAllSeen[s.ID()] = true
 			s := s
 			ent := entry
@@ -137,12 +140,15 @@ func (e *CodeEmitter) emitJSTestImplFuncs(ctx *codegen.EmitContext) {
 					body = append(body, e.buildStmtAsCode(ctx, ent.Pkg, ent.File.Hir, st))
 				}
 			}
+
 			e.jf.Add(jsgen.Func(fnName).Params().Block(body...))
 		}
+
 		for _, t := range entry.TeardownAlls {
 			if teardownAllSeen[t.ID()] {
 				continue
 			}
+
 			teardownAllSeen[t.ID()] = true
 			t := t
 			ent := entry
@@ -153,6 +159,7 @@ func (e *CodeEmitter) emitJSTestImplFuncs(ctx *codegen.EmitContext) {
 					body = append(body, e.buildStmtAsCode(ctx, ent.Pkg, ent.File.Hir, st))
 				}
 			}
+
 			e.jf.Add(jsgen.Func(fnName).Params().Block(body...))
 		}
 	}
@@ -165,21 +172,25 @@ func (e *CodeEmitter) emitJSTestImplFuncs(ctx *codegen.EmitContext) {
 		for _, s := range entry.SetupAlls {
 			body = append(body, jsgen.Raw(fmt.Sprintf("__sovaJSFireOnce(%q, %s)", jsSetupAllOnceKey(s), jsSetupAllBodyName(s))))
 		}
+
 		for _, setBody := range entry.SetupBodies {
 			for _, st := range setBody {
 				body = append(body, e.buildStmtAsCode(ctx, entry.Pkg, entry.File.Hir, st))
 			}
 		}
+
 		if entry.Decl.Body != nil {
 			for _, st := range entry.Decl.Body.Stmts {
 				body = append(body, e.buildStmtAsCode(ctx, entry.Pkg, entry.File.Hir, st))
 			}
 		}
+
 		for _, tdBody := range entry.TeardownBodies {
 			for _, st := range tdBody {
 				body = append(body, e.buildStmtAsCode(ctx, entry.Pkg, entry.File.Hir, st))
 			}
 		}
+
 		e.jf.Add(jsgen.Func(funcName).Async().Params("__t").Block(body...))
 		e.jf.Add(jsgen.Raw(fmt.Sprintf("__sovaJSTestRegister(%q, %s);", fullName, funcName)))
 	}
@@ -201,17 +212,19 @@ func readJSTestRegistryView(ctx *codegen.EmitContext) []codegen.TestRegistryEntr
 	if ctx == nil || ctx.Cache == nil {
 		return nil
 	}
+
 	raw, ok := ctx.Cache[codegen.TestRegistryViewCacheKey]
 	if !ok {
 		return nil
 	}
+
 	if entries, ok := raw.([]codegen.TestRegistryEntryView); ok {
 		return entries
 	}
+
 	return nil
 }
 
-// emitJSAssertStmt is the JS counterpart of `emitAssertStmt`. Comparison-shaped expressions split into LHS/RHS so the reporter can show both runtime values; everything else records the source text only. Power-assert: distinct VarRef identifiers in the asserted expression get captured into a JS object literal that the reporter prints under failed assertions.
 func (e *CodeEmitter) emitJSAssertStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.AssertStmt) *jsgen.Statement {
 	span := s.Span()
 	location := fmt.Sprintf("%s:%d:%d", span.File, span.StartLn, span.StartCol)
@@ -227,6 +240,7 @@ func (e *CodeEmitter) emitJSAssertStmt(ctx *codegen.EmitContext, pkg *ir.Package
 			Add(jsgen.Raw("; if (!(")).Add(cond).Add(jsgen.Raw(fmt.Sprintf(")) __sovaJSTestRecordCompare(__t, %q, __lhs, __rhs, %q, ", source, location))).
 			Add(varsLit).Add(jsgen.Raw("); }"))
 	}
+
 	cond := e.buildExpr(ctx, pkg, f, s.Expr)
 	return jsgen.Raw("if (!(").Add(cond).Add(jsgen.Raw(fmt.Sprintf(")) __sovaJSTestRecord(__t, %q, %q, ", source, location))).
 		Add(varsLit).Add(jsgen.Raw(");"))
@@ -239,18 +253,21 @@ type jsCapturedVar struct {
 
 func jsCollectAssertVars(pkg *ir.PackageContext, expr ir.Expr) []jsCapturedVar {
 	seen := map[string]bool{}
+
 	var out []jsCapturedVar
 	var walk func(ir.Expr)
 	walk = func(e ir.Expr) {
 		if e == nil {
 			return
 		}
+
 		switch x := e.(type) {
 		case *ir.VarRef:
 			name := x.Ref.Name
 			if name == "" || seen[name] {
 				return
 			}
+
 			if pkg != nil && x.Ref.Sym != 0 {
 				if sym, ok := pkg.Syms.GetByID(x.Ref.Sym); ok {
 					if sym.Kind != ir.SK_Variable {
@@ -258,6 +275,7 @@ func jsCollectAssertVars(pkg *ir.PackageContext, expr ir.Expr) []jsCapturedVar {
 					}
 				}
 			}
+
 			seen[name] = true
 			out = append(out, jsCapturedVar{OrigName: name, Expr: x})
 		case *ir.BinaryExpr:
@@ -290,6 +308,7 @@ func jsCollectAssertVars(pkg *ir.PackageContext, expr ir.Expr) []jsCapturedVar {
 			}
 		}
 	}
+
 	walk(expr)
 	return out
 }
@@ -298,13 +317,16 @@ func jsBuildVarsLiteral(e *CodeEmitter, ctx *codegen.EmitContext, pkg *ir.Packag
 	if len(vars) == 0 {
 		return jsgen.Raw("{}")
 	}
+
 	out := jsgen.Raw("{")
 	for i, v := range vars {
 		if i > 0 {
 			out = out.Add(jsgen.Raw(", "))
 		}
+
 		out = out.Add(jsgen.Raw(fmt.Sprintf("%q: ", v.OrigName))).Add(e.buildExpr(ctx, pkg, f, v.Expr))
 	}
+
 	return out.Add(jsgen.Raw("}"))
 }
 
@@ -313,6 +335,7 @@ func jsIsComparisonOp(op ir.Op) bool {
 	case ir.OpEq, ir.OpNeq, ir.OpLt, ir.OpLte, ir.OpGt, ir.OpGte:
 		return true
 	}
+
 	return false
 }
 
@@ -320,31 +343,39 @@ func jsAssertSourceText(ctx *codegen.EmitContext, pkg *ir.PackageContext, expr i
 	if expr == nil {
 		return ""
 	}
+
 	span := expr.Span()
 	if span.File == "" {
 		return ""
 	}
+
 	for _, file := range pkg.Files {
 		if file.Filename != span.File {
 			continue
 		}
+
 		lines := strings.Split(file.Content, "\n")
 		if span.StartLn-1 < 0 || span.StartLn-1 >= len(lines) {
 			return ""
 		}
+
 		line := lines[span.StartLn-1]
 		startCol := span.StartCol - 1
 		endCol := span.EndCol - 1
 		if startCol < 0 {
 			startCol = 0
 		}
+
 		if endCol > len(line) {
 			endCol = len(line)
 		}
+
 		if endCol > startCol {
 			return line[startCol:endCol]
 		}
+
 		return strings.TrimSpace(line)
 	}
+
 	return ""
 }

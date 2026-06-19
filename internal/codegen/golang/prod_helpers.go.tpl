@@ -13,7 +13,7 @@ import (
 //go:embed assets
 var __sovaAssets embed.FS
 
-// __sovaManifest is the bundler's `assets/manifest.json`, loaded once at startup. Maps logical names (`entry`, `entry.map`) to the hashed on-disk filenames esbuild produced. The HTTP handlers read this to know which file to serve for `/__sova/runtime.js`, so a new build with a new hash works without any directive changes — only the `assets/` directory contents differ.
+// __sovaManifest is the bundler's `assets/manifest.json`, loaded once at startup. Maps logical names (`entry`, `entry.map`) to the hashed on-disk filenames esbuild produced. The HTTP handlers read this to know which file to serve for `/__sova/runtime.js`, so a new build with a new hash works without any directive changes - only the `assets/` directory contents differ.
 type __sovaBundleManifest struct {
 	Entry    string `json:"entry"`
 	EntryMap string `json:"entry.map"`

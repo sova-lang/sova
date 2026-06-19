@@ -13,11 +13,6 @@ import (
 	"go.lsp.dev/uri"
 )
 
-// TestStdLibFileOpenProducesNoSyntaxErrors verifies that opening a stdlib file
-// (std/list.sova) directly in the editor doesn't produce spurious parse/type
-// diagnostics. The user-reported regression: the `>` in `if x >= len(...)`
-// was being marked red because the file's package couldn't resolve cleanly
-// when opened outside a user project.
 func TestStdLibFileOpenProducesNoSyntaxErrors(t *testing.T) {
 	restore := withTerminate(func(int) {})
 	defer restore()
@@ -26,9 +21,11 @@ func TestStdLibFileOpenProducesNoSyntaxErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("abs list path: %v", err)
 	}
+
 	if _, err := os.Stat(listPath); err != nil {
 		t.Skipf("std/list.sova not at expected path: %v", err)
 	}
+
 	listText, err := os.ReadFile(listPath)
 	if err != nil {
 		t.Fatalf("read list: %v", err)
@@ -38,6 +35,7 @@ func TestStdLibFileOpenProducesNoSyntaxErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("abs repo root: %v", err)
 	}
+
 	rootURI := uri.URI("file://" + filepath.ToSlash(repoRoot))
 	listURI := uri.URI("file://" + filepath.ToSlash(listPath))
 
@@ -58,6 +56,7 @@ func TestStdLibFileOpenProducesNoSyntaxErrors(t *testing.T) {
 				}
 			}
 		}
+
 		return reply(ctx, nil, nil)
 	})
 
@@ -65,6 +64,7 @@ func TestStdLibFileOpenProducesNoSyntaxErrors(t *testing.T) {
 	if _, err := cc.Call(ctx, protocol.MethodInitialize, &protocol.InitializeParams{RootURI: rootURI}, &initResult); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodInitialized, &protocol.InitializedParams{})
 	if err := cc.Notify(ctx, protocol.MethodTextDocumentDidOpen, &protocol.DidOpenTextDocumentParams{
 		TextDocument: protocol.TextDocumentItem{URI: listURI, LanguageID: "sova", Version: 1, Text: string(listText)},
@@ -82,6 +82,7 @@ loop:
 				got = pd
 				break loop
 			}
+
 		case <-deadline:
 			t.Fatalf("no diagnostics published for %s within deadline", listURI)
 		}
@@ -90,6 +91,7 @@ loop:
 	if got == nil {
 		t.Fatalf("no diagnostics seen")
 	}
+
 	for _, d := range got.Diagnostics {
 		if d.Severity == protocol.DiagnosticSeverityError {
 			t.Errorf("unexpected error diagnostic in std/list.sova: [%d:%d-%d:%d] %s",
@@ -101,6 +103,7 @@ loop:
 	if _, err := cc.Call(ctx, protocol.MethodShutdown, nil, nil); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodExit, nil)
 	cancel()
 }

@@ -2,17 +2,6 @@ package compiler
 
 import "testing"
 
-// TestCyclicPackageImportTypeResolution regression-tests the cyclic-import
-// support added when std/list grew a `stream(): streams.Stream<T>` method and
-// std/streams gained a `toList(): list.List<T>` method - each side legitimately
-// references the other's types. Before the precompute_signatures pass was
-// extracted out of infer_types, type checking was order-dependent: whichever
-// package the per-package infer_types loop hit first would see the other's
-// struct types with nil StructFields / StructCtors / StructMethods, and every
-// cross-package call would fail with `Type <unresolved> is not indexable` or
-// `Function parameter type mismatch; found func constructor`. Now that
-// precompute runs as its own cross-package pass before infer_types, every
-// struct's signature surface is populated before any body is walked.
 func TestCyclicPackageImportTypeResolution(t *testing.T) {
 	c := New()
 	c.AddSource("src/main.sova", `package cy on backend

@@ -13,7 +13,6 @@ import (
 	"go.lsp.dev/uri"
 )
 
-// TestFormattingSmoke drives the LSP `textDocument/formatting` request end-to-end: open a deliberately-messy document, ask the server to format it, assert the returned TextEdit replaces the whole document with the canonical form.
 func TestFormattingSmoke(t *testing.T) {
 	restore := withTerminate(func(int) {})
 	defer restore()
@@ -39,6 +38,7 @@ func TestFormattingSmoke(t *testing.T) {
 	if _, err := clientConn.Call(ctx, protocol.MethodInitialize, &protocol.InitializeParams{RootURI: rootURI}, &initResult); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
+
 	assertCapTrue(t, "documentFormattingProvider", initResult.Capabilities.DocumentFormattingProvider)
 
 	_ = clientConn.Notify(ctx, protocol.MethodInitialized, &protocol.InitializedParams{})
@@ -56,16 +56,20 @@ func TestFormattingSmoke(t *testing.T) {
 	}, &edits); err != nil {
 		t.Fatalf("formatting: %v", err)
 	}
+
 	if len(edits) != 1 {
 		t.Fatalf("expected exactly one full-replacement edit, got %d", len(edits))
 	}
+
 	out := edits[0].NewText
 	if !strings.Contains(out, "func main() {") {
 		t.Fatalf("formatted output should contain canonical `func main() {`, got:\n%s", out)
 	}
+
 	if !strings.Contains(out, "let x = 1 + 2") {
 		t.Fatalf("formatted output should normalize spacing around `let x = 1 + 2`, got:\n%s", out)
 	}
+
 	if strings.Contains(out, "  func   main") {
 		t.Fatalf("formatted output still contains pre-formatted whitespace:\n%s", out)
 	}
@@ -73,6 +77,7 @@ func TestFormattingSmoke(t *testing.T) {
 	if _, err := clientConn.Call(ctx, protocol.MethodShutdown, nil, nil); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
+
 	_ = clientConn.Notify(ctx, protocol.MethodExit, nil)
 	cancel()
 }

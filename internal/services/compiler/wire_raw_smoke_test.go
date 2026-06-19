@@ -12,9 +12,13 @@ type rawWireTestConfig struct {
 }
 
 func (c rawWireTestConfig) OutputDirectory() string  { return filepath.Join(c.src, ".output") }
+
 func (c rawWireTestConfig) OutputBaseName() string   { return "output" }
+
 func (c rawWireTestConfig) SourceDirectory() string  { return c.src }
+
 func (c rawWireTestConfig) SCSSCommandValue() string { return "" }
+
 func (c rawWireTestConfig) SCSSDisabledValue() bool  { return true }
 
 func TestWireRawHandlerEmitsTypedWrappers(t *testing.T) {
@@ -40,6 +44,7 @@ func echo(req: http.Request, res: http.Response) {
 	if err := c.Compile(); err != nil {
 		t.Fatalf("compile: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
@@ -49,6 +54,7 @@ func echo(req: http.Request, res: http.Response) {
 	if err != nil {
 		t.Fatalf("read emitted go: %v", err)
 	}
+
 	goSrc := string(out)
 
 	for _, want := range []string{
@@ -86,6 +92,7 @@ func echo2(req: http.Request, res: http.Response) {
 	if err := c.Compile(); err != nil {
 		t.Fatalf("compile: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("method-form compile produced errors")
@@ -112,6 +119,7 @@ func echo(req: any, res: any) {
 	if !c.Diag.Errored() {
 		t.Fatalf("expected diagnostic for bare any params, got none")
 	}
+
 	found := false
 	for _, d := range c.Diag.Diagnostics() {
 		if strings.Contains(d.Msg, "http.Request") && strings.Contains(d.Msg, "http.Response") {
@@ -119,6 +127,7 @@ func echo(req: any, res: any) {
 			break
 		}
 	}
+
 	if !found {
 		t.Fatalf("missing typed-param diagnostic: %+v", c.Diag.Diagnostics())
 	}

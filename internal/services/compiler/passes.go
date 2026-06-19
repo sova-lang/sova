@@ -2,7 +2,6 @@ package compiler
 
 import "sova/internal/passes"
 
-// buildPassManager creates a new PassManager and registers all passes.
 func buildPassManager() *passes.PassManager {
 	pm := passes.NewPassManager()
 	pm.Register(&passes.PassResolveLibs{})
@@ -34,7 +33,6 @@ func buildPassManager() *passes.PassManager {
 	return pm
 }
 
-// TestPipeline runs the regular type-checking passes, test_discovery, and BOTH the Go and JS emitters (in test mode). The Go emitter produces the test driver `main()` that iterates the registry; the JS emitter produces a parallel bundle exposing `__sovaJSTestRun(name)` so the Go driver can invoke the same tests in an embedded goja runtime for frontend-flavoured tests.
 func TestPipeline() []string {
 	return []string{
 		"resolve_libs",
@@ -65,15 +63,14 @@ func TestPipeline() []string {
 	}
 }
 
-// RunTestPipeline runs the test-mode pipeline (no codegen) and returns the resulting registry via the shared cache key for downstream tooling. Currently called only by the future `sova test` CLI; exported so test harnesses can invoke it directly.
 func (c *CompilerContext) RunTestPipeline() error {
 	if err := c.resolveImports(); err != nil {
 		return err
 	}
+
 	return c.runPipeline(TestPipeline())
 }
 
-// compilerPipeline returns the full pipeline of compiler passes.
 func compilerPipeline() []string {
 	return []string{
 		"resolve_libs",
@@ -104,7 +101,6 @@ func compilerPipeline() []string {
 	}
 }
 
-// checkPipeline is used for LSPs and REPLs. Just the minimum of passes.
 func checkPipeline() []string {
 	return []string{
 		"resolve_libs",

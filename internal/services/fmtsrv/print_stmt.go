@@ -4,14 +4,15 @@ import (
 	"sova/internal/ir"
 )
 
-// printStmt emits a single statement followed by a newline. Top-level callers should follow up with `blankLine()` when separating sibling decls. Inside blocks the statement printer drives its own newlines, so block emitters can just loop.
 func (p *Printer) printStmt(s ir.Stmt) {
 	if s == nil {
 		return
 	}
+
 	if p.comments != nil {
 		p.comments.flushBefore(p, s.Span())
 	}
+
 	switch n := s.(type) {
 	case *ir.BlockStmt:
 		p.printBlock(n)
@@ -27,6 +28,7 @@ func (p *Printer) printStmt(s ir.Stmt) {
 			p.write(".")
 			p.write(f.Name)
 		}
+
 		p.write(" ")
 		p.write(string(n.Op))
 		p.write(" ")
@@ -37,12 +39,15 @@ func (p *Printer) printStmt(s ir.Stmt) {
 			if i > 0 {
 				p.write(", ")
 			}
+
 			if tgt.Name == nil {
 				p.write("_")
 				continue
 			}
+
 			p.write(tgt.Name.Name)
 		}
+
 		p.write(" = ")
 		p.printExpr(n.Value)
 		p.writeNewline()
@@ -57,10 +62,12 @@ func (p *Printer) printStmt(s ir.Stmt) {
 			p.write(" ")
 			p.printBlock(eb.Then)
 		}
+
 		if n.Else != nil {
 			p.write(" else ")
 			p.printBlock(n.Else)
 		}
+
 		p.writeNewline()
 	case *ir.ReturnStmt:
 		p.write("return")
@@ -70,8 +77,10 @@ func (p *Printer) printStmt(s ir.Stmt) {
 			} else {
 				p.write(", ")
 			}
+
 			p.printExpr(r)
 		}
+
 		p.writeNewline()
 	case *ir.GuardStmt:
 		p.write("guard ")
@@ -83,8 +92,10 @@ func (p *Printer) printStmt(s ir.Stmt) {
 			} else {
 				p.write(", ")
 			}
+
 			p.printExpr(r)
 		}
+
 		p.writeNewline()
 	case *ir.ForStmt:
 		p.printForStmt(n)
@@ -105,6 +116,7 @@ func (p *Printer) printStmt(s ir.Stmt) {
 			p.writeNewline()
 			return
 		}
+
 		p.printBlock(n.Body)
 		p.writeNewline()
 	case *ir.DeferStmt:
@@ -114,6 +126,7 @@ func (p *Printer) printStmt(s ir.Stmt) {
 			p.writeNewline()
 			return
 		}
+
 		p.printBlock(n.Body)
 		p.writeNewline()
 	case *ir.SelectStmt:
@@ -127,6 +140,7 @@ func (p *Printer) printStmt(s ir.Stmt) {
 		if n.Name != "" {
 			p.write("(\"" + n.Name + "\")")
 		}
+
 		p.write(" ")
 		p.printBlock(n.Body)
 		p.writeNewline()
@@ -155,12 +169,12 @@ func (p *Printer) printStmt(s ir.Stmt) {
 	}
 }
 
-// printBlock emits `{` newline, indented body, `}` (no trailing newline - caller adds one).
 func (p *Printer) printBlock(b *ir.BlockStmt) {
 	if b == nil {
 		p.write("{}")
 		return
 	}
+
 	p.write("{")
 	p.writeNewline()
 	p.withIndent(func() {
@@ -176,33 +190,40 @@ func (p *Printer) printVarDecl(n *ir.VarDeclStmt) {
 		p.printAnnotation(ann)
 		p.write(" ")
 	}
+
 	if n.Wire != nil {
 		p.printWireSpec(n.Wire)
 		p.write(" ")
 	}
+
 	if n.IsConst {
 		p.write("const ")
 	} else {
 		p.write("let ")
 	}
+
 	for i, tgt := range n.Targets {
 		if i > 0 {
 			p.write(", ")
 		}
+
 		if tgt.Name == nil {
 			p.write("_")
 			continue
 		}
+
 		p.write(tgt.Name.Name)
 		if tgt.TypeAnn != nil {
 			p.write(": ")
 			p.printType(tgt.TypeAnn)
 		}
 	}
+
 	if n.Init != nil {
 		p.write(" = ")
 		p.printExpr(n.Init)
 	}
+
 	p.writeNewline()
 }
 
@@ -216,25 +237,30 @@ func (p *Printer) printForStmt(n *ir.ForStmt) {
 			} else {
 				p.write("let ")
 			}
+
 			for i, tgt := range n.CondInt.Init.Targets {
 				if i > 0 {
 					p.write(", ")
 				}
+
 				if tgt.Name == nil {
 					p.write("_")
 					continue
 				}
+
 				p.write(tgt.Name.Name)
 				if tgt.TypeAnn != nil {
 					p.write(": ")
 					p.printType(tgt.TypeAnn)
 				}
 			}
+
 			if n.CondInt.Init.Init != nil {
 				p.write(" = ")
 				p.printExpr(n.CondInt.Init.Init)
 			}
 		}
+
 		p.write("; ")
 		p.printExpr(n.CondInt.Cond)
 		p.write("; ")
@@ -244,21 +270,25 @@ func (p *Printer) printForStmt(n *ir.ForStmt) {
 		if n.CondIn.InSecondVar != nil {
 			p.write(", " + n.CondIn.InSecondVar.Name)
 		}
+
 		if n.CondIn.InThirdVar != nil {
 			p.write(", " + n.CondIn.InThirdVar.Name)
 		}
+
 		p.write(" in ")
 		p.printExpr(n.CondIn.IterExpr)
 	case n.CondRange != nil:
 		if n.CondRange.RangeVar.Name != "" {
 			p.write(n.CondRange.RangeVar.Name + " in ")
 		}
+
 		p.printExpr(n.CondRange.RangeStart)
 		if n.CondRange.RangeEnd != nil {
 			p.write("..")
 			p.printExpr(n.CondRange.RangeEnd)
 		}
 	}
+
 	p.write(" ")
 	p.printBlock(n.Body)
 	p.writeNewline()
@@ -281,22 +311,27 @@ func (p *Printer) printSelectStmt(n *ir.SelectStmt) {
 					if i > 0 {
 						p.write(", ")
 					}
+
 					if tgt.Name == nil {
 						p.write("_")
 						continue
 					}
+
 					p.write(tgt.Name.Name)
 				}
+
 				p.write(" = ")
 				p.printExpr(cc.ChanExpr)
 				p.write(".recv()")
 			case ir.SelectCaseRecvDiscard:
 				p.printExpr(cc.ChanExpr)
 			}
+
 			p.write(" => ")
 			p.printBlock(cc.Body)
 			p.writeNewline()
 		}
+
 		if n.Default != nil {
 			p.write("default => ")
 			p.printBlock(n.Default)
@@ -314,8 +349,10 @@ func (p *Printer) printAnnotation(a ir.Annotation) {
 			if i > 0 {
 				p.write(", ")
 			}
+
 			p.printExpr(arg)
 		}
+
 		p.write(")")
 	}
 }

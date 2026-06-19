@@ -5,7 +5,6 @@ import (
 	"testing"
 )
 
-// TestRoundtripBasic feeds a representative Sova snippet through the formatter and checks the output round-trips: parsing the formatted text yields a structurally-equivalent HIR. We don't insist on byte-identical output (the formatter normalizes spacing), only that the source/sink shape matches.
 func TestRoundtripBasic(t *testing.T) {
 	cases := []struct {
 		name string
@@ -64,13 +63,16 @@ func produce() {
 			if err != nil {
 				t.Fatalf("first format: %v", err)
 			}
+
 			if strings.TrimSpace(out) == "" {
 				t.Fatalf("formatter returned empty output")
 			}
+
 			out2, err := Source(out)
 			if err != nil {
 				t.Fatalf("second format errored on already-formatted output: %v\nfirst pass:\n%s", err, out)
 			}
+
 			if out != out2 {
 				t.Fatalf("not idempotent.\nfirst:\n%s\nsecond:\n%s", out, out2)
 			}
@@ -78,7 +80,6 @@ func produce() {
 	}
 }
 
-// TestCommentPreservation checks that line and block comments survive a format pass. Comments are attached at statement boundaries - their exact placement may shift slightly when the surrounding declaration moves, but the text itself never gets dropped.
 func TestCommentPreservation(t *testing.T) {
 	src := `package demo on shared
 
@@ -94,6 +95,7 @@ func main() {
 	if err != nil {
 		t.Fatalf("format: %v", err)
 	}
+
 	for _, want := range []string{
 		"// top-level comment",
 		"// inner comment",

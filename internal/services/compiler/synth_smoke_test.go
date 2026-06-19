@@ -29,14 +29,17 @@ type User {
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
 	}
+
 	pkg, ok := c.Packages["myApp"]
 	if !ok {
 		t.Fatalf("package myApp not found")
 	}
+
 	var userType *ir.TypeDeclStmt
 	for _, f := range pkg.Files {
 		for _, st := range f.Hir.Statements {
@@ -45,31 +48,39 @@ type User {
 			}
 		}
 	}
+
 	if userType == nil {
 		t.Fatalf("type User not found")
 	}
+
 	var idField *ir.TypeField
 	for _, fld := range userType.Fields {
 		if fld.Name.Name == "id" {
 			idField = fld
 		}
 	}
+
 	if idField == nil {
 		t.Fatalf("field id not found")
 	}
+
 	if len(idField.Annotations) != 1 {
 		t.Fatalf("id field: want exactly 1 annotation after expansion, got %d (%+v)", len(idField.Annotations), idField.Annotations)
 	}
+
 	a := idField.Annotations[0]
 	if a.Name.Name != "structTag" {
 		t.Fatalf("id field annotation: want structTag, got %s", a.Name.Name)
 	}
+
 	if len(a.ResolvedArgs) != 2 {
 		t.Fatalf("structTag: want 2 resolved args, got %d", len(a.ResolvedArgs))
 	}
+
 	if a.ResolvedArgs[0].Kind != ir.AnnotationValueString || a.ResolvedArgs[0].Str != "gorm" {
 		t.Fatalf("structTag arg0: want string \"gorm\", got %+v", a.ResolvedArgs[0])
 	}
+
 	if a.ResolvedArgs[1].Kind != ir.AnnotationValueString || a.ResolvedArgs[1].Str != "primaryKey" {
 		t.Fatalf("structTag arg1: want string \"primaryKey\", got %+v", a.ResolvedArgs[1])
 	}
@@ -87,7 +98,7 @@ synth Column(name: string) on field F {
 
 synth Validate(rule: string) on field F {
     emit on F {
-        @structTag("validate", ` + "`${rule}`" + `)
+        @structTag("validate", `+"`${rule}`"+`)
     }
 }
 `)
@@ -106,14 +117,17 @@ type User {
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
 	}
+
 	pkg := c.Packages["myApp"]
 	if pkg == nil {
 		t.Fatalf("package myApp missing")
 	}
+
 	var user *ir.TypeDeclStmt
 	for _, f := range pkg.Files {
 		for _, st := range f.Hir.Statements {
@@ -122,36 +136,46 @@ type User {
 			}
 		}
 	}
+
 	if user == nil {
 		t.Fatalf("type User missing")
 	}
+
 	fields := map[string]*ir.TypeField{}
+
 	for _, fld := range user.Fields {
 		fields[fld.Name.Name] = fld
 	}
+
 	expectTag := func(fieldName, wantKey, wantVal string) {
 		t.Helper()
 		fld := fields[fieldName]
 		if fld == nil {
 			t.Fatalf("field %s missing", fieldName)
 		}
+
 		if len(fld.Annotations) != 1 {
 			t.Fatalf("field %s: want 1 annotation, got %d", fieldName, len(fld.Annotations))
 		}
+
 		a := fld.Annotations[0]
 		if a.Name.Name != "structTag" {
 			t.Fatalf("field %s: want structTag, got %s", fieldName, a.Name.Name)
 		}
+
 		if len(a.ResolvedArgs) != 2 {
 			t.Fatalf("field %s: want 2 resolved args, got %d", fieldName, len(a.ResolvedArgs))
 		}
+
 		if a.ResolvedArgs[0].Str != wantKey {
 			t.Fatalf("field %s tag key: want %q, got %q", fieldName, wantKey, a.ResolvedArgs[0].Str)
 		}
+
 		if a.ResolvedArgs[1].Str != wantVal {
 			t.Fatalf("field %s tag value: want %q, got %q", fieldName, wantVal, a.ResolvedArgs[1].Str)
 		}
 	}
+
 	expectTag("id", "gorm", "column:user_id")
 	expectTag("name", "validate", "required")
 }
@@ -197,14 +221,17 @@ let counter: int = 0
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
 	}
+
 	pkg := c.Packages["myApp"]
 	if pkg == nil {
 		t.Fatalf("package myApp missing")
 	}
+
 	var (
 		userType   *ir.TypeDeclStmt
 		helloFunc  *ir.FuncDeclStmt
@@ -217,10 +244,12 @@ let counter: int = 0
 				if s.Name.Name == "User" {
 					userType = s
 				}
+
 			case *ir.FuncDeclStmt:
 				if s.Name.Name == "hello" {
 					helloFunc = s
 				}
+
 			case *ir.VarDeclStmt:
 				if len(s.Targets) == 1 && s.Targets[0].Name != nil && s.Targets[0].Name.Name == "counter" {
 					counterLet = s
@@ -228,6 +257,7 @@ let counter: int = 0
 			}
 		}
 	}
+
 	if userType == nil || helloFunc == nil || counterLet == nil {
 		t.Fatalf("missing decls: user=%v hello=%v counter=%v", userType != nil, helloFunc != nil, counterLet != nil)
 	}
@@ -235,6 +265,7 @@ let counter: int = 0
 	if len(userType.Annotations) != 1 || userType.Annotations[0].Name.Name != "meta" {
 		t.Fatalf("User type: want single @meta annotation, got %+v", userType.Annotations)
 	}
+
 	args := userType.Annotations[0].ResolvedArgs
 	if len(args) != 2 || args[0].Str != "table" || args[1].Str != "users" {
 		t.Fatalf("User @meta args: want [\"table\", \"users\"], got %+v", args)
@@ -243,6 +274,7 @@ let counter: int = 0
 	if len(helloFunc.Annotations) != 1 || helloFunc.Annotations[0].Name.Name != "meta" {
 		t.Fatalf("hello func: want single @meta annotation, got %+v", helloFunc.Annotations)
 	}
+
 	args = helloFunc.Annotations[0].ResolvedArgs
 	if len(args) != 2 || args[0].Str != "route" || args[1].Str != "GET /hello" {
 		t.Fatalf("hello @meta args: want [\"route\", \"GET /hello\"], got %+v", args)
@@ -281,10 +313,12 @@ type User {
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
 	}
+
 	pkg := c.Packages["myApp"]
 	var fld *ir.TypeField
 	for _, f := range pkg.Files {
@@ -298,12 +332,15 @@ type User {
 			}
 		}
 	}
+
 	if fld == nil {
 		t.Fatalf("field id missing")
 	}
+
 	if len(fld.Annotations) != 1 || fld.Annotations[0].Name.Name != "structTag" {
 		t.Fatalf("expected @Pk → @Unique → @structTag chain, got %+v", fld.Annotations)
 	}
+
 	args := fld.Annotations[0].ResolvedArgs
 	if len(args) != 2 || args[0].Str != "gorm" || args[1].Str != "primaryKey;unique" {
 		t.Fatalf("chained structTag args wrong: %+v", args)
@@ -333,6 +370,7 @@ type T {
 	if !c.Diag.Errored() {
 		t.Fatalf("expected recursion-limit diagnostic, got none")
 	}
+
 	found := false
 	for _, d := range c.Diag.Diagnostics() {
 		if strings.Contains(d.Msg, "recursion limit") {
@@ -340,6 +378,7 @@ type T {
 			break
 		}
 	}
+
 	if !found {
 		t.Fatalf("no recursion-limit diagnostic in: %+v", c.Diag.Diagnostics())
 	}
@@ -365,10 +404,12 @@ func handler(@Required id: int) {
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
 	}
+
 	pkg := c.Packages["myApp"]
 	var fn *ir.FuncDeclStmt
 	for _, f := range pkg.Files {
@@ -378,9 +419,11 @@ func handler(@Required id: int) {
 			}
 		}
 	}
+
 	if fn == nil || len(fn.Params) != 1 {
 		t.Fatalf("handler not found or wrong param count")
 	}
+
 	prm := fn.Params[0]
 	if len(prm.Annotations) != 1 || prm.Annotations[0].Name.Name != "meta" {
 		t.Fatalf("param id: want @meta after expansion, got %+v", prm.Annotations)
@@ -420,10 +463,12 @@ type Service {
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
 	}
+
 	pkg := c.Packages["myApp"]
 	var td *ir.TypeDeclStmt
 	for _, f := range pkg.Files {
@@ -433,12 +478,15 @@ type Service {
 			}
 		}
 	}
+
 	if td == nil {
 		t.Fatalf("type Service missing")
 	}
+
 	if len(td.Methods) != 1 || len(td.Methods[0].Annotations) != 1 || td.Methods[0].Annotations[0].Name.Name != "meta" {
 		t.Fatalf("method handle: want single @meta annotation, got %+v", td.Methods)
 	}
+
 	if len(td.Ctors) != 1 || len(td.Ctors[0].Annotations) != 1 || td.Ctors[0].Annotations[0].Name.Name != "meta" {
 		t.Fatalf("ctor: want single @meta annotation, got %+v", td.Ctors)
 	}
@@ -473,10 +521,12 @@ type User {
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
 	}
+
 	pkg := c.Packages["myApp"]
 	var td *ir.TypeDeclStmt
 	for _, f := range pkg.Files {
@@ -486,29 +536,36 @@ type User {
 			}
 		}
 	}
+
 	if td == nil {
 		t.Fatalf("type User missing")
 	}
+
 	if len(td.Annotations) != 1 || td.Annotations[0].Name.Name != "meta" {
 		t.Fatalf("User type annotations: want single @meta, got %+v", td.Annotations)
 	}
+
 	if td.Annotations[0].ResolvedArgs[1].Str != "users" {
 		t.Fatalf("User table tag value: want 'users', got %q", td.Annotations[0].ResolvedArgs[1].Str)
 	}
+
 	wantPerField := map[string]string{
 		"id":    "column:id",
 		"name":  "column:name",
 		"email": "column:email",
 	}
+
 	for _, fld := range td.Fields {
 		want := wantPerField[fld.Name.Name]
 		if len(fld.Annotations) != 1 {
 			t.Fatalf("field %s: want 1 annotation, got %d", fld.Name.Name, len(fld.Annotations))
 		}
+
 		a := fld.Annotations[0]
 		if a.Name.Name != "structTag" {
 			t.Fatalf("field %s: want @structTag, got @%s", fld.Name.Name, a.Name.Name)
 		}
+
 		if a.ResolvedArgs[1].Str != want {
 			t.Fatalf("field %s: want %q, got %q", fld.Name.Name, want, a.ResolvedArgs[1].Str)
 		}
@@ -541,10 +598,12 @@ type User {
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
 	}
+
 	pkg := c.Packages["myApp"]
 	var td *ir.TypeDeclStmt
 	for _, f := range pkg.Files {
@@ -554,19 +613,25 @@ type User {
 			}
 		}
 	}
+
 	if td == nil {
 		t.Fatalf("type User missing")
 	}
+
 	counts := map[string]int{}
+
 	for _, fld := range td.Fields {
 		counts[fld.Name.Name] = len(fld.Annotations)
 	}
+
 	if counts["id"] != 1 {
 		t.Fatalf("id should have @meta from where=isShared: got %d", counts["id"])
 	}
+
 	if counts["name"] != 1 {
 		t.Fatalf("name should have @meta from where=isShared: got %d", counts["name"])
 	}
+
 	if counts["passwordHash"] != 0 {
 		t.Fatalf("passwordHash should be unannotated (not shared): got %d", counts["passwordHash"])
 	}
@@ -595,6 +660,7 @@ type WebUser {
 	if !c.Diag.Errored() {
 		t.Fatalf("expected side-mismatch diagnostic, got none")
 	}
+
 	found := false
 	for _, d := range c.Diag.Diagnostics() {
 		if strings.Contains(d.Msg, "declared `on backend`") && strings.Contains(d.Msg, "frontend") {
@@ -602,6 +668,7 @@ type WebUser {
 			break
 		}
 	}
+
 	if !found {
 		t.Fatalf("no side-mismatch diagnostic; diags: %+v", c.Diag.Diagnostics())
 	}
@@ -629,6 +696,7 @@ type SharedUser {
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("backend-only synth should fire on shared files; got errors")
@@ -656,10 +724,12 @@ type User {
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
 	}
+
 	pkg := c.Packages["myApp"]
 	var td *ir.TypeDeclStmt
 	for _, f := range pkg.Files {
@@ -669,17 +739,23 @@ type User {
 			}
 		}
 	}
+
 	if td == nil {
 		t.Fatalf("type User missing")
 	}
+
 	names := []string{}
+
 	for _, fld := range td.Fields {
 		names = append(names, fld.Name.Name)
 	}
+
 	want := []string{"id", "createdAt", "updatedAt"}
+
 	if len(names) != len(want) {
 		t.Fatalf("want fields %v, got %v", want, names)
 	}
+
 	for i, w := range want {
 		if names[i] != w {
 			t.Fatalf("field %d: want %q, got %q", i, w, names[i])
@@ -711,10 +787,12 @@ type Service {
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
 	}
+
 	pkg := c.Packages["myApp"]
 	var td *ir.TypeDeclStmt
 	for _, f := range pkg.Files {
@@ -724,21 +802,26 @@ type Service {
 			}
 		}
 	}
+
 	if td == nil {
 		t.Fatalf("type Service missing")
 	}
+
 	if len(td.Methods) != 1 || td.Methods[0].Func == nil || td.Methods[0].Func.Name.Name != "ping" {
 		t.Fatalf("want one method `ping`, got %+v", td.Methods)
 	}
+
 	if len(td.Ctors) == 0 {
 		t.Fatalf("want at least one ctor, got none")
 	}
+
 	found := false
 	for _, c := range td.Ctors {
 		if len(c.Params) == 1 && c.Params[0].Name.Name == "seed" {
 			found = true
 		}
 	}
+
 	if !found {
 		t.Fatalf("want ctor with `seed` param, got %+v", td.Ctors)
 	}
@@ -772,23 +855,28 @@ func world() {
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
 	}
+
 	reg, ok := c.Cache["synth_reg:routes"].([]ir.Expr)
 	if !ok {
 		t.Fatalf("synth_reg:routes missing from cache; got: %T", c.Cache["synth_reg:routes"])
 	}
+
 	if len(reg) != 2 {
 		t.Fatalf("want 2 route entries, got %d", len(reg))
 	}
+
 	paths := make([]string, 0, len(reg))
 	for _, e := range reg {
 		if lit, ok := e.(*ir.LitString); ok {
 			paths = append(paths, lit.Value)
 		}
 	}
+
 	want1, want2 := "/hello", "/world"
 	if !(paths[0] == want1 && paths[1] == want2 || paths[0] == want2 && paths[1] == want1) {
 		t.Fatalf("registry paths: want {%q, %q} in either order, got %v", want1, want2, paths)

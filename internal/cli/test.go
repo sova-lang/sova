@@ -24,7 +24,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newTestCmd registers the `sova test` CLI command. By default the Go-side test driver runs all discovered tests via the emitted Go binary. The `--side` flag selects the runtime: `go` (default) compiles and runs the Go test driver; `js` invokes the JS bundle through an embedded goja runtime per test name; `both` runs the same suite on both runtimes and aggregates pass/fail per side.
 func newTestCmd() *cobra.Command {
 	var side string
 	var parallel bool
@@ -45,9 +44,11 @@ func newTestCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
 			return runTestPipeline(cfg, side, parallel, filter, jsonOut, tag, only, noColor, browser, headed, withBackend)
 		},
 	}
+
 	cmd.Flags().StringVar(&side, "side", "go", "test runtime side: go | js | both")
 	cmd.Flags().BoolVar(&parallel, "parallel", false, "run JS-side tests concurrently when --side covers JS")
 	cmd.Flags().StringVar(&filter, "filter", "", "only run tests whose full name contains this substring (case-sensitive)")
@@ -66,13 +67,16 @@ func runTestPipeline(cfg BuildConfig, side string, jsParallel bool, filter strin
 	if withBackend {
 		browser = true
 	}
+
 	if browser && strings.ToLower(side) == "go" {
 		side = "js"
 	}
+
 	root, files, err := collectSources(cfg)
 	if err != nil {
 		return err
 	}
+
 	cfg.SourceDir = root
 	cfg.TestMode = true
 
@@ -87,6 +91,7 @@ func runTestPipeline(cfg BuildConfig, side string, jsParallel bool, filter strin
 		c.Diag.Print()
 		return err
 	}
+
 	c.Diag.Print()
 
 	raw, ok := c.Cache[passes.TestRegistryCacheKey]
@@ -94,6 +99,7 @@ func runTestPipeline(cfg BuildConfig, side string, jsParallel bool, filter strin
 		fmt.Println("no tests discovered")
 		return nil
 	}
+
 	entries, ok := raw.([]passes.TestEntry)
 	if !ok || len(entries) == 0 {
 		fmt.Println("no tests discovered")
@@ -107,6 +113,7 @@ func runTestPipeline(cfg BuildConfig, side string, jsParallel bool, filter strin
 			if filter != "" && !strings.Contains(full, filter) {
 				continue
 			}
+
 			if tag != "" {
 				matched := false
 				for _, t := range e.Tags {
@@ -115,21 +122,26 @@ func runTestPipeline(cfg BuildConfig, side string, jsParallel bool, filter strin
 						break
 					}
 				}
+
 				if !matched {
 					continue
 				}
 			}
+
 			if only != "" {
 				fname := ""
 				if e.File != nil {
 					fname = e.File.Filename
 				}
+
 				if !strings.HasSuffix(fname, only) {
 					continue
 				}
 			}
+
 			filtered = append(filtered, e)
 		}
+
 		entries = filtered
 		if len(entries) == 0 {
 			switch {
@@ -140,6 +152,7 @@ func runTestPipeline(cfg BuildConfig, side string, jsParallel bool, filter strin
 			default:
 				fmt.Printf("no tests match --filter %q\n", filter)
 			}
+
 			return nil
 		}
 	}
@@ -154,15 +167,18 @@ func runTestPipeline(cfg BuildConfig, side string, jsParallel bool, filter strin
 			} else {
 				fmt.Printf("running %d test(s) [JS-side via goja]\n\n", len(entries))
 			}
+
 		case "both":
 			fmt.Printf("running %d test(s) [Go + JS]\n\n", len(entries))
 		}
 	}
 
 	allowedNames := map[string]bool{}
+
 	for _, e := range entries {
 		allowedNames[fullEntryName(e)] = true
 	}
+
 	switch strings.ToLower(side) {
 	case "go", "":
 		return executeTestBinary(cfg, filter, jsonOut, allowedNames)
@@ -172,9 +188,11 @@ func runTestPipeline(cfg BuildConfig, side string, jsParallel bool, filter strin
 			if err != nil {
 				return err
 			}
+
 			defer backendStop()
 			return runBrowserTests(cfg, entries, jsonOut, headed, backendURL)
 		}
+
 		return runJSTests(cfg, entries, jsParallel, jsonOut)
 	case "both":
 		var jsErr error
@@ -183,18 +201,22 @@ func runTestPipeline(cfg BuildConfig, side string, jsParallel bool, filter strin
 			if err != nil {
 				return err
 			}
+
 			defer backendStop()
 			jsErr = runBrowserTests(cfg, entries, jsonOut, headed, backendURL)
 		} else {
 			jsErr = runJSTests(cfg, entries, jsParallel, jsonOut)
 		}
+
 		if !jsonOut {
 			fmt.Println()
 		}
+
 		goErr := executeTestBinary(cfg, filter, jsonOut, allowedNames)
 		if jsErr != nil {
 			return jsErr
 		}
+
 		return goErr
 	default:
 		return fmt.Errorf("unknown --side %q (expected go|js|both)", side)
@@ -205,23 +227,26 @@ func fullEntryName(e passes.TestEntry) string {
 	if len(e.GroupPath) == 0 {
 		return e.Decl.Name
 	}
+
 	return strings.Join(e.GroupPath, " > ") + " > " + e.Decl.Name
 }
 
-// runJSTests loads the just-emitted JS bundle into a fresh goja runtime per test, invokes `__sovaJSTestRun(name)` for every discovered test, and prints a Go-side-equivalent report. Tests inherit their `Parallel` flag from the discovery pass (set by an enclosing `group "..." parallel { ... }` or the test decl itself) and run concurrently when --parallel is also requested; sequential tests run on the main goroutine in declaration order to keep output stable.
 func runJSTests(cfg BuildConfig, entries []passes.TestEntry, parallel bool, jsonOut bool) error {
 	outDir := cfg.OutputDir
 	if outDir == "" {
 		outDir = ".output"
 	}
+
 	bundlePath := filepath.Join(outDir, cfg.OutputName+".js")
 	if cfg.OutputName == "" {
 		bundlePath = filepath.Join(outDir, "output.js")
 	}
+
 	srcBytes, err := os.ReadFile(bundlePath)
 	if err != nil {
 		return fmt.Errorf("read JS bundle %s: %w", bundlePath, err)
 	}
+
 	src := stripSourceMappingComment(string(srcBytes))
 
 	type jsResult struct {
@@ -238,6 +263,7 @@ func runJSTests(cfg BuildConfig, entries []passes.TestEntry, parallel bool, json
 		if entry.File != nil {
 			fileLabel = entry.File.Filename
 		}
+
 		rt := goja.New()
 		installJSSnapshotIO(rt)
 		installJSTimers(rt)
@@ -246,42 +272,50 @@ func runJSTests(cfg BuildConfig, entries []passes.TestEntry, parallel bool, json
 		if _, err := rt.RunString(string(src)); err != nil {
 			return jsResult{Name: name, File: fileLabel, Panic: fmt.Sprintf("bundle eval: %v", err), DurationMS: time.Since(start).Milliseconds()}
 		}
+
 		fn, ok := goja.AssertFunction(rt.Get("__sovaJSTestRun"))
 		if !ok {
 			return jsResult{Name: name, File: fileLabel, Panic: "__sovaJSTestRun not exported from JS bundle", DurationMS: time.Since(start).Milliseconds()}
 		}
+
 		out, err := fn(goja.Undefined(), rt.ToValue(name))
 		if err != nil {
 			return jsResult{Name: name, File: fileLabel, Panic: err.Error(), DurationMS: time.Since(start).Milliseconds()}
 		}
+
 		if promise, ok := out.Export().(*goja.Promise); ok {
 			switch promise.State() {
 			case goja.PromiseStateFulfilled:
 				out = promise.Result()
 			case goja.PromiseStateRejected:
 				return jsResult{Name: name, File: fileLabel, Panic: promise.Result().String(), DurationMS: time.Since(start).Milliseconds()}
+
 			default:
 				return jsResult{Name: name, File: fileLabel, Panic: "test promise did not resolve synchronously (goja has no event loop; use --browser for async wire roundtrips)", DurationMS: time.Since(start).Milliseconds()}
 			}
 		}
+
 		obj := out.ToObject(rt)
 		failuresRaw := obj.Get("failures")
 		panicMsg := ""
 		if v := obj.Get("panic"); v != nil {
 			panicMsg = v.String()
 		}
+
 		var failures []jsFailure
 		if failuresRaw != nil {
 			arr := failuresRaw.ToObject(rt)
 			for i := 0; i < int(arr.Get("length").ToInteger()); i++ {
 				f := arr.Get(fmt.Sprintf("%d", i)).ToObject(rt)
 				vars := map[string]any{}
+
 				if vRaw := f.Get("vars"); vRaw != nil && !goja.IsUndefined(vRaw) && !goja.IsNull(vRaw) {
 					vObj := vRaw.ToObject(rt)
 					for _, key := range vObj.Keys() {
 						vars[key] = exportVal(vObj.Get(key))
 					}
 				}
+
 				failures = append(failures, jsFailure{
 					Source:      strVal(f.Get("source")),
 					Location:    strVal(f.Get("location")),
@@ -292,6 +326,7 @@ func runJSTests(cfg BuildConfig, entries []passes.TestEntry, parallel bool, json
 				})
 			}
 		}
+
 		return jsResult{Name: name, File: fileLabel, DurationMS: time.Since(start).Milliseconds(), Panic: panicMsg, Failures: failures}
 	}
 
@@ -306,6 +341,7 @@ func runJSTests(cfg BuildConfig, entries []passes.TestEntry, parallel bool, json
 				results[i] = run(entry)
 			}()
 		}
+
 		wg.Wait()
 	} else {
 		for i, entry := range entries {
@@ -323,11 +359,13 @@ func runJSTests(cfg BuildConfig, entries []passes.TestEntry, parallel bool, json
 		} else {
 			fail++
 		}
+
 		if jsonOut {
 			status := "pass"
 			if !passed {
 				status = "fail"
 			}
+
 			rec := map[string]any{
 				"name":       r.Name,
 				"file":       r.File,
@@ -335,36 +373,45 @@ func runJSTests(cfg BuildConfig, entries []passes.TestEntry, parallel bool, json
 				"status":     status,
 				"durationMs": r.DurationMS,
 			}
+
 			if r.Panic != "" {
 				rec["panic"] = r.Panic
 			}
+
 			if len(r.Failures) > 0 {
 				rec["failures"] = r.Failures
 			}
+
 			if buf, err := json.Marshal(rec); err == nil {
 				fmt.Println(string(buf))
 			}
+
 			continue
 		}
+
 		if passed {
 			fmt.Printf("PASS  %s  (%dms)\n", r.Name, r.DurationMS)
 			continue
 		}
+
 		fmt.Printf("FAIL  %s  (%dms)\n", r.Name, r.DurationMS)
 		if r.Panic != "" {
 			fmt.Printf("      panic: %s\n", r.Panic)
 		}
+
 		for _, f := range r.Failures {
 			if f.HasOperands {
 				fmt.Printf("      assert failed at %s\n        assert %s\n        lhs = %v\n        rhs = %v\n", f.Location, f.Source, f.Lhs, f.Rhs)
 			} else {
 				fmt.Printf("      assert failed at %s\n        assert %s\n", f.Location, f.Source)
 			}
+
 			if len(f.Vars) > 0 {
 				keys := make([]string, 0, len(f.Vars))
 				for k := range f.Vars {
 					keys = append(keys, k)
 				}
+
 				sort.Strings(keys)
 				for _, k := range keys {
 					fmt.Printf("        %s = %v\n", k, f.Vars[k])
@@ -372,12 +419,15 @@ func runJSTests(cfg BuildConfig, entries []passes.TestEntry, parallel bool, json
 			}
 		}
 	}
+
 	if !jsonOut {
 		fmt.Printf("\n%d passed, %d failed\n", pass, fail)
 	}
+
 	if fail > 0 {
 		return fmt.Errorf("%d JS test(s) failed", fail)
 	}
+
 	return nil
 }
 
@@ -394,6 +444,7 @@ func jsFullName(e passes.TestEntry) string {
 	if len(e.GroupPath) == 0 {
 		return e.Decl.Name
 	}
+
 	return strings.Join(e.GroupPath, " > ") + " > " + e.Decl.Name
 }
 
@@ -401,6 +452,7 @@ func strVal(v goja.Value) string {
 	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
 		return ""
 	}
+
 	return v.String()
 }
 
@@ -408,6 +460,7 @@ func boolVal(v goja.Value) bool {
 	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
 		return false
 	}
+
 	return v.ToBoolean()
 }
 
@@ -415,10 +468,10 @@ func exportVal(v goja.Value) any {
 	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
 		return nil
 	}
+
 	return v.Export()
 }
 
-// installJSWebAPIs installs the Web-platform JS APIs the Sova stdlib expects: TextEncoder/TextDecoder (UTF-8), btoa/atob (base64), and a minimal `crypto` object with `subtle.digest` (SHA-1/256/512), `subtle.importKey` + `sign` + `verify` (HMAC-*), `getRandomValues`, and `randomUUID`. Pure-JS would work for the encoders but the crypto primitives go through Go's stdlib via host functions - that's what keeps the polyfill small and correct without re-implementing SHA-256 in pure JS.
 func installJSWebAPIs(rt *goja.Runtime) {
 	rt.Set("__sovaJSEncodeBase64", func(s string) string {
 		return base64.StdEncoding.EncodeToString([]byte(s))
@@ -440,12 +493,14 @@ func installJSWebAPIs(rt *goja.Runtime) {
 			h := sha512.Sum512([]byte(data))
 			sum = h[:]
 		}
+
 		out := make([]byte, len(sum)*2)
 		const hexd = "0123456789abcdef"
 		for i, b := range sum {
 			out[i*2] = hexd[b>>4]
 			out[i*2+1] = hexd[b&0x0f]
 		}
+
 		return string(out)
 	})
 	rt.Set("__sovaJSHmacHex", func(algo, key, data string) string {
@@ -458,9 +513,11 @@ func installJSWebAPIs(rt *goja.Runtime) {
 		case "SHA-512":
 			mac = hmac.New(sha512.New, []byte(key))
 		}
+
 		if mac == nil {
 			return ""
 		}
+
 		mac.Write([]byte(data))
 		sum := mac.Sum(nil)
 		out := make([]byte, len(sum)*2)
@@ -469,6 +526,7 @@ func installJSWebAPIs(rt *goja.Runtime) {
 			out[i*2] = hexd[b>>4]
 			out[i*2+1] = hexd[b&0x0f]
 		}
+
 		return string(out)
 	})
 	rt.Set("__sovaJSRandomHex", func(n int) string {
@@ -480,6 +538,7 @@ func installJSWebAPIs(rt *goja.Runtime) {
 			out[i*2] = hexd[v>>4]
 			out[i*2+1] = hexd[v&0x0f]
 		}
+
 		return string(out)
 	})
 	rt.Set("__sovaJSRandomUUID", func() string {
@@ -495,11 +554,13 @@ func installJSWebAPIs(rt *goja.Runtime) {
 				out[j] = '-'
 				j++
 			}
+
 			out[j] = hexd[v>>4]
 			j++
 			out[j] = hexd[v&0x0f]
 			j++
 		}
+
 		return string(out)
 	})
 
@@ -611,7 +672,6 @@ func installJSWebAPIs(rt *goja.Runtime) {
 	_, _ = rt.RunString(polyfillJS)
 }
 
-// installJSTimers wires setTimeout/setInterval/clear shims into a goja Runtime as microtask-deferred callbacks, so emitted Sova code that uses `after(ms)` / `every(ms)` works without a real event loop. Both delay arguments are ignored; the registered fn fires on the next microtask via `Promise.resolve().then(fn)`. clearTimeout/clearInterval flip a per-handle cancelled flag the wrapper checks before invoking the user fn - enough to make `cancel()`-then-await tests deterministic. setInterval reschedules itself in a loop bounded by `intervalMaxTicks` (4) so tests don't hang on never-stopping tickers.
 func installJSTimers(rt *goja.Runtime) {
 	timersSrc := `(function () {
   const handles = new Map();
@@ -653,7 +713,6 @@ func installJSTimers(rt *goja.Runtime) {
 	_, _ = rt.RunString(timersSrc)
 }
 
-// installJSSnapshotIO registers two host functions on the goja runtime that bridge `testing.expectSnapshot` (JS-side) to the same on-disk `.sova/snapshots/<name>.snap.json` store the Go-side driver uses. `__sovaJSSnapshotIO(name, payload) -> {ok, expected, created}`: writes payload to disk on first encounter (returns ok=true,created=true), diffs against the existing file on subsequent runs (returns ok = payload matches existing, expected = existing). `__sovaJSSnapshotPath() -> string`: returns the resolved snapshot dir. Honors SOVA_TEST_SNAPSHOT_DIR and SOVA_TEST_SNAPSHOT_CI environment variables identically to the Go-side helper.
 func installJSSnapshotIO(rt *goja.Runtime) {
 	rt.Set("__sovaJSSnapshotIO", func(name string, payload string) map[string]any {
 		dir := os.Getenv("SOVA_TEST_SNAPSHOT_DIR")
@@ -661,9 +720,11 @@ func installJSSnapshotIO(rt *goja.Runtime) {
 			cwd, _ := os.Getwd()
 			dir = filepath.Join(cwd, ".sova", "snapshots")
 		}
+
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return map[string]any{"ok": false, "error": err.Error()}
 		}
+
 		safe := snapshotSafeName(name)
 		path := filepath.Join(dir, safe+".snap.json")
 		existing, rerr := os.ReadFile(path)
@@ -672,16 +733,21 @@ func installJSSnapshotIO(rt *goja.Runtime) {
 				if os.Getenv("SOVA_TEST_SNAPSHOT_CI") != "" {
 					return map[string]any{"ok": false, "missing": true}
 				}
+
 				if werr := os.WriteFile(path, []byte(payload), 0o644); werr != nil {
 					return map[string]any{"ok": false, "error": werr.Error()}
 				}
+
 				return map[string]any{"ok": true, "created": true}
 			}
+
 			return map[string]any{"ok": false, "error": rerr.Error()}
 		}
+
 		if string(existing) == payload {
 			return map[string]any{"ok": true}
 		}
+
 		return map[string]any{"ok": false, "expected": string(existing)}
 	})
 }
@@ -696,13 +762,14 @@ func snapshotSafeName(s string) string {
 			buf = append(buf, '_')
 		}
 	}
+
 	if len(buf) == 0 {
 		return "snap"
 	}
+
 	return string(buf)
 }
 
-// stripSourceMappingComment removes a trailing `//# sourceMappingURL=...` line from a JS bundle before feeding it to goja. goja eagerly fetches the referenced source map and chokes if the file is missing or has empty mappings; for the test runner we don't need source maps anyway.
 func stripSourceMappingComment(src string) string {
 	lines := strings.Split(src, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -710,20 +777,23 @@ func stripSourceMappingComment(src string) string {
 		if trimmed == "" {
 			continue
 		}
+
 		if strings.HasPrefix(trimmed, "//# sourceMappingURL=") {
 			lines = append(lines[:i], lines[i+1:]...)
 		}
+
 		break
 	}
+
 	return strings.Join(lines, "\n")
 }
 
-// executeTestBinary builds the just-emitted Go test driver and runs it, streaming stdout/stderr through so the test reporter's output reaches the user verbatim. Exit code 1 from the binary surfaces as a non-nil error so CI pipelines fail loudly. Filter and JSON output mode are passed to the driver via the `SOVA_TEST_FILTER` and `SOVA_TEST_JSON` environment variables - the emitted test driver reads these to skip non-matching tests and emit line-delimited JSON records instead of the human-readable PASS/FAIL format. `allowedNames` (when non-nil) is the post-tag-filter whitelist of full test names; it is serialised newline-delimited into `SOVA_TEST_ALLOWED` so the driver's `__sovaTestShouldRun` can honor `--tag` (which has no env equivalent the driver knows on its own).
 func executeTestBinary(cfg BuildConfig, filter string, jsonOut bool, allowedNames map[string]bool) error {
 	outDir := cfg.OutputDir
 	if outDir == "" {
 		outDir = ".output"
 	}
+
 	buildCmd := exec.Command("go", "build", "-o", "sovatest", ".")
 	buildCmd.Dir = outDir
 	buildCmd.Stdout = os.Stdout
@@ -731,6 +801,7 @@ func executeTestBinary(cfg BuildConfig, filter string, jsonOut bool, allowedName
 	if err := buildCmd.Run(); err != nil {
 		return fmt.Errorf("go build (test driver) in %s: %w", outDir, err)
 	}
+
 	runCmd := exec.Command("./sovatest")
 	runCmd.Dir = outDir
 	runCmd.Stdout = os.Stdout
@@ -739,19 +810,24 @@ func executeTestBinary(cfg BuildConfig, filter string, jsonOut bool, allowedName
 	if filter != "" {
 		env = append(env, "SOVA_TEST_FILTER="+filter)
 	}
+
 	if jsonOut {
 		env = append(env, "SOVA_TEST_JSON=1")
 	}
+
 	if allowedNames != nil {
 		names := make([]string, 0, len(allowedNames))
 		for k := range allowedNames {
 			names = append(names, k)
 		}
+
 		env = append(env, "SOVA_TEST_ALLOWED="+strings.Join(names, "\n"))
 	}
+
 	runCmd.Env = env
 	if err := runCmd.Run(); err != nil {
 		return fmt.Errorf("test run failed: %w", err)
 	}
+
 	return nil
 }

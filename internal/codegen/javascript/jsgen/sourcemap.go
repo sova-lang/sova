@@ -5,14 +5,12 @@ import (
 	"strings"
 )
 
-// SourcePosition represents a position in the original source code
 type SourcePosition struct {
-	Line       int    // 1-based line number
-	Column     int    // 0-based column number
-	SourceFile string // Source file name
+	Line       int
+	Column     int
+	SourceFile string
 }
 
-// Mapping represents a single source map mapping
 type Mapping struct {
 	GeneratedLine   int
 	GeneratedColumn int
@@ -21,7 +19,6 @@ type Mapping struct {
 	OriginalColumn  int
 }
 
-// SourceMap represents a source map (v3 format)
 type SourceMap struct {
 	Version        int      `json:"version"`
 	File           string   `json:"file"`
@@ -32,7 +29,6 @@ type SourceMap struct {
 	Mappings       string   `json:"mappings"`
 }
 
-// SourceMapBuilder builds a source map
 type SourceMapBuilder struct {
 	outputFile      string
 	sources         []string
@@ -47,7 +43,6 @@ type SourceMapBuilder struct {
 	lastOrigCol     int
 }
 
-// NewSourceMapBuilder creates a new source map builder
 func NewSourceMapBuilder(outputFile string) *SourceMapBuilder {
 	return &SourceMapBuilder{
 		outputFile:     outputFile,
@@ -61,26 +56,24 @@ func NewSourceMapBuilder(outputFile string) *SourceMapBuilder {
 	}
 }
 
-// AddSourceContent adds the content of a source file
 func (b *SourceMapBuilder) AddSourceContent(sourceFile string, content string) {
 	b.sourcesContent[sourceFile] = content
 }
 
-// getSourceIndex returns the index of a source file, adding it if necessary
 func (b *SourceMapBuilder) getSourceIndex(sourceFile string) int {
 	if idx, ok := b.sourceIndexMap[sourceFile]; ok {
 		return idx
 	}
+
 	idx := len(b.sources)
 	b.sources = append(b.sources, sourceFile)
 	b.sourceIndexMap[sourceFile] = idx
 	return idx
 }
 
-// AddMapping adds a mapping at the current generated position
 func (b *SourceMapBuilder) AddMapping(sourceFile string, origLine, origCol int) {
 	if sourceFile == "" {
-		return // No source position
+		return
 	}
 
 	b.mappings = append(b.mappings, Mapping{
@@ -92,7 +85,6 @@ func (b *SourceMapBuilder) AddMapping(sourceFile string, origLine, origCol int) 
 	})
 }
 
-// AdvanceGeneratedPosition advances the current generated position
 func (b *SourceMapBuilder) AdvanceGeneratedPosition(generatedCode string) {
 	for _, ch := range generatedCode {
 		if ch == '\n' {
@@ -104,7 +96,6 @@ func (b *SourceMapBuilder) AdvanceGeneratedPosition(generatedCode string) {
 	}
 }
 
-// Build generates the source map
 func (b *SourceMapBuilder) Build() *SourceMap {
 	mappingsStr := b.encodeMappings()
 
@@ -127,7 +118,6 @@ func (b *SourceMapBuilder) Build() *SourceMap {
 	}
 }
 
-// encodeMappings encodes the mappings using VLQ encoding
 func (b *SourceMapBuilder) encodeMappings() string {
 	if len(b.mappings) == 0 {
 		return ""
@@ -144,7 +134,7 @@ func (b *SourceMapBuilder) encodeMappings() string {
 		for currentLine < m.GeneratedLine {
 			result.WriteByte(';')
 			currentLine++
-			lastGenCol = 0 // Reset column offset for new line
+			lastGenCol = 0
 		}
 
 		if currentLine > 1 && result.Len() > 0 && result.String()[result.Len()-1] != ';' {
@@ -153,22 +143,20 @@ func (b *SourceMapBuilder) encodeMappings() string {
 
 		sourceIndex := b.getSourceIndex(m.SourceFile)
 
-		// Encode segment: [genCol, sourceIndex, origLine, origCol]
 		result.WriteString(encodeVLQ(m.GeneratedColumn - lastGenCol))
 		result.WriteString(encodeVLQ(sourceIndex - lastSourceIndex))
-		result.WriteString(encodeVLQ(m.OriginalLine - 1 - lastOrigLine)) // Convert to 0-based
+		result.WriteString(encodeVLQ(m.OriginalLine - 1 - lastOrigLine))
 		result.WriteString(encodeVLQ(m.OriginalColumn - lastOrigCol))
 
 		lastGenCol = m.GeneratedColumn
 		lastSourceIndex = sourceIndex
-		lastOrigLine = m.OriginalLine - 1 // Store as 0-based
+		lastOrigLine = m.OriginalLine - 1
 		lastOrigCol = m.OriginalColumn
 	}
 
 	return result.String()
 }
 
-// VLQ encoding alphabet
 const vlqBase64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 const (
@@ -178,7 +166,6 @@ const (
 	vlqContinuationBit = vlqBase
 )
 
-// encodeVLQ encodes an integer using Variable Length Quantity (VLQ) encoding
 func encodeVLQ(value int) string {
 	var result strings.Builder
 
@@ -207,11 +194,11 @@ func encodeVLQ(value int) string {
 	return result.String()
 }
 
-// ToJSON converts the source map to JSON
 func (sm *SourceMap) ToJSON() (string, error) {
 	data, err := json.MarshalIndent(sm, "", "  ")
 	if err != nil {
 		return "", err
 	}
+
 	return string(data), nil
 }

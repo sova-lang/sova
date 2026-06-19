@@ -15,19 +15,15 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// LockfileFilename is the on-disk name of the per-workspace (or per-project) lockfile, committed alongside the manifest. Reproducibility hinges on this file matching the manifest's intent: `sova install` regenerates it only when the manifest changed or `--frozen` is not set.
 const LockfileFilename = "sova.lock"
 
-// LockfileVersion is the schema version of the on-disk lockfile format. Bumping this is a breaking change to all checked-in `sova.lock` files in the wild - every consumer of an older lockfile must reinstall to regenerate.
 const LockfileVersion = 1
 
-// Lockfile is the exact, reproducible dependency graph that `sova install` resolves to. Committed to git; consumed by `sova install --frozen` in CI to verify nothing has drifted.
 type Lockfile struct {
 	Version  int             `toml:"version"`
 	Packages []LockedPackage `toml:"package"`
 }
 
-// LockedPackage is one resolved node in the dependency graph. The `Commit` SHA is the immutable cache key; `Checksum` is the integrity hash of the materialised tree (excluding `.git`). `Subdir` is the slash-form path inside the source clone when the dep selected one (git monorepo, multi-package path); empty when the package sits at the source root.
 type LockedPackage struct {
 	Name         string   `toml:"name"`
 	Version      string   `toml:"version"`
@@ -38,45 +34,51 @@ type LockedPackage struct {
 	Dependencies []string `toml:"dependencies,omitempty"`
 }
 
-// LoadLockfile parses sova.lock, returning ok=false when the file is absent. A malformed or wrong-version lockfile is an error - caller decides whether to delete and regenerate.
 func LoadLockfile(path string) (*Lockfile, bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, false, nil
 		}
+
 		return nil, false, err
 	}
+
 	var lf Lockfile
 	if err := toml.Unmarshal(data, &lf); err != nil {
 		return nil, false, fmt.Errorf("parse %s: %w", path, err)
 	}
+
 	if lf.Version == 0 {
 		lf.Version = LockfileVersion
 	}
+
 	if lf.Version != LockfileVersion {
 		return nil, false, fmt.Errorf("lockfile %s: unsupported version %d (expected %d)", path, lf.Version, LockfileVersion)
 	}
+
 	sort.Slice(lf.Packages, func(i, j int) bool {
 		if lf.Packages[i].Name == lf.Packages[j].Name {
 			return lf.Packages[i].Version < lf.Packages[j].Version
 		}
+
 		return lf.Packages[i].Name < lf.Packages[j].Name
 	})
 	return &lf, true, nil
 }
 
-// Save writes the lockfile in a deterministic, git-friendly multi-line form: header comment, `version` scalar, then one `[[package]]` block per entry sorted by (name, version). Atomic via tempfile + rename.
 func (lf *Lockfile) Save(path string) error {
 	if lf.Version == 0 {
 		lf.Version = LockfileVersion
 	}
+
 	pkgs := make([]LockedPackage, len(lf.Packages))
 	copy(pkgs, lf.Packages)
 	sort.Slice(pkgs, func(i, j int) bool {
 		if pkgs[i].Name == pkgs[j].Name {
 			return pkgs[i].Version < pkgs[j].Version
 		}
+
 		return pkgs[i].Name < pkgs[j].Name
 	})
 
@@ -92,12 +94,15 @@ func (lf *Lockfile) Save(path string) error {
 		if p.Commit != "" {
 			fmt.Fprintf(&b, "commit = %s\n", tomlQuote(p.Commit))
 		}
+
 		if p.Subdir != "" {
 			fmt.Fprintf(&b, "subdir = %s\n", tomlQuote(p.Subdir))
 		}
+
 		if p.Checksum != "" {
 			fmt.Fprintf(&b, "checksum = %s\n", tomlQuote(p.Checksum))
 		}
+
 		if len(p.Dependencies) > 0 {
 			deps := make([]string, len(p.Dependencies))
 			copy(deps, p.Dependencies)
@@ -106,6 +111,7 @@ func (lf *Lockfile) Save(path string) error {
 			for _, d := range deps {
 				fmt.Fprintf(&b, "    %s,\n", tomlQuote(d))
 			}
+
 			b.WriteString("]\n")
 		}
 	}
@@ -114,23 +120,24 @@ func (lf *Lockfile) Save(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+
 	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
 		return err
 	}
+
 	return os.Rename(tmp, path)
 }
 
-// FindByName returns the first locked package matching `name`. If multiple entries with the same name exist (rare; only for major-version-multiplex), returns the first by sort order.
 func (lf *Lockfile) FindByName(name string) (*LockedPackage, bool) {
 	for i := range lf.Packages {
 		if lf.Packages[i].Name == name {
 			return &lf.Packages[i], true
 		}
 	}
+
 	return nil, false
 }
 
-// tomlQuote escapes a string for emission as a TOML basic string. Handles the minimum set our lockfile values can contain: backslash, double quote, control chars. Identical to BurntSushi/toml's internal helper but inlined to avoid pulling in the encoder path for what amounts to a few-field-per-record writer.
 func tomlQuote(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')
@@ -154,52 +161,61 @@ func tomlQuote(s string) string {
 			}
 		}
 	}
+
 	b.WriteByte('"')
 	return b.String()
 }
 
-// ComputeChecksum returns the canonical sha256 over a materialised package tree: the hash of `\0`-joined "<relpath>\0<sha256-of-content>" lines, sorted by relpath. The `.git` and `.sova` subtrees are excluded so the checksum is stable across clones from the same commit.
 func ComputeChecksum(rootDir string) (string, error) {
 	type entry struct {
 		rel  string
 		hash string
 	}
+
 	var entries []entry
 	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
+
 		rel, _ := filepath.Rel(rootDir, path)
 		rel = filepath.ToSlash(rel)
 		if rel == "." {
 			return nil
 		}
+
 		first := strings.SplitN(rel, "/", 2)[0]
 		if first == ".git" || first == ".sova" {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
+
 			return nil
 		}
+
 		if d.IsDir() {
 			return nil
 		}
+
 		f, err := os.Open(path)
 		if err != nil {
 			return err
 		}
+
 		h := sha256.New()
 		_, copyErr := io.Copy(h, f)
 		f.Close()
 		if copyErr != nil {
 			return copyErr
 		}
+
 		entries = append(entries, entry{rel: rel, hash: hex.EncodeToString(h.Sum(nil))})
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
+
 	sort.Slice(entries, func(i, j int) bool { return entries[i].rel < entries[j].rel })
 	overall := sha256.New()
 	for _, e := range entries {
@@ -208,5 +224,6 @@ func ComputeChecksum(rootDir string) (string, error) {
 		overall.Write([]byte(e.hash))
 		overall.Write([]byte{0})
 	}
+
 	return "sha256:" + hex.EncodeToString(overall.Sum(nil)), nil
 }

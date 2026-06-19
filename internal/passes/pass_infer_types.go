@@ -8,70 +8,70 @@ import (
 	"sova/internal/ir"
 )
 
-// PassInferTypes is a pass that infers types based on usage and context. It also checks for consistent type usages (type checking).
 type PassInferTypes struct {
 	currentReturnTyp ir.TypID
 }
 
-func (p *PassInferTypes) Name() string       { return "infer_types" }
-func (p *PassInferTypes) Scope() PassScope   { return PerPackage }
-func (p *PassInferTypes) Requires() []string { return []string{"resolve_names", "resolve_typerefs", "precompute_signatures"} }
-func (p *PassInferTypes) NoErrors() bool     { return false }
+func (p *PassInferTypes) Name() string     { return "infer_types" }
+
+func (p *PassInferTypes) Scope() PassScope { return PerPackage }
+
+func (p *PassInferTypes) Requires() []string {
+	return []string{"resolve_names", "resolve_typerefs", "precompute_signatures"}
+}
+
+func (p *PassInferTypes) NoErrors() bool { return false }
 
 func (p *PassInferTypes) Run(pc *PassContext) error {
 	for _, f := range pc.Pkg.Files {
 		p.resolveStmts(pc, f.Hir.Statements)
 	}
+
 	return nil
 }
 
-// preComputeStructCtors walks every top-level TypeDeclStmt across all files in the package and stamps each struct type's `StructCtors` from the constructor parameter annotations alone (no body resolution). Without this, a method `iter()` declared on `type A<T>` that returns `new B<T>(...)` would see `B`'s `StructCtors` slice still nil when `B` is declared later in the same file — the ctor-match loop sees zero candidates and the user gets `Function parameter type mismatch; found func constructor but failed on: B`. Mirrors `preComputeStructFields` / `preComputeFuncSignatures`: per-method body resolution needs cross-type ctor signatures to be visible up front. The main resolveStmts loop will overwrite `StructCtors` later with a value that's identical at the signature level (we only changed timing, not content).
 func (p *PassInferTypes) preComputeStructCtors(pc *PassContext, stmts []ir.Stmt) {
 	for _, st := range stmts {
 		if ir.IsNilStmt(st) {
 			continue
 		}
+
 		td, ok := st.(*ir.TypeDeclStmt)
 		if !ok || td.Name.Sym == 0 {
 			continue
 		}
+
 		sym, ok := pc.Pkg.Syms.GetByID(td.Name.Sym)
 		if !ok || sym.Typ == 0 {
 			continue
 		}
+
 		structTy, ok := pc.Types.GetByID(sym.Typ)
 		if !ok || structTy.Kind != ir.TK_Struct {
 			continue
 		}
+
 		ctorInfos := make([]ir.StructCtorInfo, 0, len(td.Ctors))
 		for _, ctor := range td.Ctors {
 			funcTyp := pc.Types.FuncOf(ctor.Params, sym.Typ)
 			ctorInfos = append(ctorInfos, ir.StructCtorInfo{Sym: ctor.Sym, FuncTyp: funcTyp})
 		}
+
 		structTy.StructCtors = ctorInfos
 	}
 }
 
-// preComputeEnumCases walks every top-level EnumDeclStmt and stamps the enum's type onto its
-// symbol plus each case's symbol, populating EnumCases / EnumFields / IsNumeric on the type
-// table. Without this, a file that references `OtherEnum.SomeCase` as a default expression
-// before the enum's declaring file is walked by `resolveStmts` would see an unresolved case -
-// the dictionary-default-with-enum pattern emitted by the browserx generator triggers this
-// when alphabetical file order puts dictionaries.sova before enums.sova in the same package.
-//
-// We deliberately skip method-body resolution here (those still live in the main loop) and we
-// skip the payload-type vs. argument-type compatibility check the main loop does. Those
-// produce diagnostics, which would re-fire (under a different span) if we ran them here too.
-// The precompute is purely about getting the type-system surface visible cross-file.
 func (p *PassInferTypes) preComputeEnumCases(pc *PassContext, stmts []ir.Stmt) {
 	for _, st := range stmts {
 		if ir.IsNilStmt(st) {
 			continue
 		}
+
 		ed, ok := st.(*ir.EnumDeclStmt)
 		if !ok || ed.Name.Sym == 0 {
 			continue
 		}
+
 		isNumeric := len(ed.Fields) == 0
 		nextValue := int64(0)
 		var caseInfos []ir.EnumCaseInfo
@@ -79,6 +79,7 @@ func (p *PassInferTypes) preComputeEnumCases(pc *PassContext, stmts []ir.Stmt) {
 			if c.Value != nil {
 				nextValue = *c.Value
 			}
+
 			caseInfos = append(caseInfos, ir.EnumCaseInfo{
 				Name:    c.Name.Name,
 				Ordinal: c.Ordinal,
@@ -86,23 +87,27 @@ func (p *PassInferTypes) preComputeEnumCases(pc *PassContext, stmts []ir.Stmt) {
 			})
 			nextValue++
 		}
+
 		var enumFields []ir.EnumFieldInfo
 		for _, field := range ed.Fields {
 			fieldType := ir.TypID(0)
 			if field.Type != nil {
 				fieldType = field.Type.Typ
 			}
+
 			enumFields = append(enumFields, ir.EnumFieldInfo{
 				Name: field.Name.Name,
 				Type: fieldType,
 			})
 		}
+
 		enumTyp := pc.Types.EnumOf(pc.Pkg.Path.String(), ed.Name.Name, caseInfos, enumFields, isNumeric)
 		if enumTy, ok := pc.Types.GetByID(enumTyp); ok {
 			enumTy.EnumCases = caseInfos
 			enumTy.EnumFields = enumFields
 			enumTy.IsNumeric = isNumeric
 		}
+
 		pc.Pkg.Syms.SetType(ed.Name.Sym, enumTyp)
 		for _, c := range ed.Cases {
 			if c.Name.Sym != 0 {
@@ -112,73 +117,80 @@ func (p *PassInferTypes) preComputeEnumCases(pc *PassContext, stmts []ir.Stmt) {
 	}
 }
 
-// preComputeStructMethods walks every top-level TypeDeclStmt across all files in the package and stamps each struct type's `StructMethods` from method signatures alone (no body resolution, no default-param inference, no interface-conformance promotion — those still happen in the main `resolveStmts` loop). Without this, a cross-package method call like `streams.Stream<T>` referencing `list.List<T>.toSlice` from a body resolved before the list package's `infer_types` ran would see `StructMethods` still nil and fail with `has no field or method`. Methods whose return or param types depend on per-file inference (defaults, complex narrowing) are still stamped here with their annotated signature; the main loop overwrites with identical info, so behaviour stays the same — only timing changes.
-//
-// Methods with un-annotated parameter defaults stay at param.Type.Typ=0 in the pre-stamp and rely on the main resolver to fill them; cross-package references to such methods still need the declarer to be processed before the user. The common case is fully-annotated method signatures, which this covers.
 func (p *PassInferTypes) preComputeStructMethods(pc *PassContext, stmts []ir.Stmt) {
 	for _, st := range stmts {
 		if ir.IsNilStmt(st) {
 			continue
 		}
+
 		td, ok := st.(*ir.TypeDeclStmt)
 		if !ok || td.Name.Sym == 0 {
 			continue
 		}
+
 		sym, ok := pc.Pkg.Syms.GetByID(td.Name.Sym)
 		if !ok || sym.Typ == 0 {
 			continue
 		}
+
 		structTy, ok := pc.Types.GetByID(sym.Typ)
 		if !ok || structTy.Kind != ir.TK_Struct {
 			continue
 		}
+
 		methodInfos := make([]ir.StructMethodInfo, 0, len(td.Methods))
 		for _, method := range td.Methods {
 			if method == nil || method.Func == nil {
 				continue
 			}
+
 			fn := method.Func
 			if method.ThisSym != 0 {
 				pc.Pkg.Syms.SetType(method.ThisSym, sym.Typ)
 			}
+
 			for _, param := range fn.Params {
 				if param.Type != nil && param.Type.Typ != 0 && param.Name.Sym != 0 {
 					pc.Pkg.Syms.SetType(param.Name.Sym, param.Type.Typ)
 				}
 			}
+
 			returnType := ir.TypID(0)
 			if fn.ReturnType != nil {
 				returnType = fn.ReturnType.Typ
 			}
+
 			if returnType == 0 {
 				returnType = pc.Types.TypNone()
 			}
+
 			funcTyp := pc.Types.FuncOf(fn.Params, returnType)
 			pc.Pkg.Syms.SetType(fn.Name.Sym, funcTyp)
 			methodInfos = append(methodInfos, ir.StructMethodInfo{Name: fn.Name.Name, Sym: fn.Name.Sym, FuncTyp: funcTyp, IsShared: method.IsShared})
 		}
+
 		structTy.StructMethods = methodInfos
 	}
 }
 
-// preComputeStructFields walks every top-level TypeDeclStmt across all files in the package and stamps each struct type's `StructFields` from the field annotations alone (no default-expression inference, no embedded-mixin field promotion — those still happen in the main `resolveStmts` loop). Without this, a file that's alphabetically earlier than the file declaring `type T { x: int }` would resolve a `tval.x` field access against a type whose `StructFields` slice is still nil — the field lookup misses and the user sees `type T has no field 'x'`. Same root-cause pattern as `preComputeTopLevelVarSignatures` / `preComputeFuncSignatures`: per-file body resolution needs cross-file declaration types to be visible up front.
-//
-// Fields with no explicit type annotation (`@reactive x = 0`) stay at fieldType=0 in the pre-stamp. The main loop fills them in from defaults later; cross-file access to a field with no annotation still depends on the declarer being processed first. The common case in user code is a typed field with an optional default, which this covers.
 func (p *PassInferTypes) preComputeStructFields(pc *PassContext, stmts []ir.Stmt) {
 	for _, st := range stmts {
 		if ir.IsNilStmt(st) {
 			continue
 		}
+
 		td, ok := st.(*ir.TypeDeclStmt)
 		if !ok {
 			continue
 		}
+
 		fields := make([]ir.StructFieldInfo, 0, len(td.Fields))
 		for _, field := range td.Fields {
 			fieldType := ir.TypID(0)
 			if field.Type != nil {
 				fieldType = field.Type.Typ
 			}
+
 			fields = append(fields, ir.StructFieldInfo{
 				Name:       field.Name.Name,
 				Type:       fieldType,
@@ -191,77 +203,88 @@ func (p *PassInferTypes) preComputeStructFields(pc *PassContext, stmts []ir.Stmt
 				pc.Pkg.Syms.SetType(field.Name.Sym, fieldType)
 			}
 		}
+
 		structTyp := pc.Types.StructOf(pc.Pkg.Path.String(), td.Name.Name, fields)
 		if structTy, ok := pc.Types.GetByID(structTyp); ok {
 			structTy.StructFields = fields
 		}
-		// Stamp the type symbol's `.Typ` immediately so cross-file `new T()` / `t.x` expressions resolved during earlier-processed files see a non-zero type id. Otherwise NewExpr's `sym.Typ == 0` guard kicks in and the call evaluates to `<unresolved>`.
+
 		if td.Name.Sym != 0 {
 			pc.Pkg.Syms.SetType(td.Name.Sym, structTyp)
 		}
 	}
 }
 
-// preComputeTopLevelVarSignatures stamps the declared-type onto every top-level `let`/`const`-bound symbol that carries an explicit type annotation, before the main statement walker visits anything. Without this, a file that's alphabetically earlier than the file declaring a top-level `let myFlag: bool = ...` would see `myFlag`'s symbol with `Typ = 0` and emit a spurious `<unresolved>` diagnostic when resolving cross-file reads. Mirrors the exact ordering trick `preComputeExternSignatures` and `preComputeFuncSignatures` use for extern + function symbols. Top-level vars without an explicit type annotation (`let x = someExpr()`) stay at Typ=0 here and rely on the per-file resolver to fill them — those are visible to subsequent files via the same pre-stamp because the resolver walks before any cross-file lookup hits them; only forward-references from a file processed earlier than the declarer would still misbehave, which is rare and gets the same fix in a later iteration if anyone trips on it.
 func (p *PassInferTypes) preComputeTopLevelVarSignatures(pc *PassContext, stmts []ir.Stmt) {
 	for _, st := range stmts {
 		if ir.IsNilStmt(st) {
 			continue
 		}
+
 		vd, ok := st.(*ir.VarDeclStmt)
 		if !ok {
 			continue
 		}
+
 		for i := range vd.Targets {
 			target := &vd.Targets[i]
 			if target.Name == nil || target.Name.Sym == 0 {
 				continue
 			}
+
 			if target.TypeAnn == nil || target.TypeAnn.Typ == 0 {
 				continue
 			}
+
 			pc.Pkg.Syms.SetType(target.Name.Sym, target.TypeAnn.Typ)
 		}
 	}
 }
 
-// preComputeExternSignatures stamps the FuncOf type onto every extern function symbol so that other files referencing those externs can resolve them during body walking, regardless of file order. Without this, a file alphabetically earlier than the extern's source would see a 0-typed callee and emit a spurious "expected function" diagnostic.
 func (p *PassInferTypes) preComputeExternSignatures(pc *PassContext, stmts []ir.Stmt) {
 	for _, st := range stmts {
 		if ir.IsNilStmt(st) {
 			continue
 		}
+
 		ext, ok := st.(*ir.ExternDeclStmt)
 		if !ok {
 			continue
 		}
+
 		for _, fn := range ext.Funcs {
 			if fn.Name.Sym == 0 {
 				continue
 			}
+
 			for _, param := range fn.Params {
 				if param.Name.Sym != 0 && param.Type != nil && param.Type.Typ != 0 {
 					pc.Pkg.Syms.SetType(param.Name.Sym, param.Type.Typ)
 				}
 			}
+
 			var returnType ir.TypID
 			if fn.ReturnType != nil && fn.ReturnType.Typ != 0 {
 				returnType = fn.ReturnType.Typ
 			} else {
 				returnType = pc.Types.TypNone()
 			}
+
 			var funcTyp ir.TypID
 			if fn.IsAsync {
 				funcTyp = pc.Types.AsyncFuncOf(fn.Params, returnType)
 			} else {
 				funcTyp = pc.Types.FuncOf(fn.Params, returnType)
 			}
+
 			pc.Pkg.Syms.SetType(fn.Name.Sym, funcTyp)
 		}
+
 		for _, v := range ext.Vars {
 			if v.Name.Sym == 0 {
 				continue
 			}
+
 			if v.Type != nil && v.Type.Typ != 0 {
 				pc.Pkg.Syms.SetType(v.Name.Sym, v.Type.Typ)
 			}
@@ -269,42 +292,40 @@ func (p *PassInferTypes) preComputeExternSignatures(pc *PassContext, stmts []ir.
 	}
 }
 
-// preComputeFuncSignatures runs before the main statement walker and seeds each
-// top-level function's symbol with its signature type, so that body resolution
-// later in the file can look up forward-referenced functions (the body of
-// main() calling a helper declared further down). Param symbols also get their
-// types set here. Functions with inferred return types stay at returnType=0
-// during this pass; the body walker fills them in once their body is resolved,
-// at which point only forward references from earlier bodies are stale - for
-// those callers we already short-circuit gracefully via the "expected function"
-// diagnostic.
 func (p *PassInferTypes) preComputeFuncSignatures(pc *PassContext, stmts []ir.Stmt) {
 	for _, st := range stmts {
 		if ir.IsNilStmt(st) {
 			continue
 		}
+
 		fn, ok := st.(*ir.FuncDeclStmt)
 		if !ok {
 			continue
 		}
+
 		if fn.Name.Sym == 0 {
 			continue
 		}
+
 		for _, param := range fn.Params {
 			if param.Name.Sym == 0 {
 				continue
 			}
+
 			if param.Type != nil && param.Type.Typ != 0 {
 				pc.Pkg.Syms.SetType(param.Name.Sym, param.Type.Typ)
 			}
 		}
+
 		var returnType ir.TypID
 		if fn.ReturnType != nil {
 			returnType = fn.ReturnType.Typ
 		}
+
 		if returnType == 0 {
 			returnType = pc.Types.TypNone()
 		}
+
 		var funcTyp ir.TypID
 		if fn.IsWired {
 			wireStateTyp := wireStateTypeFromCache(pc)
@@ -312,6 +333,7 @@ func (p *PassInferTypes) preComputeFuncSignatures(pc *PassContext, stmts []ir.St
 			if inner == 0 {
 				inner = pc.Types.TypNone()
 			}
+
 			tupleTyp := pc.Types.TupleOf(
 				ir.TupleField{Name: "value", Type: inner},
 				ir.TupleField{Name: "state", Type: wireStateTyp},
@@ -320,25 +342,28 @@ func (p *PassInferTypes) preComputeFuncSignatures(pc *PassContext, stmts []ir.St
 		} else {
 			funcTyp = pc.Types.FuncOf(fn.Params, returnType)
 		}
+
 		pc.Pkg.Syms.SetType(fn.Name.Sym, funcTyp)
 	}
 }
 
-// interfaceFileSide locates the file that declares `ifaceSym` and returns its side. Used by InterfaceSigInfo population to implicitly mark every method on a shared-file interface as `IsShared` so the conformance check enforces shared implementations even without an explicit per-method modifier. Returns `SideShared` as a safe default when the interface cannot be located (e.g. compiler-injected interfaces with no source).
 func interfaceFileSide(pc *PassContext, ifaceSym ir.SymID) ir.SideKind {
 	if pc == nil || pc.Pkg == nil || ifaceSym == 0 {
 		return ir.SideShared
 	}
+
 	for _, f := range pc.Pkg.Files {
 		if f.Hir == nil {
 			continue
 		}
+
 		for _, st := range f.Hir.Statements {
 			if iface, ok := st.(*ir.InterfaceDeclStmt); ok && iface.Name.Sym == ifaceSym {
 				return f.Hir.Side.Kind
 			}
 		}
 	}
+
 	return ir.SideShared
 }
 
@@ -347,6 +372,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 		if ir.IsNilStmt(st) {
 			continue
 		}
+
 		if p.isTerminator(st) && i < len(stmts)-1 {
 			pc.Diag.Report(diag.ErrUnreachableCode, st.Span())
 			break
@@ -357,6 +383,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 		if ir.IsNilStmt(st) {
 			continue
 		}
+
 		switch st := st.(type) {
 		case *ir.BlockStmt:
 			p.resolveStmts(pc, st.Stmts)
@@ -379,6 +406,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				if target.Name != nil {
 					pc.Pkg.Syms.SetType(target.Name.Sym, funcTyp)
 				}
+
 				funcLit.SetType(funcTyp)
 
 				p.resolveStmts(pc, ir.BlockStmts(funcLit.Body))
@@ -397,6 +425,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				if len(st.Targets) == 1 && st.Targets[0].TypeAnn != nil && st.Targets[0].TypeAnn.Typ != 0 {
 					p.applyLiteralTypeHint(pc, st.Init, st.Targets[0].TypeAnn.Typ)
 				}
+
 				tInit := p.synthesizeTypeFromExpr(pc, st.Init)
 
 				if len(st.Targets) == 1 {
@@ -411,6 +440,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 								pc.Diag.Report(diag.ErrTypeMismatch, st.Span(), typeName(pc, expected), typeName(pc, tInit))
 							}
 						}
+
 						if target.Name != nil {
 							pc.Pkg.Syms.SetType(target.Name.Sym, expected)
 						}
@@ -418,6 +448,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 						if target.Name != nil {
 							pc.Pkg.Syms.SetType(target.Name.Sym, tInit)
 						}
+
 						target.TypeAnn = &ir.TypeRef{Typ: tInit}
 					}
 				} else {
@@ -435,6 +466,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 								if target.Name != nil {
 									pc.Pkg.Syms.SetType(target.Name.Sym, fieldTyp)
 								}
+
 								if target.TypeAnn == nil {
 									st.Targets[i].TypeAnn = &ir.TypeRef{Typ: fieldTyp}
 								}
@@ -443,6 +475,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					}
 				}
 			}
+
 		case *ir.FuncDeclStmt:
 			for _, param := range st.Params {
 				if param.Type != nil && param.Type.Typ != 0 {
@@ -462,6 +495,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 			} else {
 				p.currentReturnTyp = 0
 			}
+
 			p.resolveStmts(pc, ir.BlockStmts(st.Body))
 			p.currentReturnTyp = prevReturn
 
@@ -476,6 +510,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 						Typ  ir.TypID
 						Span diag.TextSpan
 					}
+
 					var nonNoneReturns []struct {
 						Typ  ir.TypID
 						Span diag.TextSpan
@@ -548,6 +583,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				if inner == 0 {
 					inner = pc.Types.TypNone()
 				}
+
 				tupleTyp := pc.Types.TupleOf(
 					ir.TupleField{Name: "value", Type: inner},
 					ir.TupleField{Name: "state", Type: wireStateTyp},
@@ -556,6 +592,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 			} else {
 				funcTyp = pc.Types.FuncOf(st.Params, returnType)
 			}
+
 			pc.Pkg.Syms.SetType(st.Name.Sym, funcTyp)
 
 		case *ir.ExternDeclStmt:
@@ -573,8 +610,10 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				} else {
 					funcTyp = pc.Types.FuncOf(fn.Params, returnType)
 				}
+
 				pc.Pkg.Syms.SetType(fn.Name.Sym, funcTyp)
 			}
+
 			for _, v := range st.Vars {
 				if v.Type != nil && v.Type.Typ != 0 {
 					pc.Pkg.Syms.SetType(v.Name.Sym, v.Type.Typ)
@@ -583,9 +622,11 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					pc.Diag.Report(diag.ErrTypeInferenceFailed, v.Name.Span, fmt.Sprintf("extern variable '%s'", v.Name.Name))
 				}
 			}
+
 			for _, t := range st.Types {
 				p.resolveStmts(pc, []ir.Stmt{t})
 			}
+
 			for _, iface := range st.Interfaces {
 				p.resolveStmts(pc, []ir.Stmt{iface})
 			}
@@ -594,6 +635,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 			if st.Target != nil && st.Target.Typ != 0 && st.Name.Sym != 0 {
 				pc.Pkg.Syms.SetType(st.Name.Sym, st.Target.Typ)
 			}
+
 		case *ir.InterfaceDeclStmt:
 			ifaceTyp := pc.Types.InterfaceOf(pc.Pkg.Path.String(), st.Name.Name)
 			pc.Pkg.Syms.SetType(st.Name.Sym, ifaceTyp)
@@ -605,18 +647,22 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 						pc.Pkg.Syms.SetType(param.Name.Sym, param.Type.Typ)
 					}
 				}
+
 				retType := ir.TypID(0)
 				if sig.ReturnType != nil {
 					retType = sig.ReturnType.Typ
 				}
+
 				if retType == 0 {
 					retType = pc.Types.TypNone()
 				}
+
 				funcTyp := pc.Types.FuncOf(sig.Params, retType)
 				pc.Pkg.Syms.SetType(sig.Name.Sym, funcTyp)
 				isShared := sig.IsShared || interfaceFileSide(pc, st.Name.Sym) == ir.SideShared
 				sigs = append(sigs, ir.InterfaceSigInfo{Name: sig.Name.Name, FuncTyp: funcTyp, IsShared: isShared})
 			}
+
 			if ifaceTy, ok := pc.Types.GetByID(ifaceTyp); ok {
 				ifaceTy.InterfaceMethods = sigs
 				if st.IsExtern {
@@ -624,6 +670,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					ifaceTy.ExternModule = st.ExternModule
 				}
 			}
+
 		case *ir.TypeDeclStmt:
 			var fields []ir.StructFieldInfo
 			for _, field := range st.Fields {
@@ -631,10 +678,12 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				if field.Type != nil {
 					fieldType = field.Type.Typ
 				}
+
 				if field.Default != nil {
 					if fieldType != 0 {
 						p.applyLiteralTypeHint(pc, field.Default, fieldType)
 					}
+
 					dt := p.synthesizeTypeFromExpr(pc, field.Default)
 					if fieldType == 0 {
 						fieldType = dt
@@ -644,6 +693,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 						}
 					}
 				}
+
 				fields = append(fields, ir.StructFieldInfo{
 					Name:       field.Name.Name,
 					Type:       fieldType,
@@ -656,6 +706,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					pc.Pkg.Syms.SetType(field.Name.Sym, fieldType)
 				}
 			}
+
 			structTyp := pc.Types.StructOf(pc.Pkg.Path.String(), st.Name.Name, fields)
 			if structTy, ok := pc.Types.GetByID(structTyp); ok {
 				structTy.StructFields = fields
@@ -663,17 +714,21 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					structTy.IsExtern = true
 					structTy.ExternModule = st.ExternModule
 				}
+
 				if mentionsComposable(st.MixedIn) {
 					structTy.IsComposable = true
 				}
+
 				if len(st.TypeParams) > 0 {
 					names := make([]string, 0, len(st.TypeParams))
 					for _, p := range st.TypeParams {
 						names = append(names, p.Name)
 					}
+
 					structTy.TypeParams = names
 				}
 			}
+
 			pc.Pkg.Syms.SetType(st.Name.Sym, structTyp)
 
 			var methodInfos []ir.StructMethodInfo
@@ -682,6 +737,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				if method.ThisSym != 0 {
 					pc.Pkg.Syms.SetType(method.ThisSym, structTyp)
 				}
+
 				for _, param := range fn.Params {
 					if param.Type != nil && param.Type.Typ != 0 {
 						pc.Pkg.Syms.SetType(param.Name.Sym, param.Type.Typ)
@@ -693,13 +749,16 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 						pc.Diag.Report(diag.ErrTypeInferenceFailed, param.Name.Span, fmt.Sprintf("method parameter '%s'", param.Name.Name))
 					}
 				}
+
 				returnType := ir.TypID(0)
 				if fn.ReturnType != nil {
 					returnType = fn.ReturnType.Typ
 				}
+
 				if returnType == 0 {
 					returnType = pc.Types.TypNone()
 				}
+
 				funcTyp := pc.Types.FuncOf(fn.Params, returnType)
 				pc.Pkg.Syms.SetType(fn.Name.Sym, funcTyp)
 				methodInfos = append(methodInfos, ir.StructMethodInfo{Name: fn.Name.Name, Sym: fn.Name.Sym, FuncTyp: funcTyp, IsShared: method.IsShared})
@@ -711,6 +770,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				if thisSym, found := pc.Pkg.Scopes.Lookup(ctorScope, "this"); found {
 					pc.Pkg.Syms.SetType(thisSym, structTyp)
 				}
+
 				for _, param := range ctor.Params {
 					if param.Type != nil && param.Type.Typ != 0 {
 						pc.Pkg.Syms.SetType(param.Name.Sym, param.Type.Typ)
@@ -721,10 +781,12 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 						pc.Pkg.Syms.SetType(param.Name.Sym, pc.Types.TypError())
 						pc.Diag.Report(diag.ErrTypeInferenceFailed, param.Name.Span, fmt.Sprintf("ctor parameter '%s'", param.Name.Name))
 					}
+
 					if param.Default != nil {
 						_ = p.synthesizeTypeFromExpr(pc, param.Default)
 					}
 				}
+
 				funcTyp := pc.Types.FuncOf(ctor.Params, structTyp)
 				pc.Pkg.Syms.SetType(ctor.Sym, funcTyp)
 				ctorInfos = append(ctorInfos, ir.StructCtorInfo{Sym: ctor.Sym, FuncTyp: funcTyp})
@@ -734,6 +796,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				if ref.Sym == 0 {
 					continue
 				}
+
 				symPkg := pc.Pkg
 				if ref.Qualifier != "" {
 					stScope, _ := pc.Pkg.Scopes.EnclosingScope(st.ID())
@@ -745,14 +808,17 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 						}
 					}
 				}
+
 				embedSym, ok := symPkg.Syms.GetByID(ref.Sym)
 				if !ok || embedSym.Typ == 0 {
 					continue
 				}
+
 				embedTy, ok := pc.Types.GetByID(embedSym.Typ)
 				if !ok || embedTy.Kind != ir.TK_Struct {
 					continue
 				}
+
 				for _, fld := range embedTy.StructFields {
 					promoted := fld
 					promoted.IsPromoted = true
@@ -761,6 +827,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 						structTy.StructFields = append(structTy.StructFields, promoted)
 					}
 				}
+
 				for _, m := range embedTy.StructMethods {
 					promoted := m
 					promoted.IsPromoted = true
@@ -780,32 +847,39 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					p.resolveStmts(pc, ir.BlockStmts(fn.Body))
 				}
 			}
+
 			for _, ctor := range st.Ctors {
 				if ctor.Body != nil {
 					p.resolveStmts(pc, ir.BlockStmts(ctor.Body))
 				}
 			}
+
 			var castInfos []ir.StructCastInfo
 			for _, cast := range st.Casts {
 				if cast.Param == nil {
 					continue
 				}
+
 				sourceTyp := ir.TypID(0)
 				if cast.Param.Type != nil && cast.Param.Type.Typ != 0 {
 					sourceTyp = cast.Param.Type.Typ
 				}
+
 				if cast.Param.Name.Sym != 0 && sourceTyp != 0 {
 					pc.Pkg.Syms.SetType(cast.Param.Name.Sym, sourceTyp)
 				}
+
 				returnTyp := structTyp
 				if cast.ReturnType != nil && cast.ReturnType.Typ != 0 {
 					returnTyp = cast.ReturnType.Typ
 				}
+
 				funcTyp := pc.Types.FuncOf([]*ir.FuncParam{cast.Param}, returnTyp)
 				pc.Pkg.Syms.SetType(cast.Sym, funcTyp)
 				if cast.Body != nil {
 					p.resolveStmts(pc, ir.BlockStmts(cast.Body))
 				}
+
 				if sourceTyp != 0 {
 					castInfos = append(castInfos, ir.StructCastInfo{
 						Sym:       cast.Sym,
@@ -814,43 +888,52 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					})
 				}
 			}
+
 			if len(castInfos) > 0 {
 				if structTy, ok := pc.Types.GetByID(structTyp); ok {
 					structTy.StructCasts = castInfos
 				}
 			}
+
 			hasToString := false
 			hasHashCode := false
 			for _, m := range methodInfos {
 				if m.Name == "toString" {
 					hasToString = true
 				}
+
 				if m.Name == "hashCode" {
 					hasHashCode = true
 				}
 			}
+
 			if !hasToString {
 				ft := pc.Types.FuncOf(nil, pc.Types.PrimString())
 				methodInfos = append(methodInfos, ir.StructMethodInfo{Name: "toString", FuncTyp: ft})
 			}
+
 			if !hasHashCode {
 				ft := pc.Types.FuncOf(nil, pc.Types.PrimInt())
 				methodInfos = append(methodInfos, ir.StructMethodInfo{Name: "hashCode", FuncTyp: ft})
 			}
+
 			for _, field := range st.Fields {
 				if !hasAnnotation(field.Annotations, "reactive") {
 					continue
 				}
+
 				fieldName := field.Name.Name
 				fieldTyp := ir.TypID(0)
 				if field.Type != nil {
 					fieldTyp = field.Type.Typ
 				}
+
 				exported := upperFirst(fieldName)
 				setParam := &ir.FuncParam{
 					Name: ir.NameRef{Name: "v"},
 					Type: &ir.TypeRef{Typ: fieldTyp},
 				}
+
 				setFt := pc.Types.FuncOf([]*ir.FuncParam{setParam}, pc.Types.TypNone())
 				methodInfos = append(methodInfos, ir.StructMethodInfo{
 					Name:    "set" + exported,
@@ -864,6 +947,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 						{Name: ir.NameRef{Name: "new"}, Type: &ir.TypeRef{Typ: fieldTyp}},
 					}, pc.Types.TypNone())},
 				}
+
 				obsFt := pc.Types.FuncOf([]*ir.FuncParam{obsParam}, obsFnReturnTyp)
 				methodInfos = append(methodInfos, ir.StructMethodInfo{
 					Name:    "observe" + exported,
@@ -876,18 +960,22 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				if impl.Sym == 0 {
 					continue
 				}
+
 				ifaceSym, ok := pc.Pkg.Syms.GetByID(impl.Sym)
 				if !ok {
 					continue
 				}
+
 				ifaceTy, ok := pc.Types.GetByID(ifaceSym.Typ)
 				if !ok || ifaceTy.Kind != ir.TK_Interface {
 					pc.Diag.Report(diag.ErrTypeMismatch, impl.Span, "interface", impl.Name)
 					continue
 				}
+
 				implementsList = append(implementsList, ifaceSym.Typ)
 				for _, want := range ifaceTy.InterfaceMethods {
 					match := ir.StructMethodInfo{}
+
 					hit := false
 					for _, m := range methodInfos {
 						if m.Name == want.Name {
@@ -896,28 +984,32 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 							break
 						}
 					}
+
 					if !hit {
 						pc.Diag.Report(diag.ErrInterfaceNotImplemented, st.Name.Span, st.Name.Name, impl.Name, want.Name)
 						continue
 					}
+
 					if pc.Types.GetFunctionSignatureKey(match.FuncTyp) != pc.Types.GetFunctionSignatureKey(want.FuncTyp) {
 						pc.Diag.Report(diag.ErrInterfaceMethodSigMismatch, st.Name.Span, st.Name.Name, want.Name, impl.Name)
 					}
+
 					if want.IsShared && !match.IsShared {
 						pc.Diag.Report(diag.ErrInterfaceSharedMethodNotShared, st.Name.Span, st.Name.Name, impl.Name, want.Name)
 					}
 				}
 			}
+
 			if structTy, ok := pc.Types.GetByID(structTyp); ok {
 				structTy.StructCtors = ctorInfos
 				structTy.StructMethods = methodInfos
 				structTy.StructImplements = implementsList
 			}
+
 		case *ir.EnumDeclStmt:
-			// Determine if this is a numeric enum (no payload fields) or a payload enum
+
 			isNumeric := len(st.Fields) == 0
 
-			// Compute ordinals and values
 			nextValue := int64(0)
 			var caseInfos []ir.EnumCaseInfo
 
@@ -933,7 +1025,6 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				})
 				nextValue++
 
-				// Type check case arguments against field types for payload enums
 				if !isNumeric {
 					for i, arg := range c.Args {
 						argType := p.synthesizeTypeFromExpr(pc, arg)
@@ -948,9 +1039,11 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 									if fieldTy != nil {
 										fieldKey = string(typeKeyDisplay(fieldTy))
 									}
+
 									if argTy != nil {
 										argKey = string(typeKeyDisplay(argTy))
 									}
+
 									pc.Diag.Report(diag.ErrTypeMismatch, arg.Span(), fieldKey, argKey)
 								}
 							}
@@ -959,37 +1052,35 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				}
 			}
 
-			// Build enum field info
 			var enumFields []ir.EnumFieldInfo
 			for _, field := range st.Fields {
 				fieldType := ir.TypID(0)
 				if field.Type != nil {
 					fieldType = field.Type.Typ
 				}
+
 				enumFields = append(enumFields, ir.EnumFieldInfo{
 					Name: field.Name.Name,
 					Type: fieldType,
 				})
 			}
 
-			// Create enum type
 			enumTyp := pc.Types.EnumOf(pc.Pkg.Path.String(), st.Name.Name, caseInfos, enumFields, isNumeric)
 			if enumTy, ok := pc.Types.GetByID(enumTyp); ok {
 				enumTy.EnumCases = caseInfos
 				enumTy.EnumFields = enumFields
 				enumTy.IsNumeric = isNumeric
 			}
+
 			pc.Pkg.Syms.SetType(st.Name.Sym, enumTyp)
 
-			// Set type for each case symbol
 			for _, c := range st.Cases {
 				pc.Pkg.Syms.SetType(c.Name.Sym, enumTyp)
 			}
 
-			// Type check methods and collect method info
 			var enumMethods []ir.EnumMethodInfo
 			for _, method := range st.Methods {
-				// Find and set the type for "this" in the method scope
+
 				methodScope, _ := pc.Pkg.Scopes.EnclosingScope(ir.BlockID(method.Body))
 				if thisSym, found := pc.Pkg.Scopes.Lookup(methodScope, "this"); found {
 					pc.Pkg.Syms.SetType(thisSym, enumTyp)
@@ -1030,7 +1121,6 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				funcTyp := pc.Types.FuncOf(method.Params, returnType)
 				pc.Pkg.Syms.SetType(method.Name.Sym, funcTyp)
 
-				// Collect method info
 				methodOrigName := method.Name.Name
 				enumMethods = append(enumMethods, ir.EnumMethodInfo{
 					Name: methodOrigName,
@@ -1038,7 +1128,6 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				})
 			}
 
-			// Update the enum type with method information
 			if enumTy, ok := pc.Types.GetByID(enumTyp); ok {
 				enumTy.EnumMethods = enumMethods
 			}
@@ -1050,11 +1139,13 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				p.synthesizeTypeFromExpr(pc, st.Value)
 				continue
 			}
+
 			recvSym, ok := pc.Pkg.Syms.GetByID(st.Receiver.Sym)
 			if !ok {
 				p.synthesizeTypeFromExpr(pc, st.Value)
 				continue
 			}
+
 			cur := recvSym.Typ
 			for _, fld := range st.Fields {
 				ty, ok := pc.Types.GetByID(cur)
@@ -1063,6 +1154,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					cur = pc.Types.TypError()
 					break
 				}
+
 				found := false
 				for _, sf := range ty.StructFields {
 					if sf.Name == fld.Name {
@@ -1071,21 +1163,25 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 						break
 					}
 				}
+
 				if !found {
 					pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("type %s has no field '%s'", ty.StructName, fld.Name))
 					cur = pc.Types.TypError()
 					break
 				}
 			}
+
 			if cur != 0 && cur != pc.Types.TypError() {
 				preTypeEmptyLiteralFromContext(pc.Types, st.Value, cur)
 			}
+
 			valTyp := p.synthesizeTypeFromExpr(pc, st.Value)
 			if cur != 0 && cur != pc.Types.TypError() {
 				if assignable, _ := isTypeAssignable(pc.Types, cur, valTyp); !assignable {
 					pc.Diag.Report(diag.ErrTypeMismatch, st.Span(), typeName(pc, cur), typeName(pc, valTyp))
 				}
 			}
+
 		case *ir.IndexAssignmentStmt:
 			tRecv := p.synthesizeTypeFromExpr(pc, st.Receiver)
 			tIdx := p.synthesizeTypeFromExpr(pc, st.Index)
@@ -1097,39 +1193,47 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					preTypeEmptyLiteralFromContext(pc.Types, st.Value, recvTy.ElemType)
 				}
 			}
+
 			tVal := p.synthesizeTypeFromExpr(pc, st.Value)
 			recvTy, ok := pc.Types.GetByID(tRecv)
 			if !ok {
 				continue
 			}
+
 			switch recvTy.Kind {
 			case ir.TK_Map:
 				if assignable, _ := isTypeAssignable(pc.Types, recvTy.KeyType, tIdx); !assignable {
 					pc.Diag.Report(diag.ErrTypeMismatch, st.Index.Span(), typeName(pc, recvTy.KeyType), typeName(pc, tIdx))
 				}
+
 				if assignable, _ := isTypeAssignable(pc.Types, recvTy.ValueType, tVal); !assignable {
 					pc.Diag.Report(diag.ErrTypeMismatch, st.Value.Span(), typeName(pc, recvTy.ValueType), typeName(pc, tVal))
 				}
+
 			case ir.TK_Slice, ir.TK_Array:
 				if tIdx != pc.Types.PrimInt() {
 					pc.Diag.Report(diag.ErrTypeMismatch, st.Index.Span(), "int", typeName(pc, tIdx))
 				}
+
 				if assignable, _ := isTypeAssignable(pc.Types, recvTy.ElemType, tVal); !assignable {
 					pc.Diag.Report(diag.ErrTypeMismatch, st.Value.Span(), typeName(pc, recvTy.ElemType), typeName(pc, tVal))
 				}
+
 			default:
 				pc.Diag.Report(diag.ErrTypeNotIndexable, st.Receiver.Span(), typeKeyDisplay(recvTy))
 			}
+
 		case *ir.MultiAssignmentStmt:
 			if len(st.Targets) == 1 && st.Targets[0].Name != nil && st.Targets[0].Name.Sym != 0 {
 				if tgtSym, ok := pc.Pkg.Syms.GetByID(st.Targets[0].Name.Sym); ok {
 					preTypeEmptyLiteralFromContext(pc.Types, st.Value, tgtSym.Typ)
 				}
 			}
+
 			tValue := p.synthesizeTypeFromExpr(pc, st.Value)
 
 			if len(st.Targets) == 1 {
-				// Single-target multi-assignment is just an ordinary assignment; no tuple destructuring expected. ANTLR's MultiAssignmentExprStmt alternative absorbs the single-target form, so we degrade gracefully here instead of forcing a tuple value.
+
 				break
 			}
 
@@ -1143,6 +1247,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 						fmt.Sprintf("got %d values", len(tupleTyp.Fields)))
 				}
 			}
+
 		case *ir.IfStmt:
 			tCond := p.synthesizeTypeFromExpr(pc, st.Cond)
 			if tCond != pc.Types.PrimBool() {
@@ -1158,34 +1263,42 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				if tCond != pc.Types.PrimBool() {
 					pc.Diag.Report(diag.ErrTypeMismatch, eb.Cond.Span(), "bool", typeName(pc, tCond))
 				}
+
 				ebThen, _ := p.detectNoneNarrowing(pc, eb.Cond)
 				p.withNarrowedTypes(pc, ebThen, func() {
 					p.resolveStmts(pc, ir.BlockStmts(eb.Then))
 				})
 			}
+
 			if st.Else != nil {
 				p.withNarrowedTypes(pc, elseNarrow, func() {
 					p.resolveStmts(pc, ir.BlockStmts(st.Else))
 				})
 			}
+
 		case *ir.SwitchStmt:
 			if st.Expr != nil {
 				p.synthesizeTypeFromExpr(pc, st.Expr)
 			}
+
 			for _, cs := range st.Cases {
 				for _, ce := range cs.Values {
 					p.synthesizeTypeFromExpr(pc, ce)
 				}
+
 				p.resolveStmts(pc, cs.Stmts)
 			}
+
 			if st.Default != nil {
 				p.resolveStmts(pc, st.Default)
 			}
+
 		case *ir.ReturnStmt:
 			for i, result := range st.Results {
 				if p.currentReturnTyp != 0 {
 					preTypeEmptyLiteralFromContext(pc.Types, result, p.currentReturnTyp)
 				}
+
 				rt := p.synthesizeTypeFromExpr(pc, result)
 				if p.currentReturnTyp != 0 && rt != 0 && rt != p.currentReturnTyp {
 					if assignable, _ := isTypeAssignable(pc.Types, p.currentReturnTyp, rt); !assignable {
@@ -1195,6 +1308,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					}
 				}
 			}
+
 		case *ir.GuardStmt:
 			tCond := p.synthesizeTypeFromExpr(pc, st.Cond)
 			if tCond != pc.Types.PrimBool() && !pc.Types.IsTypeOfKind(tCond, ir.TK_Option) {
@@ -1211,13 +1325,13 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					pc.Pkg.Syms.SetType(vr.Ref.Sym, tCondType.ElemType)
 					defer pc.Pkg.Syms.SetType(vr.Ref.Sym, oldTyp)
 
-					/*s.Se(tCondType.ElemType) // Unwrap the option type*/
 				}
 			}
 
 			for _, ret := range st.Returns {
 				p.synthesizeTypeFromExpr(pc, ret)
 			}
+
 		case *ir.ForStmt:
 			if st.CondInt != nil {
 				if st.CondInt.Init != nil {
@@ -1229,12 +1343,14 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 						pc.Diag.Report(diag.ErrTypeMismatch, st.CondInt.Init.Span(), typeKeyDisplay(exTy), typeKeyDisplay(tiTy))
 					}
 				}
+
 				if st.CondInt.Cond != nil {
 					tCond := p.synthesizeTypeFromExpr(pc, st.CondInt.Cond)
 					if tCond != pc.Types.PrimBool() {
 						pc.Diag.Report(diag.ErrTypeMismatch, st.CondInt.Cond.Span(), "bool", typeName(pc, tCond))
 					}
 				}
+
 				if st.CondInt.Post != nil {
 					p.synthesizeTypeFromExpr(pc, st.CondInt.Post)
 				}
@@ -1259,6 +1375,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					} else {
 						pc.Diag.Report(diag.ErrTypeMismatch, st.CondIn.IterExpr.Span(), "iterable type", typeKeyDisplay(iterTy))
 					}
+
 				default:
 					pc.Diag.Report(diag.ErrTypeMismatch, st.CondIn.IterExpr.Span(), "iterable type", typeKeyDisplay(iterTy))
 				}
@@ -1312,74 +1429,90 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 			if st.Body != nil {
 				p.resolveStmts(pc, ir.BlockStmts(st.Body))
 			}
+
 		case *ir.GroupDeclStmt:
 			p.resolveStmts(pc, st.Body)
 		case *ir.SetupStmt:
 			if st.Body != nil {
 				p.resolveStmts(pc, ir.BlockStmts(st.Body))
 			}
+
 		case *ir.TeardownStmt:
 			if st.Body != nil {
 				p.resolveStmts(pc, ir.BlockStmts(st.Body))
 			}
+
 		case *ir.AssertStmt:
 			_ = p.synthesizeTypeFromExpr(pc, st.Expr)
 		case *ir.AsSessionStmt:
 			if st.Body != nil {
 				p.resolveStmts(pc, ir.BlockStmts(st.Body))
 			}
+
 		case *ir.GoStmt:
 			if st.Body != nil {
 				p.resolveStmts(pc, ir.BlockStmts(st.Body))
 			}
+
 			if st.Call != nil {
 				_ = p.synthesizeTypeFromExpr(pc, st.Call)
 			}
+
 		case *ir.DeferStmt:
 			if st.Body != nil {
 				p.resolveStmts(pc, ir.BlockStmts(st.Body))
 			}
+
 			if st.Call != nil {
 				_ = p.synthesizeTypeFromExpr(pc, st.Call)
 			}
+
 		case *ir.SelectStmt:
 			for _, cc := range st.Cases {
 				if cc.ChanExpr != nil {
 					_ = p.synthesizeTypeFromExpr(pc, cc.ChanExpr)
 				}
+
 				if cc.SendValue != nil {
 					_ = p.synthesizeTypeFromExpr(pc, cc.SendValue)
 				}
+
 				if cc.Kind == ir.SelectCaseRecvBind {
 					chTy := ir.TypID(0)
 					if cc.ChanExpr != nil {
 						chTy = cc.ChanExpr.GetType()
 					}
+
 					var elemTyp ir.TypID
 					if ty, ok := pc.Types.GetByID(chTy); ok && ty.Kind == ir.TK_Chan {
 						elemTyp = ty.ElemType
 					}
+
 					for i := range cc.Targets {
 						tgt := &cc.Targets[i]
 						if tgt.Name == nil {
 							continue
 						}
+
 						var bindTyp ir.TypID
 						if i == 0 {
 							bindTyp = elemTyp
 						} else {
 							bindTyp = pc.Types.PrimBool()
 						}
+
 						pc.Pkg.Syms.SetType(tgt.Name.Sym, bindTyp)
 						if tgt.TypeAnn == nil {
 							tgt.TypeAnn = &ir.TypeRef{Typ: bindTyp}
 						}
 					}
 				}
+
 				if cc.Body != nil {
 					p.resolveStmts(pc, ir.BlockStmts(cc.Body))
 				}
 			}
+
 			if st.Default != nil {
 				p.resolveStmts(pc, st.Default.Stmts)
 			}
@@ -1391,6 +1524,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 	if ir.IsNilExpr(expr) {
 		return 0
 	}
+
 	tt := pc.Types
 	sa := pc.Pkg.Syms
 	switch x := expr.(type) {
@@ -1412,7 +1546,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 			if returnType == 0 {
 				returnType = tRet
 			} else if ok, _ := isTypeAssignable(tt, returnType, tRet); !ok {
-				returnType = tt.PrimAny() // If types are not assignable, use 'any' type
+				returnType = tt.PrimAny()
 			}
 		}
 
@@ -1420,7 +1554,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 		if returnType == 0 {
 			returnType = tDef
 		} else if ok, _ := isTypeAssignable(tt, returnType, tDef); !ok {
-			returnType = tt.PrimAny() // If types are not assignable, use 'any' type
+			returnType = tt.PrimAny()
 		}
 
 		x.SetType(returnType)
@@ -1429,37 +1563,42 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 	case *ir.UnaryExpr:
 		t := p.synthesizeTypeFromExpr(pc, x.Expr)
 		switch x.Op {
-		case ir.OpLNot: // !
+		case ir.OpLNot:
 			if t != tt.PrimBool() {
 				pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "bool", typeName(pc, t))
 				t = tt.TypError()
 			}
+
 			x.SetType(tt.PrimBool())
 			return tt.PrimBool()
-		case ir.OpAdd, ir.OpSub: // +x, -x
+		case ir.OpAdd, ir.OpSub:
 			if t != tt.PrimInt() && t != tt.PrimFloat() {
 				pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "int or float", typeName(pc, t))
 				t = tt.TypError()
 			}
+
 			x.SetType(t)
 			return t
-		case ir.OpNot: // ~ (bitwise not)
+		case ir.OpNot:
 			if t != tt.PrimInt() {
 				pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "int", typeName(pc, t))
 				t = tt.TypError()
 			}
+
 			x.SetType(t)
 			return t
 		default:
 			x.SetType(tt.TypError())
 			return tt.TypError()
 		}
+
 	case *ir.PrefixUnaryExpr:
 		t := p.synthesizeTypeFromExpr(pc, x.Expr)
 		if t != tt.PrimInt() && t != tt.PrimFloat() {
 			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "int or float", typeName(pc, t))
 			t = tt.TypError()
 		}
+
 		x.SetType(t)
 		return t
 
@@ -1469,6 +1608,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "int or float", typeName(pc, t))
 			t = tt.TypError()
 		}
+
 		x.SetType(t)
 		return t
 	case *ir.BinaryExpr:
@@ -1490,25 +1630,30 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 		}
 
 		isNum := func(t ir.TypID) bool { return t == tt.PrimInt() || t == tt.PrimFloat() || t == tt.PrimByte() }
+
 		commonNum := func(a, b ir.TypID) (ir.TypID, bool) {
 			if a == b && isNum(a) {
 				return a, true
 			}
+
 			if isNum(a) && isNum(b) {
 				if a == tt.PrimFloat() || b == tt.PrimFloat() {
 					return tt.PrimFloat(), true
 				}
+
 				return tt.PrimInt(), true
 			}
+
 			return 0, false
 		}
 
 		switch x.Op {
 		case ir.OpAdd, ir.OpSub, ir.OpMul, ir.OpDiv:
-			if x.Op == ir.OpAdd && l == tt.PrimString() || r == tt.PrimString() { // string concatenation
+			if x.Op == ir.OpAdd && l == tt.PrimString() || r == tt.PrimString() {
 				x.SetType(tt.PrimString())
 				return tt.PrimString()
 			}
+
 			if x.Op == ir.OpAdd {
 				if lTy, lok := tt.GetByID(l); lok && lTy.Kind == ir.TK_Slice {
 					if rTy, rok := tt.GetByID(r); rok && rTy.Kind == ir.TK_Slice {
@@ -1516,6 +1661,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 							x.SetType(l)
 							return l
 						}
+
 						if ok, _ := isTypeAssignable(tt, rTy.ElemType, lTy.ElemType); ok {
 							x.SetType(r)
 							return r
@@ -1523,10 +1669,12 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 					}
 				}
 			}
+
 			if t, ok := commonNum(l, r); ok {
 				x.SetType(t)
 				return t
 			}
+
 			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "numeric (int or float)", typeName(pc, l)+", "+typeName(pc, r))
 			x.SetType(tt.TypError())
 			return tt.TypError()
@@ -1536,6 +1684,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				x.SetType(tt.PrimInt())
 				return tt.PrimInt()
 			}
+
 			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "int % int", typeName(pc, l)+", "+typeName(pc, r))
 			x.SetType(tt.TypError())
 			return tt.TypError()
@@ -1545,6 +1694,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				x.SetType(tt.PrimInt())
 				return tt.PrimInt()
 			}
+
 			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "int (bitwise)", typeName(pc, l)+", "+typeName(pc, r))
 			x.SetType(tt.TypError())
 			return tt.TypError()
@@ -1554,6 +1704,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				x.SetType(tt.PrimInt())
 				return tt.PrimInt()
 			}
+
 			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "int << int / int >> int", typeName(pc, l)+", "+typeName(pc, r))
 			x.SetType(tt.TypError())
 			return tt.TypError()
@@ -1563,6 +1714,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				x.SetType(tt.PrimBool())
 				return tt.PrimBool()
 			}
+
 			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "bool && bool / bool || bool", typeName(pc, l)+", "+typeName(pc, r))
 			x.SetType(tt.TypError())
 			return tt.TypError()
@@ -1572,14 +1724,17 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				x.SetType(tt.PrimBool())
 				return tt.PrimBool()
 			}
+
 			if okAB, _ := isTypeAssignable(tt, l, r); okAB {
 				x.SetType(tt.PrimBool())
 				return tt.PrimBool()
 			}
+
 			if okBA, _ := isTypeAssignable(tt, r, l); okBA {
 				x.SetType(tt.PrimBool())
 				return tt.PrimBool()
 			}
+
 			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "comparable types for ==", typeName(pc, l)+", "+typeName(pc, r))
 			x.SetType(tt.TypError())
 			return tt.TypError()
@@ -1589,6 +1744,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				x.SetType(tt.PrimBool())
 				return tt.PrimBool()
 			}
+
 			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "numeric comparison", typeName(pc, l)+", "+typeName(pc, r))
 			x.SetType(tt.TypError())
 			return tt.TypError()
@@ -1598,6 +1754,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 			x.SetType(tt.TypError())
 			return tt.TypError()
 		}
+
 	case *ir.CoalesceExpr:
 		tLeft := p.synthesizeTypeFromExpr(pc, x.Left)
 		tDefault := p.synthesizeTypeFromExpr(pc, x.Default)
@@ -1633,21 +1790,26 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 
 		if t, ok := func() (ir.TypID, bool) {
 			isNum := func(t ir.TypID) bool { return t == tt.PrimInt() || t == tt.PrimFloat() }
+
 			if isNum(tThen) && isNum(tElse) {
 				if tThen == tElse {
 					return tThen, true
 				}
+
 				return tt.PrimFloat(), true
 			}
+
 			return 0, false
 		}(); ok {
 			x.SetType(t)
 			return t
 		}
+
 		if ok, _ := isTypeAssignable(tt, tThen, tElse); ok {
 			x.SetType(tElse)
 			return tElse
 		}
+
 		if ok, _ := isTypeAssignable(tt, tElse, tThen); ok {
 			x.SetType(tThen)
 			return tThen
@@ -1667,7 +1829,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 			x.SetType(srcInfo.ElemType)
 			return srcInfo.ElemType
 		}
-		// Flow-sensitive narrowing or an already-unwrapped value: postfix `!` is a harmless no-op so users don't have to track which branch unwrapped what.
+
 		x.IsNoOp = true
 		x.SetType(srcTy)
 		return srcTy
@@ -1677,6 +1839,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 			x.SetType(tt.TypError())
 			return tt.TypError()
 		}
+
 		dstTy := x.Target.Typ
 		if srcTy != 0 {
 			if srcInfo, ok := tt.GetByID(srcTy); ok && srcInfo.Kind == ir.TK_Option {
@@ -1687,6 +1850,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				}
 			}
 		}
+
 		if srcTy != 0 && srcTy != tt.PrimAny() && dstTy != tt.PrimAny() && srcTy != dstTy {
 			if !isPrimitiveConversionAllowed(tt, srcTy, dstTy) && !isHandleWrapperCast(tt, srcTy, dstTy) {
 				if ok, _ := isTypeAssignable(tt, dstTy, srcTy); !ok {
@@ -1698,11 +1862,13 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				}
 			}
 		}
+
 		if x.Safe {
 			t := tt.OptionOf(dstTy)
 			x.SetType(t)
 			return t
 		}
+
 		x.SetType(dstTy)
 		return dstTy
 	case *ir.InstanceofExpr:
@@ -1714,6 +1880,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 		if !ok {
 			return tt.TypError()
 		}
+
 		preTypeEmptyLiteralFromContext(tt, x.Right, leftSym.Typ)
 		tRight := p.synthesizeTypeFromExpr(pc, x.Right)
 		if ok, _ := isTypeAssignable(tt, leftSym.Typ, tRight); ok {
@@ -1742,6 +1909,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				pc.Diag.Report(diag.ErrTypeMismatch, x.Index.Span(), "int", tIndexTy)
 				return tt.TypError()
 			}
+
 			x.SetType(baseTy.ElemType)
 			return baseTy.ElemType
 		case ir.TK_Map:
@@ -1749,6 +1917,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				pc.Diag.Report(diag.ErrTypeMismatch, x.Index.Span(), baseTy.KeyType, tIndexTy)
 				return tt.TypError()
 			}
+
 			x.SetType(baseTy.ValueType)
 			return baseTy.ValueType
 		case ir.TK_PrimitiveString:
@@ -1756,22 +1925,25 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				pc.Diag.Report(diag.ErrTypeMismatch, x.Index.Span(), "int", tIndexTy)
 				return tt.TypError()
 			}
+
 			x.SetType(tt.PrimByte())
 			return tt.PrimByte()
 		case ir.TK_PrimitiveAny:
-			// Indexing into `any` is allowed — the value is a runtime-typed bag (typically a json.decode result). Result is itself `any`; the index type is unconstrained because we don't know whether the underlying value is a map (string key) or a slice (int key). Runtime panics on a bad shape; callers that want compile-time safety should still cast `value as map<string, any>` (or whichever concrete shape they expect) first.
+
 			x.SetType(tt.PrimAny())
 			return tt.PrimAny()
 		default:
 			pc.Diag.Report(diag.ErrTypeNotIndexable, x.Expr.Span(), typeKeyDisplay(baseTy))
 			return tt.TypError()
 		}
+
 	case *ir.SliceRangeExpr:
 		tBase := p.synthesizeTypeFromExpr(pc, x.Expr)
 		baseTy, ok := tt.GetByID(tBase)
 		if !ok {
 			return tt.TypError()
 		}
+
 		if x.Low != nil {
 			tLow := p.synthesizeTypeFromExpr(pc, x.Low)
 			if tLow != tt.PrimInt() {
@@ -1779,6 +1951,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				return tt.TypError()
 			}
 		}
+
 		if x.High != nil {
 			tHigh := p.synthesizeTypeFromExpr(pc, x.High)
 			if tHigh != tt.PrimInt() {
@@ -1786,6 +1959,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				return tt.TypError()
 			}
 		}
+
 		switch baseTy.Kind {
 		case ir.TK_Slice:
 			x.SetType(tBase)
@@ -1801,6 +1975,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 			pc.Diag.Report(diag.ErrTypeNotIndexable, x.Expr.Span(), typeKeyDisplay(baseTy))
 			return tt.TypError()
 		}
+
 	case *ir.FieldAccessExpr:
 		var pkgQualifiedStartField int
 		var pkgQualifiedCur ir.TypID
@@ -1812,35 +1987,40 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 					x.SetType(tt.TypError())
 					return tt.TypError()
 				}
+
 				memberSym, found := targetPkg.Scopes.LookupOnlyCurrent(targetPkg.Root, x.Fields[0].Name)
 				if !found {
 					pc.Diag.Report(diag.ErrUndeclaredSymbol, x.Fields[0].Span, recvSym.PackagePath+"."+x.Fields[0].Name)
 					x.SetType(tt.TypError())
 					return tt.TypError()
 				}
+
 				if isPackagePrivateName(x.Fields[0].Name) && targetPkg != pc.Pkg {
 					pc.Diag.Report(diag.ErrPrivateSymbolAccess, x.Fields[0].Span, x.Fields[0].Name, recvSym.PackagePath)
 					x.SetType(tt.TypError())
 					return tt.TypError()
 				}
+
 				memberInfo, _ := targetPkg.Syms.GetByID(memberSym)
 				if len(x.Fields) == 1 {
 					x.ResolvedSym = memberSym
 					x.SetType(memberInfo.Typ)
 					return memberInfo.Typ
 				}
-				
+
 				x.ResolvedSym = memberSym
 				pkgQualifiedStartField = 1
 				pkgQualifiedCur = memberInfo.Typ
 			}
 		}
+
 		var cur ir.TypID
 		if pkgQualifiedStartField > 0 {
 			cur = pkgQualifiedCur
 		} else {
 			cur = p.synthesizeTypeFromExpr(pc, x.Expr)
 		}
+
 		fieldsToWalk := x.Fields[pkgQualifiedStartField:]
 		for _, fld := range fieldsToWalk {
 			ty, ok := tt.GetByID(cur)
@@ -1849,11 +2029,13 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				x.SetType(tt.TypError())
 				return tt.TypError()
 			}
+
 			switch ty.Kind {
 			case ir.TK_Chan:
 				switch fld.Name {
 				case "send":
 					sendParam := &ir.FuncParam{Name: ir.NameRef{Name: "v"}, Type: &ir.TypeRef{Typ: ty.ElemType}}
+
 					cur = tt.AsyncFuncOf([]*ir.FuncParam{sendParam}, tt.TypNone())
 				case "recv":
 					tupleTyp := tt.TupleOf(
@@ -1868,6 +2050,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 					x.SetType(tt.TypError())
 					return tt.TypError()
 				}
+
 			case ir.TK_Map:
 				if ty.KeyType != tt.PrimString() && ty.KeyType != tt.PrimAny() {
 					ktName := typeName(pc, ty.KeyType)
@@ -1875,6 +2058,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 					x.SetType(tt.TypError())
 					return tt.TypError()
 				}
+
 				cur = ty.ValueType
 
 			case ir.TK_Struct:
@@ -1885,10 +2069,12 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 						if sf.Private && !fieldAccessIsThroughThis(pc, x.Expr) {
 							pc.Diag.Report(diag.ErrPrivateFieldAccess, fld.Span, fld.Name, ty.StructName, fld.Name)
 						}
+
 						cur = sf.Type
 						break
 					}
 				}
+
 				if !found {
 					if x.MethodSym != 0 {
 						for _, m := range ty.StructMethods {
@@ -1899,6 +2085,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 							}
 						}
 					}
+
 					if !found {
 						for _, m := range ty.StructMethods {
 							if m.Name == fld.Name {
@@ -1909,6 +2096,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 						}
 					}
 				}
+
 				if !found {
 					pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("type %s has no field or method '%s'", ty.StructName, fld.Name))
 					x.SetType(tt.TypError())
@@ -1924,6 +2112,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 						break
 					}
 				}
+
 				if !found {
 					pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("interface %s has no method '%s'", ty.InterfaceName, fld.Name))
 					x.SetType(tt.TypError())
@@ -1974,6 +2163,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				return tt.TypError()
 			}
 		}
+
 		x.SetType(cur)
 		return cur
 	case *ir.VarRef:
@@ -1988,11 +2178,13 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				}
 			}
 		}
+
 		s, ok := symPkg.Syms.GetByID(x.Ref.Sym)
 		if !ok {
 			pc.Diag.Report(diag.ErrUndeclaredSymbol, x.Span(), x.Ref.Name)
 			return tt.TypError()
 		}
+
 		x.SetType(s.Typ)
 		return s.Typ
 	case *ir.RangeExpr:
@@ -2056,6 +2248,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 						candidates = append(candidates, m.Sym)
 					}
 				}
+
 				if len(candidates) > 1 {
 					best := p.resolveOverload(pc, candidates, prelimArgTypes)
 					if best != 0 {
@@ -2103,6 +2296,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 						x.SetType(tt.TypError())
 						return tt.TypError()
 					}
+
 					reorderedArgs[positionalIndex] = arg
 					used[i] = true
 					positionalIndex++
@@ -2121,11 +2315,13 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 						break
 					}
 				}
+
 				if paramIndex == -1 {
 					pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), typeKeyDisplay(funcTyDef), fmt.Sprintf("unknown parameter name '%s'", arg.Name))
 					x.SetType(tt.TypError())
 					return tt.TypError()
 				}
+
 				if reorderedArgs[paramIndex].Expr != nil {
 					pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), typeKeyDisplay(funcTyDef), fmt.Sprintf("parameter '%s' specified multiple times", arg.Name))
 					x.SetType(tt.TypError())
@@ -2184,6 +2380,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 		if x.ReturnType != nil {
 			retTyp = x.ReturnType.Typ
 		}
+
 		funcTyp := pc.Types.FuncOf(x.Params, retTyp)
 		x.SetType(funcTyp)
 
@@ -2219,21 +2416,24 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 			for _, el := range x.Elems {
 				_ = p.synthesizeTypeFromExpr(pc, el)
 			}
+
 			return existing
 		}
+
 		if len(x.Elems) == 0 {
 			t := tt.SliceOf(tt.PrimAny())
 			x.SetType(t)
 			return t
 		}
+
 		et := p.synthesizeTypeFromExpr(pc, x.Elems[0])
 		for i := 1; i < len(x.Elems); i++ {
 			et2 := p.synthesizeTypeFromExpr(pc, x.Elems[i])
 			if ok, _ := isTypeAssignable(tt, et, et2); !ok {
-				et = tt.PrimAny() // If types are not assignable, use 'any' type
+				et = tt.PrimAny()
 				break
 			} else {
-				et = et2 // Keep the type consistent
+				et = et2
 			}
 		}
 
@@ -2246,27 +2446,31 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				_ = p.synthesizeTypeFromExpr(pc, entry.Key)
 				_ = p.synthesizeTypeFromExpr(pc, entry.Value)
 			}
+
 			return existing
 		}
+
 		if len(x.Entries) == 0 {
-			// Empty map literal has no value-driven element type. Return `map<any, any>` so it is assignable to any target map shape - the assignment site (var decl init or call arg) provides the actual element types.
+
 			t := tt.MapOf(tt.PrimAny(), tt.PrimAny())
 			x.SetType(t)
 			return t
 		}
+
 		kt := p.synthesizeTypeFromExpr(pc, x.Entries[0].Key)
 		vt := p.synthesizeTypeFromExpr(pc, x.Entries[0].Value)
 		for _, entry := range x.Entries[1:] {
 			kt2 := p.synthesizeTypeFromExpr(pc, entry.Key)
 			vt2 := p.synthesizeTypeFromExpr(pc, entry.Value)
 			if ok, _ := isTypeAssignable(tt, kt, kt2); !ok {
-				kt = tt.PrimAny() // If key types are not assignable, use 'any' type
+				kt = tt.PrimAny()
 			}
 
 			if ok, _ := isTypeAssignable(tt, vt, vt2); !ok {
-				vt = tt.PrimAny() // If value types are not assignable, use 'any' type
+				vt = tt.PrimAny()
 			}
 		}
+
 		t := tt.MapOf(kt, vt)
 		x.SetType(t)
 		return t
@@ -2274,11 +2478,13 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 		if len(x.Elems) == 0 {
 			return tt.TypError()
 		}
+
 		fields := make([]ir.TupleField, len(x.Elems))
 		for i, el := range x.Elems {
 			et := p.synthesizeTypeFromExpr(pc, el)
 			fields[i] = ir.TupleField{Type: et}
 		}
+
 		t := tt.TupleOf(fields...)
 		x.SetType(t)
 		return t
@@ -2288,6 +2494,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				p.synthesizeTypeFromExpr(pc, part.Expr)
 			}
 		}
+
 		t := tt.PrimString()
 		x.SetType(t)
 		return t
@@ -2298,6 +2505,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				return sessionTyp
 			}
 		}
+
 		pc.Diag.Report(diag.ErrSessionOutsideWired, x.Span())
 		x.SetType(tt.TypError())
 		return tt.TypError()
@@ -2306,12 +2514,14 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 			x.SetType(tt.TypError())
 			return tt.TypError()
 		}
+
 		if x.Capacity != nil {
 			capTy := p.synthesizeTypeFromExpr(pc, x.Capacity)
 			if capTy != tt.PrimInt() && capTy != tt.PrimAny() {
 				pc.Diag.Report(diag.ErrTypeMismatch, x.Capacity.Span(), "int", typeName(pc, capTy))
 			}
 		}
+
 		chTyp := tt.ChanOf(x.ElemType.Typ)
 		x.SetType(chTyp)
 		return chTyp
@@ -2320,10 +2530,12 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 		for i, arg := range x.Args {
 			argTypes[i] = p.synthesizeTypeFromExpr(pc, arg.Expr)
 		}
+
 		if x.TypeName.Sym == 0 {
 			x.SetType(tt.TypError())
 			return tt.TypError()
 		}
+
 		symPkg := pc.Pkg
 		if x.Qualifier != "" {
 			scope, _ := pc.Pkg.Scopes.EnclosingScope(x.ID())
@@ -2335,21 +2547,25 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				}
 			}
 		}
+
 		sym, ok := symPkg.Syms.GetByID(x.TypeName.Sym)
 		if !ok || sym.Typ == 0 {
 			x.SetType(tt.TypError())
 			return tt.TypError()
 		}
+
 		ty, ok := tt.GetByID(sym.Typ)
 		if !ok || ty.Kind != ir.TK_Struct {
 			pc.Diag.Report(diag.ErrTypeMismatch, x.TypeName.Span, "user-defined type", x.TypeName.Name)
 			x.SetType(tt.TypError())
 			return tt.TypError()
 		}
+
 		if x.CtorSym != 0 {
 			x.SetType(sym.Typ)
 			return sym.Typ
 		}
+
 		typeArgSub := buildTypeArgSubstitution(ty.TypeParams, x.TypeArgs)
 		if len(x.Args) > 0 {
 			matchedSym := ir.SymID(0)
@@ -2360,26 +2576,31 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 				if !ok {
 					continue
 				}
+
 				params := substituteFuncParams(tt, ftDef.ParamTypes, typeArgSub)
 				resolved, ok := resolveCallArgs(tt, params, x.Args, argTypes)
 				if !ok {
 					continue
 				}
+
 				score := 0
 				for _, p := range params {
 					if p == nil || p.Type == nil {
 						continue
 					}
+
 					if p.Type.Typ != tt.PrimAny() {
 						score++
 					}
 				}
+
 				if score > bestScore {
 					bestScore = score
 					matchedSym = ci.Sym
 					matchedArgs = resolved
 				}
 			}
+
 			if matchedSym == 0 {
 				pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), "constructor", x.TypeName.Name)
 			} else {
@@ -2389,22 +2610,27 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 						if ci.Sym != matchedSym {
 							continue
 						}
+
 						if ftDef, ok := tt.GetByID(ci.FuncTyp); ok {
 							for j := range x.Args {
 								if x.Args[j].Expr == nil || j >= len(ftDef.ParamTypes) || ftDef.ParamTypes[j] == nil || ftDef.ParamTypes[j].Type == nil {
 									continue
 								}
+
 								erased := eraseTypeParams(tt, ftDef.ParamTypes[j].Type.Typ)
 								applyCodegenLiteralHint(tt, x.Args[j].Expr, erased)
 							}
 						}
+
 						_ = i
 						break
 					}
 				}
 			}
+
 			x.CtorSym = matchedSym
 		}
+
 		x.SetType(sym.Typ)
 		return sym.Typ
 	case *ir.ComposableCallExpr:
@@ -2422,6 +2648,7 @@ func (p *PassInferTypes) synthesizeComposableCallType(pc *PassContext, x *ir.Com
 		x.SetType(tt.TypError())
 		return tt.TypError()
 	}
+
 	symPkg := composableCalleePkg(pc, x.Callee)
 	sym, ok := symPkg.Syms.GetByID(calleeSym)
 	if !ok || sym.Typ == 0 {
@@ -2429,20 +2656,24 @@ func (p *PassInferTypes) synthesizeComposableCallType(pc *PassContext, x *ir.Com
 		x.SetType(tt.TypError())
 		return tt.TypError()
 	}
+
 	ty, ok := tt.GetByID(sym.Typ)
 	if !ok || ty.Kind != ir.TK_Struct || !ty.IsComposable {
 		pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "composable type", sym.Name)
 		x.SetType(tt.TypError())
 		return tt.TypError()
 	}
+
 	if x.CtorSym != 0 {
 		x.SetType(sym.Typ)
 		return sym.Typ
 	}
+
 	argTypes := make([]ir.TypID, len(x.Args))
 	for i, arg := range x.Args {
 		argTypes[i] = p.synthesizeTypeFromExpr(pc, arg.Expr)
 	}
+
 	if len(x.Args) > 0 || len(ty.StructCtors) > 0 {
 		matchedSym := ir.SymID(0)
 		var matchedArgs []ir.FuncCallArg
@@ -2451,22 +2682,28 @@ func (p *PassInferTypes) synthesizeComposableCallType(pc *PassContext, x *ir.Com
 			if !ok {
 				continue
 			}
+
 			resolved, ok := resolveCallArgs(tt, ftDef.ParamTypes, x.Args, argTypes)
 			if !ok {
 				continue
 			}
+
 			matchedSym = ci.Sym
 			matchedArgs = resolved
 			break
 		}
+
 		if matchedSym == 0 && len(x.Args) > 0 {
 			pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), "constructor", sym.Name)
 		}
+
 		if matchedArgs != nil {
 			x.Args = matchedArgs
 		}
+
 		x.CtorSym = matchedSym
 	}
+
 	for i := range x.Children {
 		child := &x.Children[i]
 		if child.Expr != nil {
@@ -2475,16 +2712,17 @@ func (p *PassInferTypes) synthesizeComposableCallType(pc *PassContext, x *ir.Com
 				child.Expr = wrapped
 			}
 		}
+
 		if child.Stmt != nil {
 			p.resolveStmts(pc, []ir.Stmt{child.Stmt})
 		}
 	}
+
 	x.TargetTyp = sym.Typ
 	x.SetType(sym.Typ)
 	return sym.Typ
 }
 
-// composableCalleeSym extracts the type-symbol id from the callee of a composable call. The callee is typically a bare identifier (VarRef) or a qualified reference (FieldAccessExpr with cross-package resolution). Returns 0 if the callee shape doesn't yield a symbol the pass can resolve to a type.
 func composableCalleeSym(callee ir.Expr) ir.SymID {
 	switch c := callee.(type) {
 	case *ir.VarRef:
@@ -2494,16 +2732,17 @@ func composableCalleeSym(callee ir.Expr) ir.SymID {
 			return c.ResolvedSym
 		}
 	}
+
 	return 0
 }
 
-// composableCalleePkg returns the PackageContext that owns the callee's symbol arena. For locally-declared composables this is the current package; for cross-package references reached via `using` (or qualified `pkg.X`), it is the imported target package.
 func composableCalleePkg(pc *PassContext, callee ir.Expr) *ir.PackageContext {
 	switch c := callee.(type) {
 	case *ir.VarRef:
 		if c.Ref.Qualifier == "" {
 			return pc.Pkg
 		}
+
 		scope, _ := pc.Pkg.Scopes.EnclosingScope(c.ID())
 		if qSym, ok := pc.Pkg.Scopes.Lookup(scope, c.Ref.Qualifier); ok {
 			if pkgSym, found := pc.Pkg.Syms.GetByID(qSym); found && pkgSym.Kind == ir.SK_Package {
@@ -2512,25 +2751,29 @@ func composableCalleePkg(pc *PassContext, callee ir.Expr) *ir.PackageContext {
 				}
 			}
 		}
+
 	case *ir.FieldAccessExpr:
-		// FieldAccessExpr already resolves cross-package via ResolvedSym; the inference pass should have stamped its target package elsewhere. Fall through to current package as a safe default.
+
 	}
+
 	return pc.Pkg
 }
 
-// maybeInsertComposableCast wraps a non-composable child expression in a cast call when exactly one composable type in scope offers `cast(childType): Self`. The wrapped expression is returned for the caller to swap into the child slot. Returns nil when no cast is needed (child already composable) or when no/multiple matches exist.
 func (p *PassInferTypes) maybeInsertComposableCast(pc *PassContext, child ir.Expr, childTyp ir.TypID) ir.Expr {
 	if childTyp == 0 {
 		return nil
 	}
+
 	if ty, ok := pc.Types.GetByID(childTyp); ok && ty.Kind == ir.TK_Struct && ty.IsComposable {
 		return nil
 	}
+
 	type match struct {
 		Sym     ir.SymID
 		FuncTyp ir.TypID
 		Target  ir.TypID
 	}
+
 	var matches []match
 	for _, pkg := range pc.Pkgs {
 		for _, f := range pkg.Files {
@@ -2539,17 +2782,21 @@ func (p *PassInferTypes) maybeInsertComposableCast(pc *PassContext, child ir.Exp
 				if !ok {
 					continue
 				}
+
 				if td.Name.Sym == 0 {
 					continue
 				}
+
 				sym, ok := pkg.Syms.GetByID(td.Name.Sym)
 				if !ok || sym.Typ == 0 {
 					continue
 				}
+
 				ty, ok := pc.Types.GetByID(sym.Typ)
 				if !ok || ty.Kind != ir.TK_Struct || !ty.IsComposable {
 					continue
 				}
+
 				for _, ci := range ty.StructCasts {
 					if ci.SourceTyp == childTyp {
 						matches = append(matches, match{Sym: ci.Sym, FuncTyp: ci.FuncTyp, Target: sym.Typ})
@@ -2558,100 +2805,116 @@ func (p *PassInferTypes) maybeInsertComposableCast(pc *PassContext, child ir.Exp
 			}
 		}
 	}
+
 	if len(matches) != 1 {
 		return nil
 	}
+
 	m := matches[0]
 	if name, ok := pc.Names.GetOriginalName(m.Sym); ok {
 		_ = name
 	}
+
 	callee := &ir.VarRef{
 		Ref: ir.NameRef{Sym: m.Sym},
 	}
+
 	callee.SetType(m.FuncTyp)
 	call := &ir.FuncCallExpr{
 		Callee: callee,
 		Args:   []ir.FuncCallArg{{Expr: child}},
 	}
+
 	call.SetType(m.Target)
 	return call
 }
 
-// hasAnnotation returns true when the given declaration carries an annotation with the given name. Used by lightweight feature detectors (reactivity, value-extern, etc.) that only care about presence.
 func hasAnnotation(annos []ir.Annotation, name string) bool {
 	for _, a := range annos {
 		if a.Name.Name == name {
 			return true
 		}
 	}
+
 	return false
 }
 
-// upperFirst capitalises the first rune of s, used to derive method suffixes like `Count` from a field named `count`.
 func upperFirst(s string) string {
 	if s == "" {
 		return s
 	}
+
 	r := []rune(s)
 	if r[0] >= 'a' && r[0] <= 'z' {
 		r[0] = r[0] - 'a' + 'A'
 	}
+
 	return string(r)
 }
 
-// rewriteComposableCalleeToCtor lets composable types be constructed without the `new` keyword. When a FuncCallExpr's callee resolves to a composable type, we look up a matching ctor and replace the callee's symbol with the ctor function's symbol. From then on the rest of the function-call inference path treats it like any other ctor invocation.
 func (p *PassInferTypes) rewriteComposableCalleeToCtor(pc *PassContext, x *ir.FuncCallExpr, argTypes []ir.TypID) {
 	varRef, ok := x.Callee.(*ir.VarRef)
 	if !ok || varRef.Ref.Sym == 0 {
 		return
 	}
+
 	symPkg := composableCalleePkg(pc, varRef)
 	sym, ok := symPkg.Syms.GetByID(varRef.Ref.Sym)
 	if !ok || sym.Typ == 0 {
 		return
 	}
+
 	ty, ok := pc.Types.GetByID(sym.Typ)
 	if !ok || ty.Kind != ir.TK_Struct || !ty.IsComposable {
 		return
 	}
+
 	for _, ci := range ty.StructCtors {
 		ftDef, ok := pc.Types.GetByID(ci.FuncTyp)
 		if !ok {
 			continue
 		}
+
 		resolved, ok := resolveCallArgs(pc.Types, ftDef.ParamTypes, x.Args, argTypes)
 		if !ok {
 			continue
 		}
+
 		x.Args = resolved
 		varRef.Ref.Sym = ci.Sym
 		return
 	}
 }
 
-// isTypeAssignable checks if the source type can be assigned to the destination type.
 func isTypeAssignable(tt *ir.TypeTable, dst, src ir.TypID) (bool, string) {
 	if dst == src {
 		return true, "same type"
 	}
+
 	if dst == 0 || src == 0 {
 		return false, "unknown type"
 	}
+
 	if dst == tt.PrimAny() {
 		return true, "T is assignable to any (widening)"
 	}
+
 	if dstTy, _ := tt.GetByID(dst); dstTy != nil && dstTy.Kind == ir.TK_TypeParam {
 		return true, "generic type parameter is assignable to/from any type"
 	}
+
 	if srcTy, _ := tt.GetByID(src); srcTy != nil && srcTy.Kind == ir.TK_TypeParam {
 		return true, "generic type parameter is assignable to/from any type"
 	}
+
 	if (dst == tt.PrimFloat() && src == tt.PrimInt()) || (dst == tt.PrimInt() && src == tt.PrimFloat()) {
 		return true, "implicit conversion between int and float"
 	}
+
 	if (dst == tt.PrimByte() && src == tt.PrimInt()) || (dst == tt.PrimInt() && src == tt.PrimByte()) {
 		return true, "implicit conversion between byte and int"
 	}
+
 	if dstTy, _ := tt.GetByID(dst); dstTy != nil && dstTy.Kind == ir.TK_Option {
 		if src == tt.TypNone() {
 			return true, "none to option"
@@ -2661,6 +2924,7 @@ func isTypeAssignable(tt *ir.TypeTable, dst, src ir.TypID) (bool, string) {
 			if dstTy.ElemType == srcTy.ElemType {
 				return true, "option to option with same element type"
 			}
+
 			return false, "option element type mismatch"
 		}
 
@@ -2718,11 +2982,13 @@ func isTypeAssignable(tt *ir.TypeTable, dst, src ir.TypID) (bool, string) {
 						allOK = false
 						break
 					}
+
 					if ok, _ := isTypeAssignable(tt, sp.Type.Typ, dp.Type.Typ); !ok {
 						allOK = false
 						break
 					}
 				}
+
 				if allOK {
 					if ok, _ := isTypeAssignable(tt, dstTy.ReturnType, srcTy.ReturnType); ok {
 						return true, "function type compatible (param contravariant, return covariant under type-param erasure)"
@@ -2741,6 +3007,7 @@ func isTypeAssignable(tt *ir.TypeTable, dst, src ir.TypID) (bool, string) {
 					break
 				}
 			}
+
 			if allOK {
 				return true, "tuple element-wise widen"
 			}
@@ -2750,8 +3017,6 @@ func isTypeAssignable(tt *ir.TypeTable, dst, src ir.TypID) (bool, string) {
 	return false, "types are not assignable"
 }
 
-// assertFunctionParameterCompatibility checks if the provided argument types are compatible with the function's parameter types.
-// It also checks if the counts of parameters and arguments match, considering variadic parameters and default values.
 func assertFunctionParameterCompatibility(pc *PassContext, tt *ir.TypeTable, funcType *ir.Type, argTypes []ir.TypID, args []ir.FuncCallArg) (bool, string) {
 	paramCount := len(funcType.ParamTypes)
 	argCount := len(argTypes)
@@ -2777,6 +3042,7 @@ func assertFunctionParameterCompatibility(pc *PassContext, tt *ir.TypeTable, fun
 		if argCount < requiredParamCount {
 			return false, fmt.Sprintf("not enough arguments: expected at least %d, got %d", requiredParamCount, argCount)
 		}
+
 		if argCount > paramCount {
 			return false, fmt.Sprintf("too many arguments: expected at most %d, got %d", paramCount, argCount)
 		}
@@ -2790,6 +3056,7 @@ func assertFunctionParameterCompatibility(pc *PassContext, tt *ir.TypeTable, fun
 				}
 			}
 		}
+
 		if argCount < nonVariadicRequired {
 			return false, fmt.Sprintf("not enough arguments for variadic function: expected at least %d, got %d", nonVariadicRequired, argCount)
 		}
@@ -2804,12 +3071,14 @@ func assertFunctionParameterCompatibility(pc *PassContext, tt *ir.TypeTable, fun
 					return false, "variadic argument type mismatch"
 				}
 			}
+
 			break
 		} else {
 			if i >= argCount {
 				if param.Default == nil {
 					return false, fmt.Sprintf("missing required argument at position %d", i)
 				}
+
 				continue
 			}
 
@@ -2823,6 +3092,7 @@ func assertFunctionParameterCompatibility(pc *PassContext, tt *ir.TypeTable, fun
 							continue
 						}
 					}
+
 					return false, fmt.Sprintf("argument type mismatch wanted %s, got %s", typeName(pc, param.Type.Typ), typeName(pc, argType))
 				}
 			} else {
@@ -2836,20 +3106,21 @@ func assertFunctionParameterCompatibility(pc *PassContext, tt *ir.TypeTable, fun
 	return true, "all parameters and arguments are compatible"
 }
 
-// tsStructEqual checks if two types are structurally equal, considering their kind and properties.
-// This is used for checking if two types are the same in a structural way, such as slices, arrays, maps, tuples, etc.
 func tsStructEqual(tt *ir.TypeTable, a, b ir.TypID) bool {
 	if a == b {
 		return true
 	}
+
 	ta, okA := tt.GetByID(a)
 	tb, okB := tt.GetByID(b)
 	if !okA || !okB {
 		return false
 	}
+
 	if ta.Kind != tb.Kind {
 		return false
 	}
+
 	switch ta.Kind {
 	case ir.TK_Array:
 		return ta.ElemType == tb.ElemType && ta.Dim == tb.Dim && ta.Key == "" && tb.Key == ""
@@ -2861,11 +3132,13 @@ func tsStructEqual(tt *ir.TypeTable, a, b ir.TypID) bool {
 		if len(ta.Fields) != len(tb.Fields) {
 			return false
 		}
+
 		for i := range ta.Fields {
-			if ta.Fields[i].Type != tb.Fields[i].Type { // Positional sensitivity is important here
+			if ta.Fields[i].Type != tb.Fields[i].Type {
 				return false
 			}
 		}
+
 		return true
 	case ir.TK_Function:
 		if len(ta.ParamTypes) != len(tb.ParamTypes) {
@@ -2890,11 +3163,6 @@ func tsStructEqual(tt *ir.TypeTable, a, b ir.TypID) bool {
 	}
 }
 
-// typeName renders a TypID as the human-readable Sova surface a user expects
-// to see in a diagnostic. Internal compiler placeholders (the error sentinel
-// type, the empty-key default Function kind) are mapped to the neutral
-// "<unresolved>" / "<unknown>" labels rather than the raw `Type.Key` - those
-// keys exist for deduplication, not for display.
 func typeName(pc *PassContext, t ir.TypID) string {
 	return renderTypeForDiag(pc.Types, t, map[ir.TypID]bool{})
 }
@@ -2903,15 +3171,18 @@ func renderTypeForDiag(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) st
 	if id == 0 || id == tt.TypError() {
 		return "<unresolved>"
 	}
+
 	if seen[id] {
 		return "<recursive>"
 	}
+
 	seen[id] = true
 	defer delete(seen, id)
 	ty, ok := tt.GetByID(id)
 	if !ok {
 		return "<unknown>"
 	}
+
 	switch ty.Kind {
 	case ir.TK_PrimitiveInt:
 		return "int"
@@ -2946,6 +3217,7 @@ func renderTypeForDiag(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) st
 				parts = append(parts, renderTypeForDiag(tt, f.Type, seen))
 			}
 		}
+
 		return "(" + strings.Join(parts, ", ") + ")"
 	case ir.TK_Chan:
 		return "chan<" + renderTypeForDiag(tt, ty.ElemType, seen) + ">"
@@ -2956,20 +3228,24 @@ func renderTypeForDiag(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) st
 			if p.Name.Name != "" {
 				label = p.Name.Name + ": "
 			}
+
 			if p.Type != nil {
 				parts = append(parts, label+renderTypeForDiag(tt, p.Type.Typ, seen))
 			} else {
 				parts = append(parts, label+"<unresolved>")
 			}
 		}
+
 		prefix := "func"
 		if ty.IsAsync {
 			prefix = "async func"
 		}
+
 		head := prefix + "(" + strings.Join(parts, ", ") + ")"
 		if ty.ReturnType == 0 || ty.ReturnType == tt.TypNone() {
 			return head
 		}
+
 		return head + ": " + renderTypeForDiag(tt, ty.ReturnType, seen)
 	case ir.TK_Struct:
 		return qualifyTypeName(ty.PackagePath, ty.StructName)
@@ -2982,21 +3258,19 @@ func renderTypeForDiag(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) st
 			return ty.ParamName
 		}
 	}
+
 	if string(ty.Key) != "" && !strings.HasPrefix(string(ty.Key), "!") {
 		return string(ty.Key)
 	}
+
 	return "<unresolved>"
 }
 
-// typeKeyDisplay renders a `*ir.Type` as a user-facing label. Mirrors the
-// `typeName` mapping but starts from a `*ir.Type` (which the diag call sites
-// already have in hand) so we can swap raw `.Key` accesses without threading
-// TypID through every report site. Suppresses internal sentinels (`!…`,
-// `func:(...)`-style auto-keys) the same way `renderTypeForDiag` does.
 func typeKeyDisplay(ty *ir.Type) string {
 	if ty == nil {
 		return "<unresolved>"
 	}
+
 	switch ty.Kind {
 	case ir.TK_PrimitiveInt:
 		return "int"
@@ -3018,6 +3292,7 @@ func typeKeyDisplay(ty *ir.Type) string {
 		if ty.IsAsync {
 			return "async func(...)"
 		}
+
 		return "func(...)"
 	case ir.TK_Struct:
 		return qualifyTypeName(ty.PackagePath, ty.StructName)
@@ -3040,9 +3315,11 @@ func typeKeyDisplay(ty *ir.Type) string {
 			return ty.ParamName
 		}
 	}
+
 	if key := string(ty.Key); key != "" && !strings.HasPrefix(key, "!") && !strings.HasPrefix(key, "func:") {
 		return key
 	}
+
 	return "<unresolved>"
 }
 
@@ -3050,19 +3327,20 @@ func qualifyTypeName(pkgPath, name string) string {
 	if name == "" {
 		return "<unknown>"
 	}
+
 	if pkgPath != "" {
 		if idx := strings.LastIndex(pkgPath, "/"); idx >= 0 {
 			pkgPath = pkgPath[idx+1:]
 		}
 	}
+
 	if pkgPath == "" {
 		return name
 	}
+
 	return pkgPath + "." + name
 }
 
-// resolveOverload selects the best matching function overload based on argument types.
-// Returns the symbol ID of the best match, or 0 if no match found.
 func (p *PassInferTypes) resolveOverload(pc *PassContext, candidates []ir.SymID, argTypes []ir.TypID) ir.SymID {
 	tt := pc.Types
 	sa := pc.Pkg.Syms
@@ -3092,7 +3370,7 @@ func (p *PassInferTypes) resolveOverload(pc *PassContext, candidates []ir.SymID,
 		}
 
 		if argCount < requiredParams || argCount > paramCount {
-			continue // Incompatible argument count
+			continue
 		}
 
 		score := 0
@@ -3103,9 +3381,9 @@ func (p *PassInferTypes) resolveOverload(pc *PassContext, candidates []ir.SymID,
 			argType := argTypes[i]
 
 			if paramType == argType {
-				score += 10 // Exact match
+				score += 10
 			} else if ok, _ := isTypeAssignable(tt, paramType, argType); ok {
-				score += 5 // Compatible but not exact
+				score += 5
 			} else {
 				compatible = false
 				break
@@ -3121,25 +3399,28 @@ func (p *PassInferTypes) resolveOverload(pc *PassContext, candidates []ir.SymID,
 	return bestMatch
 }
 
-// applyLiteralTypeHint propagates a target type into freshly-built map/array literals so that empty `{}` / `[]` (and key/value-widening cases like `{"role": "admin"}` against `map<string, any>`) take their final shape from the assignment context instead of the literal alone. The helper only patches literal nodes whose Kind matches the hint - anything else is left for the regular synthesizer.
 func (p *PassInferTypes) applyLiteralTypeHint(pc *PassContext, e ir.Expr, hint ir.TypID) {
 	if e == nil || hint == 0 {
 		return
 	}
+
 	ty, ok := pc.Types.GetByID(hint)
 	if !ok {
 		return
 	}
+
 	switch lit := e.(type) {
 	case *ir.MapLiteral:
 		if ty.Kind != ir.TK_Map {
 			return
 		}
+
 		lit.SetType(hint)
 		for i := range lit.Entries {
 			p.applyLiteralTypeHint(pc, lit.Entries[i].Key, ty.KeyType)
 			p.applyLiteralTypeHint(pc, lit.Entries[i].Value, ty.ValueType)
 		}
+
 	case *ir.ArrayLiteral:
 		switch ty.Kind {
 		case ir.TK_Slice, ir.TK_Array:
@@ -3147,13 +3428,13 @@ func (p *PassInferTypes) applyLiteralTypeHint(pc *PassContext, e ir.Expr, hint i
 			for i := range lit.Elems {
 				p.applyLiteralTypeHint(pc, lit.Elems[i], ty.ElemType)
 			}
+
 		case ir.TK_Option:
 			p.applyLiteralTypeHint(pc, e, ty.ElemType)
 		}
 	}
 }
 
-// noneNarrowing holds a per-symbol option-unwrap override to apply temporarily inside one branch of an if/else. The infer pass restores the prior type after the branch.
 type noneNarrowing struct {
 	pkg     *ir.PackageContext
 	sym     ir.SymID
@@ -3161,15 +3442,16 @@ type noneNarrowing struct {
 	prevTyp ir.TypID
 }
 
-// detectNoneNarrowing inspects a boolean condition for the patterns `x != none` and `x == none` (in either operand order) and returns the corresponding symbol narrowings: any non-nil "thenNarrow" applies inside the then-branch (e.g. `x != none` unwraps `option<T>` to `T`); "elseNarrow" applies inside the else-branch (e.g. `x == none` unwraps in the else). Only simple `VarRef` receivers are narrowed today; field-access / index-expression bases are left untouched.
 func (p *PassInferTypes) detectNoneNarrowing(pc *PassContext, cond ir.Expr) (thenNarrow, elseNarrow []noneNarrowing) {
 	bin, ok := cond.(*ir.BinaryExpr)
 	if !ok {
 		return nil, nil
 	}
+
 	if bin.Op != ir.OpNeq && bin.Op != ir.OpEq {
 		return nil, nil
 	}
+
 	var varRef *ir.VarRef
 	if _, isNone := bin.Right.(*ir.LitNone); isNone {
 		if vr, ok := bin.Left.(*ir.VarRef); ok {
@@ -3180,33 +3462,40 @@ func (p *PassInferTypes) detectNoneNarrowing(pc *PassContext, cond ir.Expr) (the
 			varRef = vr
 		}
 	}
+
 	if varRef == nil || varRef.Ref.Sym == 0 {
 		return nil, nil
 	}
+
 	sym, ok := pc.Pkg.Syms.GetByID(varRef.Ref.Sym)
 	if !ok {
 		return nil, nil
 	}
+
 	ty, ok := pc.Types.GetByID(sym.Typ)
 	if !ok || ty.Kind != ir.TK_Option {
 		return nil, nil
 	}
+
 	narrow := noneNarrowing{pkg: pc.Pkg, sym: varRef.Ref.Sym, newTyp: ty.ElemType, prevTyp: sym.Typ}
+
 	if bin.Op == ir.OpNeq {
 		return []noneNarrowing{narrow}, nil
 	}
+
 	return nil, []noneNarrowing{narrow}
 }
 
-// withNarrowedTypes applies a list of option-unwrap narrowings, runs `fn`, and restores every original symbol type afterwards. Restore is deferred so panics in the wrapped statements do not leave stray narrowings behind.
 func (p *PassInferTypes) withNarrowedTypes(pc *PassContext, narrowings []noneNarrowing, fn func()) {
 	if len(narrowings) == 0 {
 		fn()
 		return
 	}
+
 	for _, n := range narrowings {
 		n.pkg.Syms.SetType(n.sym, n.newTyp)
 	}
+
 	defer func() {
 		for _, n := range narrowings {
 			n.pkg.Syms.SetType(n.sym, n.prevTyp)
@@ -3215,8 +3504,6 @@ func (p *PassInferTypes) withNarrowedTypes(pc *PassContext, narrowings []noneNar
 	fn()
 }
 
-// isTerminator checks if a statement is a terminator (return, break, continue).
-// Terminators make subsequent statements in the same block unreachable.
 func (p *PassInferTypes) isTerminator(st ir.Stmt) bool {
 	switch st.(type) {
 	case *ir.ReturnStmt, *ir.BreakStmt, *ir.ContinueStmt:
@@ -3226,7 +3513,6 @@ func (p *PassInferTypes) isTerminator(st ir.Stmt) bool {
 	}
 }
 
-// collectReturnTypes collects all return statement types from a list of statements.
 func (p *PassInferTypes) collectReturnTypes(pc *PassContext, stmts []ir.Stmt) []struct {
 	Typ  ir.TypID
 	Span diag.TextSpan
@@ -3256,12 +3542,14 @@ func (p *PassInferTypes) collectReturnTypes(pc *PassContext, stmts []ir.Stmt) []
 					typ := p.synthesizeTypeFromExpr(pc, result)
 					fields = append(fields, ir.TupleField{Name: "", Type: typ})
 				}
+
 				tupleTyp := pc.Types.TupleOf(fields...)
 				types = append(types, struct {
 					Typ  ir.TypID
 					Span diag.TextSpan
 				}{Typ: tupleTyp, Span: s.Span()})
 			}
+
 		case *ir.BlockStmt:
 			types = append(types, p.collectReturnTypes(pc, s.Stmts)...)
 		case *ir.IfStmt:
@@ -3269,16 +3557,20 @@ func (p *PassInferTypes) collectReturnTypes(pc *PassContext, stmts []ir.Stmt) []
 			for _, elif := range s.ElseIfs {
 				types = append(types, p.collectReturnTypes(pc, ir.BlockStmts(elif.Then))...)
 			}
+
 			if s.Else != nil {
 				types = append(types, p.collectReturnTypes(pc, ir.BlockStmts(s.Else))...)
 			}
+
 		case *ir.SwitchStmt:
 			for _, c := range s.Cases {
 				types = append(types, p.collectReturnTypes(pc, c.Stmts)...)
 			}
+
 			if s.Default != nil {
 				types = append(types, p.collectReturnTypes(pc, s.Default)...)
 			}
+
 		case *ir.ForStmt:
 			types = append(types, p.collectReturnTypes(pc, ir.BlockStmts(s.Body))...)
 		case *ir.WhileStmt:
@@ -3289,34 +3581,35 @@ func (p *PassInferTypes) collectReturnTypes(pc *PassContext, stmts []ir.Stmt) []
 	return types
 }
 
-// wireStateTypeFromCache returns the TypID of the built-in WireState enum if analyze_wire has already registered it, or 0 otherwise.
 func wireStateTypeFromCache(pc *PassContext) ir.TypID {
 	if cached, ok := pc.Cache[WireStateCacheKey]; ok {
 		if id, ok := cached.(ir.TypID); ok {
 			return id
 		}
 	}
+
 	return 0
 }
 
-// isHandleWrapperCast reports whether both src and dst are struct types carrying a `handle: any` field. Used by AsExpr to allow cross-wrapper casts (e.g. `Element as HTMLInputElement`) that wouldn't pass the normal assignability check; the codegen rewraps the handle or runs an instanceof check.
 func isHandleWrapperCast(tt *ir.TypeTable, srcTy, dstTy ir.TypID) bool {
 	hasHandle := func(t ir.TypID) bool {
 		info, ok := tt.GetByID(t)
 		if !ok || info.Kind != ir.TK_Struct {
 			return false
 		}
+
 		for _, sf := range info.StructFields {
 			if sf.Name == "handle" && sf.Type == tt.PrimAny() {
 				return true
 			}
 		}
+
 		return false
 	}
+
 	return hasHandle(srcTy) && hasHandle(dstTy)
 }
 
-// isPrimitiveConversionAllowed reports whether `src as dst` is a permitted primitive-to-primitive conversion. Stringification (`int|float|bool|char as string`) is always allowed; numeric widening/narrowing between int and float is allowed; parsing strings back into numerics (`string as int|float`) is allowed but may fail at runtime (returns 0/NaN in JS). Codegen lowers each branch to the appropriate JS conversion (`String(...)`, `Number(...)`, `parseInt(...)`, etc.) instead of the default typecheck-throw.
 func isPrimitiveConversionAllowed(tt *ir.TypeTable, srcTy, dstTy ir.TypID) bool {
 	str := tt.PrimString()
 	in := tt.PrimInt()
@@ -3325,52 +3618,53 @@ func isPrimitiveConversionAllowed(tt *ir.TypeTable, srcTy, dstTy ir.TypID) bool 
 	ch := tt.PrimChar()
 	bt := tt.PrimByte()
 	isPrim := func(t ir.TypID) bool { return t == str || t == in || t == fl || t == bl || t == ch || t == bt }
+
 	if !isPrim(srcTy) || !isPrim(dstTy) {
 		return false
 	}
+
 	if dstTy == str {
 		return true
 	}
+
 	if srcTy == str {
 		return dstTy == in || dstTy == fl || dstTy == bl
 	}
+
 	if (srcTy == in && dstTy == fl) || (srcTy == fl && dstTy == in) {
 		return true
 	}
+
 	if (srcTy == in && dstTy == ch) || (srcTy == ch && dstTy == in) {
 		return true
 	}
+
 	if (srcTy == in && dstTy == bt) || (srcTy == bt && dstTy == in) {
 		return true
 	}
+
 	return false
 }
 
-// findPackageByPath searches the build's loaded packages for the given canonical path and returns its context, or nil if not found.
 func findPackageByPath(pc *PassContext, path string) *ir.PackageContext {
 	for _, pkg := range pc.Pkgs {
 		if pkg.Path.String() == path {
 			return pkg
 		}
 	}
+
 	return nil
 }
 
-// operatorMethodName maps a binary operator to its corresponding user-overloadable method name, returning false for operators that cannot be overloaded.
 func operatorMethodName(op ir.Op) (string, bool) {
 	switch op {
 	case ir.OpAdd, ir.OpSub, ir.OpMul, ir.OpDiv, ir.OpMod, ir.OpEq:
 		return "op" + string(op), true
 	}
+
 	return "", false
 }
 
-// fieldAccessIsThroughThis reports whether `recv` is the implicit `this`
-// reference of a type method/ctor. Used by the struct-field access type
-// check to permit `this.privateField` (and `this.privateField.other`) inside
-// methods while still rejecting reads from any external receiver. The check
-// walks through GroupedExprs and intermediate FieldAccessExprs so chains like
-// `this.inner.field` follow the rule of "first link must be this".
 func fieldAccessIsThroughThis(pc *PassContext, recv ir.Expr) bool {
 	for {
 		switch n := recv.(type) {
@@ -3382,10 +3676,12 @@ func fieldAccessIsThroughThis(pc *PassContext, recv ir.Expr) bool {
 			if n.Ref.Sym == 0 {
 				return n.Ref.Name == "this"
 			}
+
 			sym, ok := pc.Pkg.Syms.GetByID(n.Ref.Sym)
 			if !ok {
 				return false
 			}
+
 			return sym.Name == "this"
 		default:
 			return false
@@ -3393,82 +3689,89 @@ func fieldAccessIsThroughThis(pc *PassContext, recv ir.Expr) bool {
 	}
 }
 
-// preTypeEmptyLiteralFromContext seeds an empty `[]` / `{}` literal's TypID from the surrounding context (e.g. the enclosing function's declared return type) BEFORE generic inference kicks in. Empty literals carry no element-type signal of their own, so without this nudge they default to `[]any` / `map<any, any>` and then clash with any more specific declared type at the use site — `return []` from a `func(): []int` would fail. By pre-stamping the literal with the expected type, the inference's `if existing := x.GetType(); existing != 0` short-circuit accepts the literal as-is. No-op when the expression is not an empty array/map literal or the expected type doesn't match the literal kind.
 func preTypeEmptyLiteralFromContext(tt *ir.TypeTable, expr ir.Expr, expectedTyp ir.TypID) {
 	if expectedTyp == 0 || ir.IsNilExpr(expr) {
 		return
 	}
+
 	expectedTy, ok := tt.GetByID(expectedTyp)
 	if !ok {
 		return
 	}
+
 	switch x := expr.(type) {
 	case *ir.ArrayLiteral:
 		if len(x.Elems) != 0 || x.GetType() != 0 {
 			return
 		}
+
 		if expectedTy.Kind == ir.TK_Slice || expectedTy.Kind == ir.TK_Array {
 			x.SetType(expectedTyp)
 		}
+
 	case *ir.MapLiteral:
 		if len(x.Entries) != 0 || x.GetType() != 0 {
 			return
 		}
+
 		if expectedTy.Kind == ir.TK_Map {
 			x.SetType(expectedTyp)
 		}
 	}
 }
 
-// resolveCallArgs reconciles a list of caller-provided arguments (positional and/or named) against a constructor's parameters. It returns a positional-resolved slice the same length as params, where missing slots (filled by defaults) carry a nil Expr. ok=false when no consistent mapping exists.
-// tryInsertCast looks for a `cast(sourceTyp): targetTyp` declaration on the target type and, when found, wraps the argument expression in a synthetic call to that cast function. Returns the wrapped expression and true on success; the original expr is untouched on failure.
-//
-// Generic casts (`cast(src: []T): List<T>` declared on a `List<T>` type) match when the declared source pattern unifies with the actual source type — any `TypeParam` in the pattern accepts any concrete type in the source so long as it's used consistently. This is how `let l: List<int> = [1, 2, 3]` finds the list's slice-to-self cast at the call site without a separate monomorphisation step.
 func tryInsertCast(tt *ir.TypeTable, targetTyp, sourceTyp ir.TypID, arg ir.Expr) (ir.Expr, bool) {
 	if targetTyp == 0 || sourceTyp == 0 || targetTyp == sourceTyp {
 		return arg, false
 	}
+
 	ty, ok := tt.GetByID(targetTyp)
 	if !ok {
 		return arg, false
 	}
+
 	for _, ci := range ty.StructCasts {
 		if ci.SourceTyp == sourceTyp {
 			return wrapCastCall(tt, ci, arg, targetTyp), true
 		}
+
 		if len(ty.TypeParams) > 0 {
 			if typePatternMatches(tt, ci.SourceTyp, sourceTyp, map[string]ir.TypID{}) {
 				return wrapCastCall(tt, ci, arg, targetTyp), true
 			}
 		}
 	}
+
 	return arg, false
 }
 
-// wrapCastCall builds the synthetic `castFn(arg)` FuncCallExpr that auto-cast insertion produces, tagged with the target struct's TypID so downstream type checks see the post-cast type directly. The arg expression is given the codegen-friendly version of the cast's source type (TypeParam → any) so map/array literals emit with the same Go shape the erased cast function expects.
 func wrapCastCall(tt *ir.TypeTable, ci ir.StructCastInfo, arg ir.Expr, targetTyp ir.TypID) ir.Expr {
 	if erased := eraseTypeParams(tt, ci.SourceTyp); erased != 0 {
 		applyCodegenLiteralHint(tt, arg, erased)
 	}
+
 	callee := &ir.VarRef{Ref: ir.NameRef{Sym: ci.Sym}}
+
 	callee.SetType(ci.FuncTyp)
 	call := &ir.FuncCallExpr{
 		Callee: callee,
 		Args:   []ir.FuncCallArg{{Expr: arg}},
 	}
+
 	call.SetType(targetTyp)
 	return call
 }
 
-// eraseTypeParams returns a TypID equivalent to `typID` with every `TypeParam` replaced by `any`. New compound types (slices, maps, etc.) are materialised on demand so the result reflects exactly what the Go codegen will emit for an erased generic.
 func eraseTypeParams(tt *ir.TypeTable, typID ir.TypID) ir.TypID {
 	if typID == 0 {
 		return 0
 	}
+
 	ty, ok := tt.GetByID(typID)
 	if !ok {
 		return typID
 	}
+
 	switch ty.Kind {
 	case ir.TK_TypeParam:
 		return tt.PrimAny()
@@ -3487,42 +3790,48 @@ func eraseTypeParams(tt *ir.TypeTable, typID ir.TypID) ir.TypID {
 		for i, f := range ty.Fields {
 			erased[i] = ir.TupleField{Name: f.Name, Type: eraseTypeParams(tt, f.Type)}
 		}
+
 		return tt.TupleOf(erased...)
 	}
+
 	return typID
 }
 
-// buildTypeArgSubstitution pairs a struct's declared `TypeParams` names with the actual `TypeArgs` written at a `new X<...>()` site and returns a `name → TypID` map suitable for `substituteType`. Returns nil when the counts disagree (no substitution applied) or when no args are present (lets callers skip the substitution path entirely).
 func buildTypeArgSubstitution(paramNames []string, typeArgs []*ir.TypeRef) map[string]ir.TypID {
 	if len(paramNames) == 0 || len(typeArgs) == 0 || len(paramNames) != len(typeArgs) {
 		return nil
 	}
+
 	sub := make(map[string]ir.TypID, len(paramNames))
 	for i, name := range paramNames {
 		if typeArgs[i] != nil && typeArgs[i].Typ != 0 {
 			sub[name] = typeArgs[i].Typ
 		}
 	}
+
 	if len(sub) == 0 {
 		return nil
 	}
+
 	return sub
 }
 
-// substituteType walks `typID` and returns a new TypID with every `TypeParam` slot replaced by the concrete TypID found in `sub`. Unmapped params stay as-is. Compound types (slices, maps, etc.) are rebuilt on demand so the caller gets a stable TypID it can compare against argument types.
 func substituteType(tt *ir.TypeTable, typID ir.TypID, sub map[string]ir.TypID) ir.TypID {
 	if typID == 0 || len(sub) == 0 {
 		return typID
 	}
+
 	ty, ok := tt.GetByID(typID)
 	if !ok {
 		return typID
 	}
+
 	switch ty.Kind {
 	case ir.TK_TypeParam:
 		if mapped, hit := sub[ty.ParamName]; hit {
 			return mapped
 		}
+
 		return typID
 	case ir.TK_Slice:
 		return tt.SliceOf(substituteType(tt, ty.ElemType, sub))
@@ -3539,52 +3848,61 @@ func substituteType(tt *ir.TypeTable, typID ir.TypID, sub map[string]ir.TypID) i
 		for i, f := range ty.Fields {
 			fields[i] = ir.TupleField{Name: f.Name, Type: substituteType(tt, f.Type, sub)}
 		}
+
 		return tt.TupleOf(fields...)
 	}
+
 	return typID
 }
 
-// substituteFuncParams returns a copy of `params` whose TypeRefs have any `TypeParam` slots replaced via `sub`. The original ParamTypes (cached on the struct type) stay untouched so they continue to drive method-level checks unchanged.
 func substituteFuncParams(tt *ir.TypeTable, params []*ir.FuncParam, sub map[string]ir.TypID) []*ir.FuncParam {
 	if len(sub) == 0 {
 		return params
 	}
+
 	out := make([]*ir.FuncParam, len(params))
 	for i, p := range params {
 		if p == nil {
 			continue
 		}
+
 		clone := *p
 		if p.Type != nil {
 			clone.Type = &ir.TypeRef{Typ: substituteType(tt, p.Type.Typ, sub)}
 		}
+
 		out[i] = &clone
 	}
+
 	return out
 }
 
-// applyCodegenLiteralHint is the type-erased counterpart to applyLiteralTypeHint: it rewrites map / array literals to match the codegen-visible shape (after `TypeParam → any` erasure) so they reach Go as `[]any{…}` rather than `[]int64{…}` when feeding into a cast or ctor that accepts a generic slice.
 func applyCodegenLiteralHint(tt *ir.TypeTable, e ir.Expr, hint ir.TypID) {
 	if e == nil || hint == 0 {
 		return
 	}
+
 	ty, ok := tt.GetByID(hint)
 	if !ok {
 		return
 	}
+
 	switch lit := e.(type) {
 	case *ir.ArrayLiteral:
 		if ty.Kind != ir.TK_Slice && ty.Kind != ir.TK_Array {
 			return
 		}
+
 		lit.SetType(hint)
 		for i := range lit.Elems {
 			applyCodegenLiteralHint(tt, lit.Elems[i], ty.ElemType)
 		}
+
 	case *ir.MapLiteral:
 		if ty.Kind != ir.TK_Map {
 			return
 		}
+
 		lit.SetType(hint)
 		for i := range lit.Entries {
 			applyCodegenLiteralHint(tt, lit.Entries[i].Key, ty.KeyType)
@@ -3593,29 +3911,34 @@ func applyCodegenLiteralHint(tt *ir.TypeTable, e ir.Expr, hint ir.TypID) {
 	}
 }
 
-// typePatternMatches walks `pattern` (which may contain `TypeParam` placeholders) against `concrete`, unifying each parameter with whatever concrete type sits in the same structural position. Any param is bound on first sight and must match consistently on every later occurrence. The substitution map is mutated; callers can inspect it after a successful match, or pass a fresh empty map per attempt.
 func typePatternMatches(tt *ir.TypeTable, pattern, concrete ir.TypID, sub map[string]ir.TypID) bool {
 	if pattern == 0 || concrete == 0 {
 		return false
 	}
+
 	if pattern == concrete {
 		return true
 	}
+
 	pTy, pok := tt.GetByID(pattern)
 	cTy, cok := tt.GetByID(concrete)
 	if !pok || !cok {
 		return false
 	}
+
 	if pTy.Kind == ir.TK_TypeParam {
 		if existing, bound := sub[pTy.ParamName]; bound {
 			return existing == concrete
 		}
+
 		sub[pTy.ParamName] = concrete
 		return true
 	}
+
 	if pTy.Kind != cTy.Kind {
 		return false
 	}
+
 	switch pTy.Kind {
 	case ir.TK_Slice, ir.TK_Array, ir.TK_Option, ir.TK_Chan:
 		return typePatternMatches(tt, pTy.ElemType, cTy.ElemType, sub)
@@ -3626,26 +3949,32 @@ func typePatternMatches(tt *ir.TypeTable, pattern, concrete ir.TypID, sub map[st
 		if len(pTy.Fields) != len(cTy.Fields) {
 			return false
 		}
+
 		for i := range pTy.Fields {
 			if !typePatternMatches(tt, pTy.Fields[i].Type, cTy.Fields[i].Type, sub) {
 				return false
 			}
 		}
+
 		return true
 	case ir.TK_Function:
 		if len(pTy.ParamTypes) != len(cTy.ParamTypes) {
 			return false
 		}
+
 		for i := range pTy.ParamTypes {
 			if pTy.ParamTypes[i].Type == nil || cTy.ParamTypes[i].Type == nil {
 				continue
 			}
+
 			if !typePatternMatches(tt, pTy.ParamTypes[i].Type.Typ, cTy.ParamTypes[i].Type.Typ, sub) {
 				return false
 			}
 		}
+
 		return typePatternMatches(tt, pTy.ReturnType, cTy.ReturnType, sub)
 	}
+
 	return pattern == concrete
 }
 
@@ -3664,9 +3993,11 @@ func resolveCallArgs(tt *ir.TypeTable, params []*ir.FuncParam, providedArgs []ir
 					break
 				}
 			}
+
 			if idx < 0 || filled[idx] {
 				return nil, false
 			}
+
 			if params[idx].Type != nil && params[idx].Type.Typ != 0 {
 				if assignable, _ := isTypeAssignable(tt, params[idx].Type.Typ, argTypes[ai]); !assignable {
 					if wrapped, ok := tryInsertCast(tt, params[idx].Type.Typ, argTypes[ai], arg.Expr); ok {
@@ -3676,16 +4007,20 @@ func resolveCallArgs(tt *ir.TypeTable, params []*ir.FuncParam, providedArgs []ir
 					}
 				}
 			}
+
 			result[idx] = arg
 			filled[idx] = true
 			continue
 		}
+
 		if sawNamed {
 			return nil, false
 		}
+
 		if positional >= len(params) || filled[positional] {
 			return nil, false
 		}
+
 		if params[positional].Type != nil && params[positional].Type.Typ != 0 {
 			if assignable, _ := isTypeAssignable(tt, params[positional].Type.Typ, argTypes[ai]); !assignable {
 				if wrapped, ok := tryInsertCast(tt, params[positional].Type.Typ, argTypes[ai], arg.Expr); ok {
@@ -3695,43 +4030,53 @@ func resolveCallArgs(tt *ir.TypeTable, params []*ir.FuncParam, providedArgs []ir
 				}
 			}
 		}
+
 		result[positional] = arg
 		filled[positional] = true
 		positional++
 	}
+
 	for i, ok := range filled {
 		if ok {
 			continue
 		}
+
 		if params[i].Default == nil {
 			return nil, false
 		}
+
 		result[i] = ir.FuncCallArg{Name: params[i].Name.Name, Expr: params[i].Default}
 	}
+
 	return result, true
 }
 
-// findIterableNext checks whether `ty` (a struct type) exposes a `next(): option<T>` method - the structural shape Sova uses for its iterable protocol. Returns the method's SymID and the unwrapped element type T on success; (0, 0) when no matching method exists. Interface receivers are not yet supported.
 func findIterableNext(pc *PassContext, ty *ir.Type) (ir.SymID, ir.TypID) {
 	if ty == nil || ty.Kind != ir.TK_Struct {
 		return 0, 0
 	}
+
 	for _, m := range ty.StructMethods {
 		if m.Name != "next" || m.Sym == 0 {
 			continue
 		}
+
 		fnTy, ok := pc.Types.GetByID(m.FuncTyp)
 		if !ok || fnTy.Kind != ir.TK_Function {
 			continue
 		}
+
 		if len(fnTy.ParamTypes) != 0 {
 			continue
 		}
+
 		retTy, ok := pc.Types.GetByID(fnTy.ReturnType)
 		if !ok || retTy.Kind != ir.TK_Option {
 			continue
 		}
+
 		return m.Sym, retTy.ElemType
 	}
+
 	return 0, 0
 }

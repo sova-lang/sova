@@ -10,16 +10,14 @@ import (
 	"github.com/antlr4-go/antlr/v4"
 )
 
-// HirVisitor is used to convert the ANTLR tokens into the high-level intermediate representation (HIR) for further semantic analysis.
 type HirVisitor struct {
 	parser.BaseSovaVisitor
-	filename  string // filename is the name of the file being visited.
+	filename  string
 	diag      *diag.DiagnosticsBag
 	nodeAlloc *IdAlloc
-	tokens    *antlr.CommonTokenStream // tokens is the input token stream, retained so we can read doc-comment tokens that the lexer routed to the hidden channel.
+	tokens    *antlr.CommonTokenStream
 }
 
-// NewVisitor creates a new HirVisitor instance.
 func NewVisitor(filename string, nodeAlloc *IdAlloc, diag *diag.DiagnosticsBag) *HirVisitor {
 	return &HirVisitor{
 		filename:  filename,
@@ -28,48 +26,36 @@ func NewVisitor(filename string, nodeAlloc *IdAlloc, diag *diag.DiagnosticsBag) 
 	}
 }
 
-// SetTokenStream wires the buffered token stream so doc-comment extraction
-// can look at hidden-channel tokens preceding each decl. Called by the
-// compiler just after constructing the parser, before Visit() is invoked.
 func (v *HirVisitor) SetTokenStream(ts *antlr.CommonTokenStream) {
 	v.tokens = ts
 }
 
-// docCommentBefore returns the joined / stripped doc-comment text attached to
-// the token immediately starting `ctx`, or "" when no doc comments precede
-// it. Walks the hidden token stream backwards from the rule's start,
-// gathering DOC_COMMENT (`///`) lines and DOC_BLOCK_COMMENT (`/** */`)
-// blocks. Enforces the "no blank line between comment and decl" rule
-// (and the "no blank line between consecutive doc comments" rule) by
-// comparing line numbers — the lexer drops whitespace via `-> skip`,
-// so there are no WS tokens we could inspect for newline counts.
-//
-// Gap detection: each iteration computes the END line of the current
-// comment (`startLine + count('\n', text)` so block comments measure
-// correctly) and compares it against the previous anchor's start line.
-// A gap > 1 means there's at least one blank line in between → the
-// current comment is NOT part of this doc-comment chain and we stop.
 func (v *HirVisitor) docCommentBefore(ctx antlr.ParserRuleContext) string {
 	if v.tokens == nil {
 		return ""
 	}
+
 	start := ctx.GetStart()
 	if start == nil {
 		return ""
 	}
+
 	startIdx := start.GetTokenIndex()
 	if startIdx <= 0 {
 		return ""
 	}
+
 	allTokens := v.tokens.GetAllTokens()
 	if startIdx > len(allTokens) {
 		return ""
 	}
+
 	type tok struct {
 		text string
 		line int
 		kind int
 	}
+
 	var collected []tok
 	prevStartLine := start.GetLine()
 	for i := startIdx - 1; i >= 0; i-- {
@@ -81,47 +67,47 @@ func (v *HirVisitor) docCommentBefore(ctx antlr.ParserRuleContext) string {
 		if !isDocLine && !isDocBlock {
 			break
 		}
+
 		tStart := t.GetLine()
 		tEnd := tStart + strings.Count(text, "\n")
 		if prevStartLine-tEnd > 1 {
 			break
 		}
+
 		collected = append(collected, tok{text: text, line: tStart, kind: ttype})
 		prevStartLine = tStart
 	}
+
 	if len(collected) == 0 {
 		return ""
 	}
-	// Reverse so we have them in source order, then strip + join.
+
 	for i, j := 0, len(collected)-1; i < j; i, j = i+1, j-1 {
 		collected[i], collected[j] = collected[j], collected[i]
 	}
+
 	var parts []string
 	for _, c := range collected {
 		if c.kind == parser.SovaLexerDOC_COMMENT {
 			parts = append(parts, stripDocLine(c.text))
 			continue
 		}
+
 		parts = append(parts, stripDocBlock(c.text))
 	}
+
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-// stripDocLine removes the leading `///` (and one optional space) from a
-// single doc-comment line. The trailing newline is already absent because the
-// lexer matches up to but not including the line terminator.
 func stripDocLine(s string) string {
 	s = strings.TrimPrefix(s, "///")
 	if strings.HasPrefix(s, " ") {
 		s = s[1:]
 	}
+
 	return strings.TrimRight(s, "\r")
 }
 
-// stripDocBlock strips the `/** ... */` wrapper plus the conventional
-// leading ` * ` on each interior line. Mirrors JSDoc/TSDoc behaviour: the
-// returned text is the inner narrative, ready to feed into a markdown
-// renderer.
 func stripDocBlock(s string) string {
 	s = strings.TrimPrefix(s, "/**")
 	s = strings.TrimSuffix(s, "*/")
@@ -141,17 +127,17 @@ func stripDocBlock(s string) string {
 			out = append(out, line)
 		}
 	}
-	// Drop leading / trailing blank lines.
+
 	for len(out) > 0 && strings.TrimSpace(out[0]) == "" {
 		out = out[1:]
 	}
+
 	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
 		out = out[:len(out)-1]
 	}
+
 	return strings.Join(out, "\n")
 }
-
-// --- Internal Helper ---
 
 func (v *HirVisitor) nid() NodeID { return NodeID(v.nodeAlloc.Next()) }
 
@@ -159,7 +145,6 @@ func (v *HirVisitor) spanFromCtx(ctx antlr.ParserRuleContext) diag.TextSpan {
 	s := ctx.GetStart()
 	e := ctx.GetStop()
 
-	// ANTLR column is 0-based so we need to adjust to 1-based columns.
 	startCol := s.GetColumn() + 1
 	endCol := e.GetColumn() + 1 + len(e.GetText())
 	return diag.TextSpan{
@@ -185,11 +170,11 @@ func (v *HirVisitor) mkNode(ctx antlr.ParserRuleContext) node {
 	return node{id: v.nid(), span: v.spanFromCtx(ctx)}
 }
 
-// softIdNameAndSpan extracts the identifier text and its source span from a `softId` parser context. softId admits both a real `ID` token and the synth-soft-reserved keyword tokens (`where`, `to`, `append`) wherever an identifier is grammatically expected — see grammar comment + BUGS.md #20. Callers that previously held a `TerminalNode` from `ctx.ID()` should switch to this helper since the underlying token may now be any of the alternatives.
 func (v *HirVisitor) softIdNameAndSpan(ctx parser.ISoftIdContext) (string, diag.TextSpan) {
 	if ctx == nil {
 		return "", diag.TextSpan{File: v.filename}
 	}
+
 	return ctx.GetText(), v.spanFromCtx(ctx)
 }
 
@@ -198,10 +183,11 @@ func (v *HirVisitor) mkNodeFromTok(t antlr.Token) node {
 }
 
 func unquoteString(raw string) string {
-	// raw: "...." with optional `\"`, `\\`, `\n`, `\t`, `\r` escapes inside.
+
 	if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' {
 		return raw
 	}
+
 	inner := raw[1 : len(raw)-1]
 	var b strings.Builder
 	for i := 0; i < len(inner); i++ {
@@ -221,34 +207,39 @@ func unquoteString(raw string) string {
 				b.WriteByte('\\')
 				b.WriteByte(next)
 			}
+
 			i++
 			continue
 		}
+
 		b.WriteByte(c)
 	}
+
 	return b.String()
 }
 
 func unquoteChar(raw string) rune {
-	// raw: 'x'
+
 	if len(raw) >= 2 && raw[0] == '\'' && raw[len(raw)-1] == '\'' {
 		r, _ := utf8.DecodeRuneInString(raw[1 : len(raw)-1])
 		return r
 	}
+
 	return 0
 }
 
-// splitExternModuleSpec splits an extern module reference of the form `path[@version]` into its module path and the optional version pin. Sova accepts versioned references on Go-backend externs so the package manager can synthesise a `require <path> <version>` line into the generated `go.mod` and pull the dependency through `go mod tidy`. The split uses the last `@` so that legitimate Go module paths (which never contain `@`) parse cleanly while still allowing future ref selectors that could contain extra punctuation. Returns the raw input unchanged and an empty version when no `@` is present.
 func splitExternModuleSpec(raw string) (string, string) {
 	at := strings.LastIndexByte(raw, '@')
 	if at < 0 {
 		return raw, ""
 	}
+
 	path := strings.TrimSpace(raw[:at])
 	version := strings.TrimSpace(raw[at+1:])
 	if path == "" {
 		return raw, ""
 	}
+
 	return path, version
 }
 
@@ -257,10 +248,12 @@ func parseIntLiteral(raw string) (int64, error) {
 		u, err := strconv.ParseUint(raw[2:], 16, 64)
 		return int64(u), err
 	}
+
 	if strings.HasPrefix(raw, "0b") || strings.HasPrefix(raw, "0B") {
 		u, err := strconv.ParseUint(raw[2:], 2, 64)
 		return int64(u), err
 	}
+
 	i, err := strconv.ParseInt(raw, 10, 64)
 	return i, err
 }
@@ -270,10 +263,9 @@ func parseFloatLiteral(raw string) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	return f, nil
 }
-
-// --- File & Header ---
 
 func (v *HirVisitor) visitRule(node antlr.RuleNode) any {
 	return node.Accept(v)
@@ -283,60 +275,65 @@ func (v *HirVisitor) Visit(tree antlr.ParseTree) any {
 	if tree == nil {
 		return nil
 	}
+
 	switch ctx := tree.(type) {
 	case *parser.FileContext:
 		return v.VisitFile(ctx)
 	case antlr.RuleNode:
 		return v.visitRule(ctx)
 	}
+
 	return nil
 }
 
-// visitExpr converts the result of v.Visit(tree) into an ir.Expr, returning nil
-// when the parse tree was missing (e.g., partial source being typed in the
-// editor) or the visitor produced no expression. Use this in place of a raw
-// `v.Visit(ctx.Expr()).(Expr)` assertion to avoid panics on incomplete input.
 func (v *HirVisitor) visitExpr(tree antlr.ParseTree) Expr {
 	if tree == nil {
 		return nil
 	}
+
 	out := v.Visit(tree)
 	if out == nil {
 		return nil
 	}
+
 	if e, ok := out.(Expr); ok {
 		return e
 	}
+
 	return nil
 }
 
-// visitBlock is the *BlockStmt-shaped counterpart to visitExpr.
 func (v *HirVisitor) visitBlock(tree antlr.ParseTree) *BlockStmt {
 	if tree == nil {
 		return nil
 	}
+
 	out := v.Visit(tree)
 	if out == nil {
 		return nil
 	}
+
 	if b, ok := out.(*BlockStmt); ok {
 		return b
 	}
+
 	return nil
 }
 
-// visitStmt is the ir.Stmt-shaped counterpart to visitExpr.
 func (v *HirVisitor) visitStmt(tree antlr.ParseTree) Stmt {
 	if tree == nil {
 		return nil
 	}
+
 	out := v.Visit(tree)
 	if out == nil {
 		return nil
 	}
+
 	if s, ok := out.(Stmt); ok {
 		return s
 	}
+
 	return nil
 }
 
@@ -344,8 +341,8 @@ func (v *HirVisitor) VisitFile(ctx *parser.FileContext) any {
 	f := &File{
 		node:    v.mkNode(ctx),
 		Path:    v.filename,
-		Package: PackagePath{"main"},        // Default package path, will be set later if a package declaration is present.
-		Side:    SideSpec{Kind: SideShared}, // Default side is always shared.
+		Package: PackagePath{"main"},
+		Side:    SideSpec{Kind: SideShared},
 	}
 
 	if fh := ctx.FileHeader(); fh != nil {
@@ -355,14 +352,15 @@ func (v *HirVisitor) VisitFile(ctx *parser.FileContext) any {
 		}
 	}
 
-	// Statements
 	for _, s := range ctx.AllStmt() {
 		st := v.Visit(s)
 		if st == nil {
 			continue
 		}
+
 		f.Statements = append(f.Statements, st.(Stmt))
 	}
+
 	f.Statements = flattenWireGroups(f.Statements)
 	return f
 }
@@ -374,16 +372,19 @@ type fileHeaderOut struct {
 
 func (v *HirVisitor) VisitFileHeader(ctx *parser.FileHeaderContext) any {
 	out := &fileHeaderOut{}
+
 	if pd := ctx.PackageDecl(); pd != nil {
 		if p, ok := v.Visit(pd).(PackagePath); ok {
 			out.pkg = p
 		}
 	}
+
 	if sd := ctx.SideDecl(); sd != nil {
 		if s, ok := v.Visit(sd).(SideSpec); ok {
 			out.side = s
 		}
 	}
+
 	return out
 }
 
@@ -398,6 +399,7 @@ func (v *HirVisitor) VisitPackagePath(ctx *parser.PackagePathContext) any {
 	for _, ident := range idents {
 		pp = append(pp, ident.GetText())
 	}
+
 	return pp
 }
 
@@ -421,113 +423,145 @@ func (v *HirVisitor) VisitSide(ctx *parser.SideContext) any {
 		if id := ctx.ID(); id != nil {
 			s.Target = id.GetText()
 		}
+
 	default:
 		s.Kind = SideUnknown
 	}
+
 	return s
 }
-
-// --- Statements ---
 
 func (v *HirVisitor) VisitStmt(ctx *parser.StmtContext) any {
 	if bl := ctx.Block(); bl != nil {
 		return v.Visit(bl)
 	}
+
 	if vd := ctx.VarDeclStmt(); vd != nil {
 		return v.Visit(vd)
 	}
+
 	if fd := ctx.FuncDeclStmt(); fd != nil {
 		return v.Visit(fd)
 	}
+
 	if ed := ctx.ExternDecl(); ed != nil {
 		return v.Visit(ed)
 	}
+
 	if ex := ctx.ExprStmt(); ex != nil {
 		return v.Visit(ex)
 	}
+
 	if is := ctx.IfStmt(); is != nil {
 		return v.Visit(is)
 	}
+
 	if ss := ctx.SwitchStmt(); ss != nil {
 		return v.Visit(ss)
 	}
+
 	if bs := ctx.BreakStmt(); bs != nil {
 		return v.Visit(bs)
 	}
+
 	if cs := ctx.ContinueStmt(); cs != nil {
 		return v.Visit(cs)
 	}
+
 	if rs := ctx.ReturnStmt(); rs != nil {
 		return v.Visit(rs)
 	}
+
 	if gs := ctx.GuardStmt(); gs != nil {
 		return v.Visit(gs)
 	}
+
 	if fs := ctx.ForStmt(); fs != nil {
 		return v.Visit(fs)
 	}
+
 	if ws := ctx.WhileStmt(); ws != nil {
 		return v.Visit(ws)
 	}
+
 	if en := ctx.EnumDeclStmt(); en != nil {
 		return v.Visit(en)
 	}
+
 	if td := ctx.TypeDeclStmt(); td != nil {
 		return v.Visit(td)
 	}
+
 	if id := ctx.InterfaceDeclStmt(); id != nil {
 		return v.Visit(id)
 	}
+
 	if md := ctx.MixinDeclStmt(); md != nil {
 		return v.Visit(md)
 	}
+
 	if ta := ctx.TypeAliasStmt(); ta != nil {
 		return v.Visit(ta)
 	}
+
 	if im := ctx.ImportStmt(); im != nil {
 		return v.Visit(im)
 	}
+
 	if wg := ctx.WireGroupStmt(); wg != nil {
 		return v.Visit(wg)
 	}
+
 	if wr := ctx.WireRulesetStmt(); wr != nil {
 		return v.Visit(wr)
 	}
+
 	if td := ctx.TestDeclStmt(); td != nil {
 		return v.Visit(td)
 	}
+
 	if gd := ctx.GroupDeclStmt(); gd != nil {
 		return v.Visit(gd)
 	}
+
 	if ss := ctx.SetupStmt(); ss != nil {
 		return v.Visit(ss)
 	}
+
 	if ts := ctx.TeardownStmt(); ts != nil {
 		return v.Visit(ts)
 	}
+
 	if as := ctx.AssertStmt(); as != nil {
 		return v.Visit(as)
 	}
+
 	if asn := ctx.AsSessionStmt(); asn != nil {
 		return v.Visit(asn)
 	}
+
 	if gs := ctx.GoStmt(); gs != nil {
 		return v.Visit(gs)
 	}
+
 	if ds := ctx.DeferStmt(); ds != nil {
 		return v.Visit(ds)
 	}
+
 	if ss := ctx.SelectStmt(); ss != nil {
 		return v.Visit(ss)
 	}
+
 	if sd := ctx.SynthDeclStmt(); sd != nil {
 		return v.Visit(sd)
 	}
+
 	return nil
 }
 
 func (v *HirVisitor) VisitGoStmt(ctx *parser.GoStmtContext) any {
 	st := &GoStmt{node: v.mkNode(ctx)}
+
 	if es := ctx.ExprStmt(); es != nil {
 		if call, ok := v.Visit(es).(*ExprStmt); ok && call != nil {
 			st.Call = call.Expr
@@ -537,11 +571,13 @@ func (v *HirVisitor) VisitGoStmt(ctx *parser.GoStmtContext) any {
 			st.Body = body
 		}
 	}
+
 	return st
 }
 
 func (v *HirVisitor) VisitDeferStmt(ctx *parser.DeferStmtContext) any {
 	st := &DeferStmt{node: v.mkNode(ctx)}
+
 	if es := ctx.ExprStmt(); es != nil {
 		if call, ok := v.Visit(es).(*ExprStmt); ok && call != nil {
 			st.Call = call.Expr
@@ -551,40 +587,49 @@ func (v *HirVisitor) VisitDeferStmt(ctx *parser.DeferStmtContext) any {
 			st.Body = body
 		}
 	}
+
 	return st
 }
 
 func (v *HirVisitor) VisitSelectStmt(ctx *parser.SelectStmtContext) any {
 	st := &SelectStmt{node: v.mkNode(ctx)}
+
 	for _, cc := range ctx.AllSelectCase() {
 		if sc, ok := v.Visit(cc).(*SelectCase); ok && sc != nil {
 			st.Cases = append(st.Cases, sc)
 		}
 	}
+
 	if dc := ctx.SelectDefaultCase(); dc != nil {
 		if body, ok := v.Visit(dc).(*BlockStmt); ok {
 			st.Default = body
 		}
 	}
+
 	return st
 }
 
 func (v *HirVisitor) VisitSelectCase(ctx *parser.SelectCaseContext) any {
 	sc := &SelectCase{Span: v.spanFromCtx(ctx)}
+
 	if guard := ctx.SelectCaseGuard(); guard != nil {
 		v.fillSelectCaseGuard(sc, guard.(*parser.SelectCaseGuardContext))
 	}
+
 	if bl := ctx.Block(); bl != nil {
 		if body, ok := v.Visit(bl).(*BlockStmt); ok {
 			sc.Body = body
 		}
 	} else if stmt := ctx.Stmt(); stmt != nil {
 		body := &BlockStmt{node: v.mkNode(stmt)}
+
 		if s, ok := v.Visit(stmt).(Stmt); ok && s != nil {
 			body.Stmts = append(body.Stmts, s)
 		}
+
 		sc.Body = body
 	}
+
 	return sc
 }
 
@@ -594,13 +639,17 @@ func (v *HirVisitor) VisitSelectDefaultCase(ctx *parser.SelectDefaultCaseContext
 			return body
 		}
 	}
+
 	if stmt := ctx.Stmt(); stmt != nil {
 		body := &BlockStmt{node: v.mkNode(stmt)}
+
 		if s, ok := v.Visit(stmt).(Stmt); ok && s != nil {
 			body.Stmts = append(body.Stmts, s)
 		}
+
 		return body
 	}
+
 	return nil
 }
 
@@ -612,6 +661,7 @@ func (v *HirVisitor) fillSelectCaseGuard(sc *SelectCase, ctx *parser.SelectCaseG
 				sc.Targets = append(sc.Targets, vt)
 			}
 		}
+
 		if ex := rbc.Expr(); ex != nil {
 			if e, ok := v.Visit(ex).(Expr); ok {
 				sc.Kind = SelectCaseRecvBind
@@ -626,8 +676,10 @@ func (v *HirVisitor) fillSelectCaseGuard(sc *SelectCase, ctx *parser.SelectCaseG
 				}
 			}
 		}
+
 		return
 	}
+
 	if ex := ctx.Expr(); ex != nil {
 		if e, ok := v.Visit(ex).(Expr); ok {
 			if call, isCall := e.(*FuncCallExpr); isCall {
@@ -639,6 +691,7 @@ func (v *HirVisitor) fillSelectCaseGuard(sc *SelectCase, ctx *parser.SelectCaseG
 						if len(call.Args) >= 1 {
 							sc.SendValue = call.Args[0].Expr
 						}
+
 						return
 					case "recv":
 						sc.Kind = SelectCaseRecvDiscard
@@ -647,6 +700,7 @@ func (v *HirVisitor) fillSelectCaseGuard(sc *SelectCase, ctx *parser.SelectCaseG
 					}
 				}
 			}
+
 			sc.Kind = SelectCaseRecvDiscard
 			sc.ChanExpr = e
 		}
@@ -655,28 +709,35 @@ func (v *HirVisitor) fillSelectCaseGuard(sc *SelectCase, ctx *parser.SelectCaseG
 
 func (v *HirVisitor) VisitTestDeclStmt(ctx *parser.TestDeclStmtContext) any {
 	st := &TestDeclStmt{node: v.mkNode(ctx)}
+
 	if lit := ctx.STRING_LITERAL(); lit != nil {
 		st.Name = unquoteString(lit.GetText())
 	}
+
 	if bl := ctx.Block(); bl != nil {
 		if body, ok := v.Visit(bl).(*BlockStmt); ok {
 			st.Body = body
 		}
 	}
+
 	if ctx.PARALLEL() != nil {
 		st.Parallel = true
 	}
+
 	if tl := ctx.TestTagList(); tl != nil {
 		st.Tags = collectTagList(tl)
 	}
+
 	return st
 }
 
 func (v *HirVisitor) VisitGroupDeclStmt(ctx *parser.GroupDeclStmtContext) any {
 	st := &GroupDeclStmt{node: v.mkNode(ctx)}
+
 	if lit := ctx.STRING_LITERAL(); lit != nil {
 		st.Name = unquoteString(lit.GetText())
 	}
+
 	for _, item := range ctx.AllGroupItem() {
 		if s := v.Visit(item); s != nil {
 			if stmt, ok := s.(Stmt); ok {
@@ -684,12 +745,15 @@ func (v *HirVisitor) VisitGroupDeclStmt(ctx *parser.GroupDeclStmtContext) any {
 			}
 		}
 	}
+
 	if ctx.PARALLEL() != nil {
 		st.Parallel = true
 	}
+
 	if tl := ctx.TestTagList(); tl != nil {
 		st.Tags = collectTagList(tl)
 	}
+
 	return st
 }
 
@@ -698,6 +762,7 @@ func collectTagList(ctx parser.ITestTagListContext) []string {
 	for _, lit := range ctx.AllSTRING_LITERAL() {
 		tags = append(tags, unquoteString(lit.GetText()))
 	}
+
 	return tags
 }
 
@@ -705,58 +770,71 @@ func (v *HirVisitor) VisitGroupItem(ctx *parser.GroupItemContext) any {
 	if td := ctx.TestDeclStmt(); td != nil {
 		return v.Visit(td)
 	}
+
 	if gd := ctx.GroupDeclStmt(); gd != nil {
 		return v.Visit(gd)
 	}
+
 	if ss := ctx.SetupStmt(); ss != nil {
 		return v.Visit(ss)
 	}
+
 	if ts := ctx.TeardownStmt(); ts != nil {
 		return v.Visit(ts)
 	}
+
 	return nil
 }
 
 func (v *HirVisitor) VisitSetupStmt(ctx *parser.SetupStmtContext) any {
 	st := &SetupStmt{node: v.mkNode(ctx), IsAll: strings.Contains(ctx.GetText(), "setupAll")}
+
 	if bl := ctx.Block(); bl != nil {
 		if body, ok := v.Visit(bl).(*BlockStmt); ok {
 			st.Body = body
 		}
 	}
+
 	return st
 }
 
 func (v *HirVisitor) VisitTeardownStmt(ctx *parser.TeardownStmtContext) any {
 	st := &TeardownStmt{node: v.mkNode(ctx), IsAll: strings.Contains(ctx.GetText(), "teardownAll")}
+
 	if bl := ctx.Block(); bl != nil {
 		if body, ok := v.Visit(bl).(*BlockStmt); ok {
 			st.Body = body
 		}
 	}
+
 	return st
 }
 
 func (v *HirVisitor) VisitAssertStmt(ctx *parser.AssertStmtContext) any {
 	st := &AssertStmt{node: v.mkNode(ctx)}
+
 	if ex := ctx.Expr(); ex != nil {
 		if e, ok := v.Visit(ex).(Expr); ok {
 			st.Expr = e
 		}
 	}
+
 	return st
 }
 
 func (v *HirVisitor) VisitAsSessionStmt(ctx *parser.AsSessionStmtContext) any {
 	st := &AsSessionStmt{node: v.mkNode(ctx)}
+
 	if lit := ctx.STRING_LITERAL(); lit != nil {
 		st.Name = unquoteString(lit.GetText())
 	}
+
 	if bl := ctx.Block(); bl != nil {
 		if body, ok := v.Visit(bl).(*BlockStmt); ok {
 			st.Body = body
 		}
 	}
+
 	return st
 }
 
@@ -765,18 +843,22 @@ func (v *HirVisitor) VisitWireGroupStmt(ctx *parser.WireGroupStmtContext) any {
 		node: v.mkNode(ctx),
 		Wire: &WireSpec{Options: map[string]WireOptValue{}},
 	}
+
 	if ws := ctx.WireSpec(); ws != nil {
 		wg.Wire = v.buildWireSpec(ws)
 	}
+
 	for _, s := range ctx.AllStmt() {
 		inner := v.VisitStmt(s.(*parser.StmtContext))
 		if inner == nil {
 			continue
 		}
+
 		if st, ok := inner.(Stmt); ok {
 			wg.Stmts = append(wg.Stmts, st)
 		}
 	}
+
 	return wg
 }
 
@@ -785,33 +867,38 @@ func (v *HirVisitor) VisitWireRulesetStmt(ctx *parser.WireRulesetStmtContext) an
 		node:    v.mkNode(ctx),
 		Options: map[string]WireOptValue{},
 	}
+
 	if id := ctx.ID(); id != nil {
 		rs.Name = id.GetSymbol().GetText()
 	}
+
 	if opts := ctx.WireOptions(); opts != nil {
 		for _, o := range opts.AllWireOption() {
 			key := o.ID().GetSymbol().GetText()
 			rs.Options[key] = v.parseWireOptionValue(o.Expr())
 		}
 	}
+
 	return rs
 }
 
 func (v *HirVisitor) buildWireSpec(ws parser.IWireSpecContext) *WireSpec {
 	spec := &WireSpec{Options: map[string]WireOptValue{}}
+
 	if id := ws.ID(); id != nil {
 		spec.Ruleset = id.GetSymbol().GetText()
 	}
+
 	if opts := ws.WireOptions(); opts != nil {
 		for _, o := range opts.AllWireOption() {
 			key := o.ID().GetSymbol().GetText()
 			spec.Options[key] = v.parseWireOptionValue(o.Expr())
 		}
 	}
+
 	return spec
 }
 
-// flattenWireGroups expands any WireGroupStmt nodes inline, propagating the group's wire spec to each inner decl statement that supports it.
 func flattenWireGroups(stmts []Stmt) []Stmt {
 	out := make([]Stmt, 0, len(stmts))
 	for _, st := range stmts {
@@ -822,10 +909,12 @@ func flattenWireGroups(stmts []Stmt) []Stmt {
 				applyGroupWire(child, g.Wire)
 				out = append(out, child)
 			}
+
 		default:
 			out = append(out, st)
 		}
 	}
+
 	return out
 }
 
@@ -833,6 +922,7 @@ func applyGroupWire(st Stmt, group *WireSpec) {
 	if group == nil {
 		return
 	}
+
 	switch d := st.(type) {
 	case *VarDeclStmt:
 		d.IsWired = true
@@ -847,21 +937,27 @@ func mergeWireSpec(child, group *WireSpec) *WireSpec {
 	if group == nil {
 		return child
 	}
+
 	if child == nil {
 		out := &WireSpec{Options: map[string]WireOptValue{}}
+
 		for k, v := range group.Options {
 			out.Options[k] = v
 		}
+
 		return out
 	}
+
 	if child.Options == nil {
 		child.Options = map[string]WireOptValue{}
 	}
+
 	for k, v := range group.Options {
 		if _, has := child.Options[k]; !has {
 			child.Options[k] = v
 		}
 	}
+
 	return child
 }
 
@@ -873,19 +969,23 @@ func (v *HirVisitor) VisitImportStmt(ctx *parser.ImportStmtContext) any {
 	if len(parts) > 0 {
 		alias = parts[len(parts)-1]
 	}
+
 	stmt := &ImportStmt{
 		node:  v.mkNode(ctx),
 		Path:  PackagePath(parts),
 		Alias: alias,
 	}
+
 	if u := ctx.UsingClause(); u != nil {
 		if u.MULT() != nil {
 			stmt.UsingAll = true
 		}
+
 		for _, id := range u.AllID() {
 			stmt.UsingList = append(stmt.UsingList, id.GetText())
 		}
 	}
+
 	return stmt
 }
 
@@ -900,8 +1000,10 @@ func (v *HirVisitor) VisitBlock(ctx *parser.BlockContext) any {
 		if st == nil {
 			continue
 		}
+
 		b.Stmts = append(b.Stmts, st.(Stmt))
 	}
+
 	b.Stmts = flattenWireGroups(b.Stmts)
 	return b
 }
@@ -920,7 +1022,6 @@ func (v *HirVisitor) VisitVarDeclStmt(ctx *parser.VarDeclStmtContext) any {
 		st.Wire = v.buildWireSpec(wireCtx)
 	}
 
-	// Targets (can be multiple for tuple destructuring)
 	for _, targetCtx := range ctx.AllVarDeclTarget() {
 		target := v.Visit(targetCtx)
 		if t, ok := target.(VarDeclTarget); ok {
@@ -943,7 +1044,6 @@ func (v *HirVisitor) VisitVarDeclStmt(ctx *parser.VarDeclStmtContext) any {
 func (v *HirVisitor) VisitVarDeclTarget(ctx *parser.VarDeclTargetContext) any {
 	target := VarDeclTarget{}
 
-	// Check if this is a discard '_'
 	if ctx.GetText() == "_" {
 		target.Name = nil
 	} else if soft := ctx.SoftId(); soft != nil {
@@ -964,14 +1064,18 @@ func (v *HirVisitor) parseWireOptionValue(exprCtx parser.IExprContext) WireOptVa
 	if exprCtx == nil {
 		return WireOptValue{}
 	}
+
 	res := v.Visit(exprCtx)
 	switch lit := res.(type) {
 	case *LitString:
 		return WireOptValue{Kind: WireOptString, Str: lit.Value}
+
 	case *LitInt:
 		return WireOptValue{Kind: WireOptInt, Int: lit.Value}
+
 	case *LitBool:
 		return WireOptValue{Kind: WireOptBool, Bool: lit.Value}
+
 	case *ArrayLiteral:
 		strs := make([]string, 0, len(lit.Elems))
 		for _, el := range lit.Elems {
@@ -979,8 +1083,10 @@ func (v *HirVisitor) parseWireOptionValue(exprCtx parser.IExprContext) WireOptVa
 				strs = append(strs, s.Value)
 			}
 		}
+
 		return WireOptValue{Kind: WireOptStringArray, Strs: strs}
 	}
+
 	return WireOptValue{}
 }
 
@@ -989,30 +1095,27 @@ func (v *HirVisitor) VisitFuncDeclStmt(ctx *parser.FuncDeclStmtContext) any {
 		node:    v.mkNode(ctx),
 		docBase: docBase{doc: v.docCommentBefore(ctx)},
 	}
+
 	st.Annotations = v.collectAnnotations(ctx.AllAnnotation())
 	if wireCtx := ctx.WireSpec(); wireCtx != nil {
 		st.IsWired = true
 		st.Wire = v.buildWireSpec(wireCtx)
 	}
 
-	// Side
 	if ctx.SideDecl() != nil {
 		sideSpec := v.Visit(ctx.SideDecl().Side()).(SideSpec)
 		st.Side = &sideSpec
 	}
 
-	// Name
 	name, span := v.softIdNameAndSpan(ctx.SoftId())
 	st.Name = NameRef{Name: name, Sym: 0, Span: span}
 
-	// Generic type parameters
 	if gp := ctx.GenericParams(); gp != nil {
 		for _, p := range gp.AllGenericParam() {
 			st.TypeParams = append(st.TypeParams, v.buildGenericParamDecl(p))
 		}
 	}
 
-	// Parameters
 	if ctx.FuncParamList() != nil {
 		for _, paramCtx := range ctx.FuncParamList().AllFuncParam() {
 			param := v.Visit(paramCtx).(FuncParam)
@@ -1020,14 +1123,12 @@ func (v *HirVisitor) VisitFuncDeclStmt(ctx *parser.FuncDeclStmtContext) any {
 		}
 	}
 
-	// Return type
 	if ctx.TypeAnnot() != nil {
 		if tr, ok := v.Visit(ctx.TypeAnnot()).(*TypeRef); ok {
 			st.ReturnType = tr
 		}
 	}
 
-	// Body
 	if ctx.Block() != nil {
 		body := v.Visit(ctx.Block()).(*BlockStmt)
 		st.Body = body
@@ -1042,11 +1143,9 @@ func (v *HirVisitor) VisitFuncParam(ctx *parser.FuncParamContext) any {
 		IsVariadic: ctx.VARARG() != nil,
 	}
 
-	// Name
 	pname, pspan := v.softIdNameAndSpan(ctx.SoftId())
 	param.Name = NameRef{Span: pspan, Name: pname, Sym: 0}
 
-	// Type
 	if ctx.TypeAnnot() != nil {
 		if tr, ok := v.Visit(ctx.TypeAnnot()).(*TypeRef); ok {
 			param.Type = tr
@@ -1077,12 +1176,14 @@ func (v *HirVisitor) VisitExternDecl(ctx *parser.ExternDeclContext) any {
 		st.Module = &modulePath
 		st.Version = version
 	}
+
 	st.IsDefaultImport = hasLiteralChild(ctx, "default")
 
 	moduleStr := ""
 	if st.Module != nil {
 		moduleStr = *st.Module
 	}
+
 	for _, itemCtx := range ctx.AllExternItem() {
 		item := v.Visit(itemCtx)
 		switch v := item.(type) {
@@ -1099,6 +1200,7 @@ func (v *HirVisitor) VisitExternDecl(ctx *parser.ExternDeclContext) any {
 					filtered = append(filtered, c)
 				}
 			}
+
 			v.Ctors = filtered
 			st.Types = append(st.Types, v)
 		case *InterfaceDeclStmt:
@@ -1115,15 +1217,19 @@ func (v *HirVisitor) VisitExternItem(ctx *parser.ExternItemContext) any {
 	if ctx.ExternFunc() != nil {
 		return v.Visit(ctx.ExternFunc())
 	}
+
 	if ctx.ExternVar() != nil {
 		return v.Visit(ctx.ExternVar())
 	}
+
 	if ctx.TypeDeclStmt() != nil {
 		return v.Visit(ctx.TypeDeclStmt())
 	}
+
 	if ctx.InterfaceDeclStmt() != nil {
 		return v.Visit(ctx.InterfaceDeclStmt())
 	}
+
 	return nil
 }
 
@@ -1137,6 +1243,7 @@ func (v *HirVisitor) VisitExternFunc(ctx *parser.ExternFuncContext) any {
 	if ctx.SoftId() == nil {
 		return fn
 	}
+
 	fname, fspan := v.softIdNameAndSpan(ctx.SoftId())
 	fn.Name = NameRef{Name: fname, Sym: 0, Span: fspan}
 
@@ -1256,9 +1363,11 @@ func (v *HirVisitor) VisitExternSide(ctx *parser.ExternSideContext) any {
 	if ctx.SIDE_FRONTEND() != nil {
 		return SideFrontend
 	}
+
 	if ctx.SIDE_BACKEND() != nil {
 		return SideBackend
 	}
+
 	return SideUnknown
 }
 
@@ -1275,7 +1384,6 @@ func (v *HirVisitor) VisitEnumDeclStmt(ctx *parser.EnumDeclStmtContext) any {
 		Span: v.spanFromTok(nameTok),
 	}
 
-	// Parse payload fields if present
 	if payloadDef := ctx.EnumPayloadDef(); payloadDef != nil {
 		for _, fieldCtx := range payloadDef.AllEnumFieldDef() {
 			field := v.Visit(fieldCtx).(*EnumFieldDef)
@@ -1283,7 +1391,6 @@ func (v *HirVisitor) VisitEnumDeclStmt(ctx *parser.EnumDeclStmtContext) any {
 		}
 	}
 
-	// Parse cases and methods from body
 	if bodyCtx := ctx.EnumBody(); bodyCtx != nil {
 		for _, caseCtx := range bodyCtx.AllEnumCase() {
 			enumCase := v.Visit(caseCtx).(*EnumCase)
@@ -1300,7 +1407,7 @@ func (v *HirVisitor) VisitEnumDeclStmt(ctx *parser.EnumDeclStmtContext) any {
 }
 
 func (v *HirVisitor) VisitEnumPayloadDef(ctx *parser.EnumPayloadDefContext) any {
-	// This is handled in VisitEnumDeclStmt
+
 	return nil
 }
 
@@ -1330,7 +1437,7 @@ func (v *HirVisitor) VisitEnumFieldDef(ctx *parser.EnumFieldDefContext) any {
 }
 
 func (v *HirVisitor) VisitEnumBody(ctx *parser.EnumBodyContext) any {
-	// This is handled in VisitEnumDeclStmt
+
 	return nil
 }
 
@@ -1346,7 +1453,6 @@ func (v *HirVisitor) VisitEnumCase(ctx *parser.EnumCaseContext) any {
 		Span: v.spanFromTok(nameTok),
 	}
 
-	// Parse case arguments if present
 	if argsCtx := ctx.EnumCaseArgs(); argsCtx != nil {
 		for _, exprCtx := range argsCtx.AllExpr() {
 			arg := v.Visit(exprCtx).(Expr)
@@ -1354,7 +1460,6 @@ func (v *HirVisitor) VisitEnumCase(ctx *parser.EnumCaseContext) any {
 		}
 	}
 
-	// Parse explicit value if present
 	if ctx.INT_LITERAL() != nil {
 		val, _ := parseIntLiteral(ctx.INT_LITERAL().GetText())
 		c.Value = &val
@@ -1364,7 +1469,7 @@ func (v *HirVisitor) VisitEnumCase(ctx *parser.EnumCaseContext) any {
 }
 
 func (v *HirVisitor) VisitEnumCaseArgs(ctx *parser.EnumCaseArgsContext) any {
-	// This is handled in VisitEnumCase
+
 	return nil
 }
 
@@ -1471,6 +1576,7 @@ func (v *HirVisitor) VisitBreakStmt(ctx *parser.BreakStmtContext) any {
 			v.diag.Report(diag.ErrInvalidControlFlowDepth, v.spanFromTok(ctx.INT_LITERAL().GetSymbol()), ctx.INT_LITERAL().GetText())
 			return nil
 		}
+
 		depth = int(val)
 	}
 
@@ -1488,6 +1594,7 @@ func (v *HirVisitor) VisitContinueStmt(ctx *parser.ContinueStmtContext) any {
 			v.diag.Report(diag.ErrInvalidControlFlowDepth, v.spanFromTok(ctx.INT_LITERAL().GetSymbol()), ctx.INT_LITERAL().GetText())
 			return nil
 		}
+
 		depth = int(val)
 	}
 
@@ -1502,7 +1609,6 @@ func (v *HirVisitor) VisitReturnStmt(ctx *parser.ReturnStmtContext) any {
 		node: v.mkNode(ctx),
 	}
 
-	// Handle multiple return expressions
 	for _, exprCtx := range ctx.AllExpr() {
 		expr := v.Visit(exprCtx).(Expr)
 		st.Results = append(st.Results, expr)
@@ -1519,7 +1625,6 @@ func (v *HirVisitor) VisitGuardStmt(ctx *parser.GuardStmtContext) any {
 		Cond: cond,
 	}
 
-	// Handle multiple return expressions
 	if ctx.GuardReturn() != nil {
 		for _, exprCtx := range ctx.GuardReturn().AllExpr() {
 			expr := v.Visit(exprCtx).(Expr)
@@ -1614,6 +1719,7 @@ func (v *HirVisitor) VisitForInCondition(ctx *parser.ForInConditionContext) any 
 		} else {
 			tok = t.GetStart()
 		}
+
 		return NameRef{
 			Name: tok.GetText(),
 			Sym:  0,
@@ -1753,10 +1859,12 @@ func (v *HirVisitor) VisitFieldAssignmentExprStmt(ctx *parser.FieldAssignmentExp
 		Op:       op,
 		Value:    v.Visit(ctx.Expr()).(Expr),
 	}
+
 	for _, idNode := range ids[1:] {
 		fname, fspan := v.softIdNameAndSpan(idNode)
 		stmt.Fields = append(stmt.Fields, FieldName{Name: fname, Span: fspan})
 	}
+
 	return stmt
 }
 
@@ -1783,7 +1891,6 @@ func (v *HirVisitor) VisitAssignmentExprStmt(ctx *parser.AssignmentExprStmtConte
 	}
 }
 
-// VisitIndexAssignmentExprStmt lowers `recv[idx] = value` (and the compound `recv[idx] += value` forms) to an IndexAssignmentStmt. The three sub-expressions (receiver, index, value) are pulled off the rule's `Expr(N)` accessors in declaration order — receiver first, then index inside the brackets, then the right-hand side after the assignment operator.
 func (v *HirVisitor) VisitIndexAssignmentExprStmt(ctx *parser.IndexAssignmentExprStmtContext) any {
 	opStr := ctx.AssignmentOp().GetText()
 	op, ok := v.parseOp(opStr)
@@ -1845,6 +1952,7 @@ func (v *HirVisitor) VisitFuncCallExprStmt(ctx *parser.FuncCallExprStmtContext) 
 	if ctx.Expr() == nil {
 		return &FuncCallExpr{node: v.mkNode(ctx)}
 	}
+
 	visited := v.Visit(ctx.Expr())
 	callee, _ := visited.(Expr)
 	fc := &FuncCallExpr{
@@ -1859,14 +1967,17 @@ func (v *HirVisitor) VisitFuncCallExprStmt(ctx *parser.FuncCallExprStmtContext) 
 			if argCtx.SoftId() != nil {
 				argName = argCtx.SoftId().GetText()
 			}
+
 			exprCtx := argCtx.Expr()
 			if exprCtx == nil {
 				continue
 			}
+
 			argExpr, ok := v.Visit(exprCtx).(Expr)
 			if !ok || argExpr == nil {
 				continue
 			}
+
 			fc.Args = append(fc.Args, FuncCallArg{
 				Name: argName,
 				Expr: argExpr,
@@ -1880,8 +1991,6 @@ func (v *HirVisitor) VisitFuncCallExprStmt(ctx *parser.FuncCallExprStmtContext) 
 	}
 }
 
-// --- Expressions ---
-
 func (v *HirVisitor) VisitWhenExpr(ctx *parser.WhenExprContext) any {
 	expr := v.Visit(ctx.Expr()).(Expr)
 
@@ -1891,7 +2000,7 @@ func (v *HirVisitor) VisitWhenExpr(ctx *parser.WhenExprContext) any {
 		var caseResult Expr
 		exprCount := len(caseCtx.AllExpr())
 		for idx, exprCtx := range caseCtx.AllExpr() {
-			if idx+1 == exprCount { // last expression is the result
+			if idx+1 == exprCount {
 				caseResult = v.Visit(exprCtx).(Expr)
 			} else {
 				caseExprs = append(caseExprs, v.Visit(exprCtx).(Expr))
@@ -1978,12 +2087,14 @@ func (v *HirVisitor) buildBinaryExpr(ctx antlr.ParserRuleContext, leftCtx, right
 		v.diag.Report(diag.ErrInvalidOperator, v.spanFromCtx(ctx), ctx.GetText())
 		return nil
 	}
+
 	opTok := tn.GetSymbol()
 	op, ok := v.parseOp(opTok.GetText())
 	if !ok {
 		v.diag.Report(diag.ErrInvalidOperator, v.spanFromTok(opTok), opTok.GetText())
 		return nil
 	}
+
 	return &BinaryExpr{
 		node:     v.mkNode(ctx),
 		exprBase: exprBase{},
@@ -2038,7 +2149,7 @@ func (v *HirVisitor) VisitCoalesceExpr(ctx *parser.CoalesceExprContext) any {
 	defaultExpr := v.Visit(ctx.Expr(1))
 
 	if leftExpr == nil || defaultExpr == nil {
-		// Debug: one of the expressions failed to parse
+
 		return &CoalesceExpr{
 			node:     v.mkNode(ctx),
 			exprBase: exprBase{},
@@ -2083,6 +2194,7 @@ func (v *HirVisitor) VisitAsExpr(ctx *parser.AsExprContext) any {
 			break
 		}
 	}
+
 	return &AsExpr{
 		node:     v.mkNode(ctx),
 		exprBase: exprBase{},
@@ -2122,7 +2234,6 @@ func (v *HirVisitor) VisitIndexExpr(ctx *parser.IndexExprContext) any {
 	}
 }
 
-// VisitSliceRangeExpr lowers `expr[low?:high?]`. Either bound may be absent (`s[:5]`, `s[5:]`, `s[:]`); the corresponding IR field stays `nil` and codegen substitutes 0 / `len(expr)` on the target side.
 func (v *HirVisitor) VisitSliceRangeExpr(ctx *parser.SliceRangeExprContext) any {
 	exprs := ctx.AllExpr()
 	base, _ := v.Visit(exprs[0]).(Expr)
@@ -2138,10 +2249,12 @@ func (v *HirVisitor) VisitSliceRangeExpr(ctx *parser.SliceRangeExprContext) any 
 			if tokText == ":" {
 				pastColon = true
 			}
+
 		case parser.IExprContext:
 			if n == exprs[0] {
 				continue
 			}
+
 			val, _ := v.Visit(n).(Expr)
 			if pastColon {
 				out.High = val
@@ -2152,6 +2265,7 @@ func (v *HirVisitor) VisitSliceRangeExpr(ctx *parser.SliceRangeExprContext) any 
 			}
 		}
 	}
+
 	_ = sawLow
 	_ = sawHigh
 	return out
@@ -2165,6 +2279,7 @@ func (v *HirVisitor) VisitFieldAccessExpr(ctx *parser.FieldAccessExprContext) an
 		fname, fspan := v.softIdNameAndSpan(soft)
 		fields = append(fields, FieldName{Name: fname, Span: fspan})
 	}
+
 	return &FieldAccessExpr{node: v.mkNode(ctx), Expr: base, Fields: fields}
 }
 
@@ -2213,6 +2328,7 @@ func (v *HirVisitor) VisitFuncCallExpr(ctx *parser.FuncCallExprContext) any {
 			if argCtx.SoftId() != nil {
 				argName = argCtx.SoftId().GetText()
 			}
+
 			argExpr := v.Visit(argCtx.Expr()).(Expr)
 			fc.Args = append(fc.Args, FuncCallArg{
 				Name: argName,
@@ -2230,23 +2346,27 @@ func (v *HirVisitor) VisitTurbofishCallExpr(ctx *parser.TurbofishCallExprContext
 		exprBase: exprBase{},
 		Callee:   v.visitExpr(ctx.Expr()),
 	}
+
 	for _, ta := range ctx.AllTypeAnnot() {
 		if tr, ok := v.Visit(ta).(*TypeRef); ok {
 			fc.TypeArgs = append(fc.TypeArgs, tr)
 		}
 	}
+
 	if ctx.FuncArgList() != nil {
 		for _, argCtx := range ctx.FuncArgList().AllFuncArg() {
 			var argName string
 			if argCtx.SoftId() != nil {
 				argName = argCtx.SoftId().GetText()
 			}
+
 			fc.Args = append(fc.Args, FuncCallArg{
 				Name: argName,
 				Expr: v.visitExpr(argCtx.Expr()),
 			})
 		}
 	}
+
 	return fc
 }
 
@@ -2256,11 +2376,13 @@ func (v *HirVisitor) VisitGenericFuncCallExpr(ctx *parser.GenericFuncCallExprCon
 		node: v.mkNode(ctx),
 		Ref:  NameRef{Name: name, Span: span},
 	}
+
 	fc := &FuncCallExpr{
 		node:     v.mkNode(ctx),
 		exprBase: exprBase{},
 		Callee:   callee,
 	}
+
 	if ga := ctx.GenericArgs(); ga != nil {
 		for _, t := range ga.AllType_() {
 			if argRef, ok := v.Visit(t).(*TypeRef); ok {
@@ -2268,12 +2390,14 @@ func (v *HirVisitor) VisitGenericFuncCallExpr(ctx *parser.GenericFuncCallExprCon
 			}
 		}
 	}
+
 	if ctx.FuncArgList() != nil {
 		for _, argCtx := range ctx.FuncArgList().AllFuncArg() {
 			var argName string
 			if argCtx.SoftId() != nil {
 				argName = argCtx.SoftId().GetText()
 			}
+
 			argExpr := v.Visit(argCtx.Expr()).(Expr)
 			fc.Args = append(fc.Args, FuncCallArg{
 				Name: argName,
@@ -2281,6 +2405,7 @@ func (v *HirVisitor) VisitGenericFuncCallExpr(ctx *parser.GenericFuncCallExprCon
 			})
 		}
 	}
+
 	return fc
 }
 
@@ -2290,11 +2415,13 @@ func (v *HirVisitor) VisitGenericFuncCallExprStmt(ctx *parser.GenericFuncCallExp
 		node: v.mkNode(ctx),
 		Ref:  NameRef{Name: name, Span: span},
 	}
+
 	fc := &FuncCallExpr{
 		node:     v.mkNode(ctx),
 		exprBase: exprBase{},
 		Callee:   callee,
 	}
+
 	if ga := ctx.GenericArgs(); ga != nil {
 		for _, t := range ga.AllType_() {
 			if argRef, ok := v.Visit(t).(*TypeRef); ok {
@@ -2302,12 +2429,14 @@ func (v *HirVisitor) VisitGenericFuncCallExprStmt(ctx *parser.GenericFuncCallExp
 			}
 		}
 	}
+
 	if ctx.FuncArgList() != nil {
 		for _, argCtx := range ctx.FuncArgList().AllFuncArg() {
 			var argName string
 			if argCtx.SoftId() != nil {
 				argName = argCtx.SoftId().GetText()
 			}
+
 			argExpr := v.Visit(argCtx.Expr()).(Expr)
 			fc.Args = append(fc.Args, FuncCallArg{
 				Name: argName,
@@ -2315,6 +2444,7 @@ func (v *HirVisitor) VisitGenericFuncCallExprStmt(ctx *parser.GenericFuncCallExp
 			})
 		}
 	}
+
 	return &ExprStmt{
 		node: v.mkNode(ctx),
 		Expr: fc,
@@ -2323,37 +2453,43 @@ func (v *HirVisitor) VisitGenericFuncCallExprStmt(ctx *parser.GenericFuncCallExp
 
 func (v *HirVisitor) VisitWildcardType(ctx *parser.WildcardTypeContext) any {
 	tr := &TypeRef{node: v.mkNode(ctx), Kind: TK_TypeParam, CustomName: "?"}
+
 	return tr
 }
 
 func (v *HirVisitor) VisitChanType(ctx *parser.ChanTypeContext) any {
 	tr := &TypeRef{node: v.mkNode(ctx), Kind: TK_Chan}
+
 	if t := ctx.Type_(); t != nil {
 		if elem, ok := v.Visit(t).(*TypeRef); ok {
 			tr.Elem = elem
 		}
 	}
+
 	return tr
 }
 
 func (v *HirVisitor) VisitChanInitExpr(ctx *parser.ChanInitExprContext) any {
 	expr := &ChanInitExpr{node: v.mkNode(ctx)}
+
 	if t := ctx.Type_(); t != nil {
 		if elem, ok := v.Visit(t).(*TypeRef); ok {
 			expr.ElemType = elem
 		}
 	}
+
 	if ex := ctx.Expr(); ex != nil {
 		if e, ok := v.Visit(ex).(Expr); ok {
 			expr.Capacity = e
 		}
 	}
+
 	return expr
 }
 
-// buildGenericParamDecl extracts a single generic parameter's name plus its optional `: InterfaceA + InterfaceB` and `with MixinA + MixinB` constraint lists from the parsed generic-param node.
 func (v *HirVisitor) buildGenericParamDecl(ctx parser.IGenericParamContext) TypeParamDecl {
 	decl := TypeParamDecl{Name: ctx.ID().GetText()}
+
 	hadColon := false
 	for i := 0; i < ctx.GetChildCount(); i++ {
 		child := ctx.GetChild(i)
@@ -2363,18 +2499,22 @@ func (v *HirVisitor) buildGenericParamDecl(ctx parser.IGenericParamContext) Type
 			if text == ":" {
 				hadColon = true
 			}
+
 			if text == "with" {
 				hadColon = false
 			}
+
 		case parser.IQualifiedRefContext:
 			ids := tok.AllSoftId()
 			ref := NameRef{}
+
 			if len(ids) >= 2 {
 				ref.Qualifier = ids[0].GetText()
 				ref.Name = ids[1].GetText()
 			} else if len(ids) == 1 {
 				ref.Name = ids[0].GetText()
 			}
+
 			if hadColon {
 				decl.ImplementsConstraints = append(decl.ImplementsConstraints, ref)
 			} else {
@@ -2382,6 +2522,7 @@ func (v *HirVisitor) buildGenericParamDecl(ctx parser.IGenericParamContext) Type
 			}
 		}
 	}
+
 	return decl
 }
 
@@ -2392,23 +2533,28 @@ func (v *HirVisitor) VisitComposableCallExpr(ctx *parser.ComposableCallExprConte
 		exprBase: exprBase{},
 		Callee:   callee,
 	}
+
 	if ctx.FuncArgList() != nil {
 		for _, argCtx := range ctx.FuncArgList().AllFuncArg() {
 			var argName string
 			if argCtx.SoftId() != nil {
 				argName = argCtx.SoftId().GetText()
 			}
+
 			argExpr := v.Visit(argCtx.Expr()).(Expr)
 			cc.Args = append(cc.Args, FuncCallArg{Name: argName, Expr: argExpr})
 		}
 	}
+
 	for _, childCtx := range ctx.AllComposableChild() {
 		child, ok := v.buildComposableChild(childCtx)
 		if !ok {
 			continue
 		}
+
 		cc.Children = append(cc.Children, child)
 	}
+
 	return cc
 }
 
@@ -2419,6 +2565,7 @@ func (v *HirVisitor) buildComposableChild(ctx parser.IComposableChildContext) (C
 		if len(ids) == 0 {
 			return ComposableChild{}, false
 		}
+
 		var qualifier, calleeName string
 		var calleeSpan diag.TextSpan
 		if len(ids) >= 2 {
@@ -2427,19 +2574,23 @@ func (v *HirVisitor) buildComposableChild(ctx parser.IComposableChildContext) (C
 		} else {
 			calleeName, calleeSpan = v.softIdNameAndSpan(ids[0])
 		}
+
 		callee := buildBareComposableCallee(v, c, qualifier, calleeName, calleeSpan)
 		cc := &ComposableCallExpr{
 			node:     v.mkNode(c),
 			exprBase: exprBase{},
 			Callee:   callee,
 		}
+
 		for _, childCtx := range c.AllComposableChild() {
 			child, ok := v.buildComposableChild(childCtx)
 			if !ok {
 				continue
 			}
+
 			cc.Children = append(cc.Children, child)
 		}
+
 		return ComposableChild{Kind: ComposableChildExpr, Expr: cc}, true
 	case *parser.ComposableExprChildContext:
 		if e := c.Expr(); e != nil {
@@ -2447,6 +2598,7 @@ func (v *HirVisitor) buildComposableChild(ctx parser.IComposableChildContext) (C
 				return ComposableChild{Kind: ComposableChildExpr, Expr: expr}, true
 			}
 		}
+
 		return ComposableChild{}, false
 	case *parser.ComposableIfChildContext:
 		if s := c.IfStmt(); s != nil {
@@ -2454,18 +2606,21 @@ func (v *HirVisitor) buildComposableChild(ctx parser.IComposableChildContext) (C
 				return ComposableChild{Kind: ComposableChildIf, Stmt: st}, true
 			}
 		}
+
 	case *parser.ComposableForChildContext:
 		if s := c.ForStmt(); s != nil {
 			if st, ok := v.Visit(s).(Stmt); ok {
 				return ComposableChild{Kind: ComposableChildFor, Stmt: st}, true
 			}
 		}
+
 	case *parser.ComposableWhileChildContext:
 		if s := c.WhileStmt(); s != nil {
 			if st, ok := v.Visit(s).(Stmt); ok {
 				return ComposableChild{Kind: ComposableChildWhile, Stmt: st}, true
 			}
 		}
+
 	case *parser.ComposableSwitchChildContext:
 		if s := c.SwitchStmt(); s != nil {
 			if st, ok := v.Visit(s).(Stmt); ok {
@@ -2473,12 +2628,13 @@ func (v *HirVisitor) buildComposableChild(ctx parser.IComposableChildContext) (C
 			}
 		}
 	}
+
 	return ComposableChild{}, false
 }
 
-// buildBareComposableCallee constructs the callee expression for the bare composable form `Type { ... }` (no parenthesised argument list). The callee is rendered as either a plain IdExpr (`H1`) or a FieldAccessExpr (`dom.H1`) so that downstream name resolution and synthesisableComposableCallType treat it identically to the parenthesised form. Takes pre-extracted name+span (rather than an `antlr.Token`) because the softId grammar rule may match a keyword-like token whose `TerminalNode` accessor returns nil.
 func buildBareComposableCallee(v *HirVisitor, ctx antlr.ParserRuleContext, qualifier, name string, span diag.TextSpan) Expr {
 	nameRef := NameRef{Name: name, Span: span}
+
 	if qualifier == "" {
 		return &VarRef{
 			node:     node{id: v.nid(), span: span},
@@ -2486,6 +2642,7 @@ func buildBareComposableCallee(v *HirVisitor, ctx antlr.ParserRuleContext, quali
 			Ref:      nameRef,
 		}
 	}
+
 	return &VarRef{
 		node:     node{id: v.nid(), span: span},
 		exprBase: exprBase{},
@@ -2523,10 +2680,12 @@ func (v *HirVisitor) VisitNewInstanceExpr(ctx *parser.NewInstanceExprContext) an
 			if argCtx.SoftId() != nil {
 				argName = argCtx.SoftId().GetText()
 			}
+
 			argExpr := v.Visit(argCtx.Expr()).(Expr)
 			expr.Args = append(expr.Args, FuncCallArg{Name: argName, Expr: argExpr})
 		}
 	}
+
 	return expr
 }
 
@@ -2536,7 +2695,6 @@ func (v *HirVisitor) VisitFuncLiteralExpr(ctx *parser.FuncLiteralExprContext) an
 		exprBase: exprBase{},
 	}
 
-	// Parameters
 	if pl := ctx.FuncParamList(); pl != nil {
 		for _, paramCtx := range pl.AllFuncParam() {
 			param := v.Visit(paramCtx).(FuncParam)
@@ -2544,14 +2702,12 @@ func (v *HirVisitor) VisitFuncLiteralExpr(ctx *parser.FuncLiteralExprContext) an
 		}
 	}
 
-	// Return type
 	if ctx.TypeAnnot() != nil {
 		if tr, ok := v.Visit(ctx.TypeAnnot()).(*TypeRef); ok {
 			fl.ReturnType = tr
 		}
 	}
 
-	// Body
 	if ctx.Block() != nil {
 		body := v.Visit(ctx.Block()).(*BlockStmt)
 		fl.Body = body
@@ -2574,7 +2730,9 @@ func (v *HirVisitor) VisitLiteral(ctx *parser.LiteralContext) any {
 			v.diag.Report(diag.ErrInvalidLiteral, v.spanFromTok(tok), txt, "int")
 			return &LitInt{node: v.mkNode(ctx), exprBase: exprBase{}, Value: 0}
 		}
+
 		return &LitInt{node: v.mkNode(ctx), exprBase: exprBase{}, Value: val}
+
 	case ctx.FLOAT_LITERAL() != nil:
 		tok := ctx.FLOAT_LITERAL().GetSymbol()
 		txt := tok.GetText()
@@ -2583,21 +2741,28 @@ func (v *HirVisitor) VisitLiteral(ctx *parser.LiteralContext) any {
 			v.diag.Report(diag.ErrInvalidLiteral, v.spanFromTok(tok), txt, "float")
 			return &LitFloat{node: v.mkNode(ctx), exprBase: exprBase{}, Value: 0.0}
 		}
+
 		return &LitFloat{node: v.mkNode(ctx), exprBase: exprBase{}, Value: val}
+
 	case ctx.STRING_LITERAL() != nil:
 		tok := ctx.STRING_LITERAL().GetSymbol()
 		return &LitString{node: v.mkNode(ctx), exprBase: exprBase{}, Value: unquoteString(tok.GetText())}
+
 	case ctx.TEMPLATE_STRING() != nil:
 		return v.buildTemplateString(ctx)
 	case ctx.CHAR_LITERAL() != nil:
 		tok := ctx.CHAR_LITERAL().GetSymbol()
 		return &LitChar{node: v.mkNode(ctx), exprBase: exprBase{}, Value: unquoteChar(tok.GetText())}
+
 	case ctx.TRUE() != nil:
 		return &LitBool{node: v.mkNode(ctx), exprBase: exprBase{}, Value: true}
+
 	case ctx.FALSE() != nil:
 		return &LitBool{node: v.mkNode(ctx), exprBase: exprBase{}, Value: false}
+
 	case ctx.NONE() != nil:
 		return &LitNone{node: v.mkNode(ctx), exprBase: exprBase{}}
+
 	case ctx.Array_literal() != nil:
 		return v.Visit(ctx.Array_literal()).(Expr)
 	case ctx.Map_literal() != nil:
@@ -2611,14 +2776,17 @@ func (v *HirVisitor) VisitLiteral(ctx *parser.LiteralContext) any {
 
 func (v *HirVisitor) VisitArray_literal(ctx *parser.Array_literalContext) any {
 	al := &ArrayLiteral{node: v.mkNode(ctx)}
+
 	for _, ex := range ctx.AllExpr() {
 		al.Elems = append(al.Elems, v.Visit(ex).(Expr))
 	}
+
 	return al
 }
 
 func (v *HirVisitor) VisitMap_literal(ctx *parser.Map_literalContext) any {
 	ml := &MapLiteral{node: v.mkNode(ctx)}
+
 	exprs := ctx.AllExpr()
 	for i := 0; i+1 < len(exprs); i += 2 {
 		k, _ := v.Visit(exprs[i]).(Expr)
@@ -2626,28 +2794,31 @@ func (v *HirVisitor) VisitMap_literal(ctx *parser.Map_literalContext) any {
 		if k == nil || val == nil {
 			continue
 		}
+
 		ml.Entries = append(ml.Entries, MapEntry{Key: k, Value: val})
 	}
+
 	return ml
 }
 
 func (v *HirVisitor) VisitTuple_literal(ctx *parser.Tuple_literalContext) any {
 	tl := &TupleLiteral{node: v.mkNode(ctx)}
+
 	for _, ex := range ctx.AllExpr() {
 		tl.Elems = append(tl.Elems, v.Visit(ex).(Expr))
 	}
+
 	return tl
 }
 
-// --- Types ---
-
 func (v *HirVisitor) VisitTypeAnnot(ctx *parser.TypeAnnotContext) any {
-	// ':'? type
+
 	r := v.Visit(ctx.Type_())
 	if r == nil {
 		println("DEBUG nil TypeAnnot at", ctx.GetStart().GetLine(), ":", ctx.GetStart().GetColumn(), "text=", ctx.GetText())
 		return &TypeRef{node: v.mkNode(ctx), Kind: TK_PrimitiveAny}
 	}
+
 	return r.(*TypeRef)
 }
 
@@ -2670,7 +2841,7 @@ func (v *HirVisitor) VisitType(ctx *parser.TypeContext) any {
 	case ctx.CustomType() != nil:
 		return v.Visit(ctx.CustomType()).(*TypeRef)
 	default:
-		return &TypeRef{node: v.mkNode(ctx), Kind: TK_Tuple} // fallback, sollte nicht passieren
+		return &TypeRef{node: v.mkNode(ctx), Kind: TK_Tuple}
 	}
 }
 
@@ -2679,16 +2850,19 @@ func (v *HirVisitor) VisitFuncType(ctx *parser.FuncTypeContext) any {
 		node: v.mkNode(ctx),
 		Kind: TK_Function,
 	}
+
 	if list := ctx.FuncTypeParamList(); list != nil {
 		if items, ok := v.Visit(list).([]FuncTypeParamRef); ok {
 			tr.FuncParams = items
 		}
 	}
+
 	if ret := ctx.TypeAnnot(); ret != nil {
 		if rtRef, ok := v.Visit(ret).(*TypeRef); ok {
 			tr.FuncReturn = rtRef
 		}
 	}
+
 	return tr
 }
 
@@ -2699,27 +2873,32 @@ func (v *HirVisitor) VisitFuncTypeParamList(ctx *parser.FuncTypeParamListContext
 			out = append(out, param)
 		}
 	}
+
 	return out
 }
 
 func (v *HirVisitor) VisitFuncTypeParam(ctx *parser.FuncTypeParamContext) any {
 	param := FuncTypeParamRef{}
+
 	if id := ctx.ID(); id != nil {
 		param.Name = id.GetText()
 	}
+
 	if t := ctx.Type_(); t != nil {
 		if tr, ok := v.Visit(t).(*TypeRef); ok {
 			param.Type = tr
 		}
 	}
+
 	return param
 }
 
 func (v *HirVisitor) VisitCustomType(ctx *parser.CustomTypeContext) any {
 	tr := &TypeRef{
 		node: v.mkNode(ctx),
-		Kind: TK_Enum, // Will be verified during type resolution
+		Kind: TK_Enum,
 	}
+
 	head := ctx.PkgIdent().GetText()
 	if tail := ctx.ID(); tail != nil {
 		tr.CustomQualifier = head
@@ -2727,6 +2906,7 @@ func (v *HirVisitor) VisitCustomType(ctx *parser.CustomTypeContext) any {
 	} else {
 		tr.CustomName = head
 	}
+
 	if ga := ctx.GenericArgs(); ga != nil {
 		for _, t := range ga.AllType_() {
 			if argRef, ok := v.Visit(t).(*TypeRef); ok {
@@ -2734,11 +2914,13 @@ func (v *HirVisitor) VisitCustomType(ctx *parser.CustomTypeContext) any {
 			}
 		}
 	}
+
 	return tr
 }
 
 func (v *HirVisitor) VisitPrimitiveType(ctx *parser.PrimitiveTypeContext) any {
 	tr := &TypeRef{node: v.mkNode(ctx)}
+
 	switch {
 	case ctx.INT() != nil:
 		tr.Kind = TK_PrimitiveInt
@@ -2755,6 +2937,7 @@ func (v *HirVisitor) VisitPrimitiveType(ctx *parser.PrimitiveTypeContext) any {
 	case ctx.BYTE() != nil:
 		tr.Kind = TK_PrimitiveByte
 	}
+
 	return tr
 }
 
@@ -2772,6 +2955,7 @@ func (v *HirVisitor) VisitSliceType(ctx *parser.SliceTypeContext) any {
 	if pairs < 1 {
 		pairs = 1
 	}
+
 	tr := v.Visit(ctx.Type_()).(*TypeRef)
 	for i := 0; i < pairs; i++ {
 		tr = &TypeRef{
@@ -2780,6 +2964,7 @@ func (v *HirVisitor) VisitSliceType(ctx *parser.SliceTypeContext) any {
 			Elem: tr,
 		}
 	}
+
 	return tr
 }
 
@@ -2807,10 +2992,12 @@ func (v *HirVisitor) VisitMapType(ctx *parser.MapTypeContext) any {
 
 func (v *HirVisitor) VisitTupleType(ctx *parser.TupleTypeContext) any {
 	tr := &TypeRef{node: v.mkNode(ctx), Kind: TK_Tuple}
+
 	for _, tf := range ctx.AllTupleField() {
 		fr := v.Visit(tf).(TupleFieldRef)
 		tr.Tuple = append(tr.Tuple, fr)
 	}
+
 	return tr
 }
 
@@ -2819,6 +3006,7 @@ func (v *HirVisitor) VisitTupleField(ctx *parser.TupleFieldContext) any {
 	if id := ctx.ID(); id != nil {
 		name = id.GetText()
 	}
+
 	ty := v.Visit(ctx.Type_()).(*TypeRef)
 	return TupleFieldRef{Name: name, Type: ty}
 }
@@ -2892,11 +3080,13 @@ func (v *HirVisitor) parseOp(opStr string) (Op, bool) {
 	case ">>=":
 		return OpShrEq, true
 	}
+
 	return OpUnknown, false
 }
 
 func (v *HirVisitor) VisitTypeDeclStmt(ctx *parser.TypeDeclStmtContext) any {
 	st := &TypeDeclStmt{node: v.mkNode(ctx), docBase: docBase{doc: v.docCommentBefore(ctx)}}
+
 	st.Annotations = v.collectAnnotations(ctx.AllAnnotation())
 
 	nameTok := ctx.ID().GetSymbol()
@@ -2915,19 +3105,23 @@ func (v *HirVisitor) VisitTypeDeclStmt(ctx *parser.TypeDeclStmtContext) any {
 				st.Implements = append(st.Implements, NameRef{Name: tok.GetText(), Span: v.spanFromTok(tok)})
 			}
 		}
+
 		if with := clauseCtx.WithClause(); with != nil {
 			for _, qr := range with.AllQualifiedRef() {
 				ids := qr.AllSoftId()
 				if len(ids) == 0 {
 					continue
 				}
+
 				ref := NameRef{Span: v.spanFromCtx(qr.(antlr.ParserRuleContext))}
+
 				if len(ids) >= 2 {
 					ref.Qualifier = ids[0].GetText()
 					ref.Name = ids[1].GetText()
 				} else {
 					ref.Name = ids[0].GetText()
 				}
+
 				st.MixedIn = append(st.MixedIn, ref)
 			}
 		}
@@ -2939,16 +3133,19 @@ func (v *HirVisitor) VisitTypeDeclStmt(ctx *parser.TypeDeclStmtContext) any {
 				st.Fields = append(st.Fields, field)
 			}
 		}
+
 		if ctorCtx := memberCtx.CtorDecl(); ctorCtx != nil {
 			if ctor, ok := v.Visit(ctorCtx).(*CtorDecl); ok {
 				st.Ctors = append(st.Ctors, ctor)
 			}
 		}
+
 		if methodCtx := memberCtx.MethodDecl(); methodCtx != nil {
 			if method, ok := v.Visit(methodCtx).(*TypeMethodDecl); ok {
 				st.Methods = append(st.Methods, method)
 			}
 		}
+
 		if castCtx := memberCtx.CastDecl(); castCtx != nil {
 			if cast, ok := v.Visit(castCtx).(*CastDecl); ok {
 				st.Casts = append(st.Casts, cast)
@@ -2959,28 +3156,33 @@ func (v *HirVisitor) VisitTypeDeclStmt(ctx *parser.TypeDeclStmtContext) any {
 	if len(st.Ctors) == 0 && len(st.Fields) > 0 && !st.IsExtern {
 		st.Ctors = append(st.Ctors, v.synthFieldCtor(ctx, st.Fields))
 	}
+
 	return st
 }
 
-// synthFieldCtor builds an implicit field-init constructor for a `type X { ... }` declaration that has no explicit `new(...) {...}` block. Parameters mirror the fields in declaration order (typed, with field defaults propagated), and the body assigns each parameter to the matching `this.<field>`.
 func (v *HirVisitor) synthFieldCtor(ctx antlr.ParserRuleContext, fields []*TypeField) *CtorDecl {
 	ctor := &CtorDecl{node: v.mkNode(ctx), IsSynthetic: true}
+
 	body := &BlockStmt{node: v.mkNode(ctx)}
+
 	for _, fld := range fields {
 		param := &FuncParam{
 			node: node{id: v.nid(), span: fld.Name.Span},
 			Name: NameRef{Name: fld.Name.Name, Span: fld.Name.Span},
 			Type: cloneTypeRef(fld.Type, v.nodeAlloc),
 		}
+
 		if fld.Default != nil {
 			param.Default = CloneExpr(fld.Default, v.nodeAlloc)
 		}
+
 		ctor.Params = append(ctor.Params, param)
 
 		rhs := &VarRef{
 			node: node{id: v.nid(), span: fld.Name.Span},
 			Ref:  NameRef{Name: fld.Name.Name, Span: fld.Name.Span},
 		}
+
 		assign := &FieldAssignmentStmt{
 			node:     node{id: v.nid(), span: fld.Name.Span},
 			Receiver: NameRef{Name: "this", Span: fld.Name.Span},
@@ -2988,14 +3190,17 @@ func (v *HirVisitor) synthFieldCtor(ctx antlr.ParserRuleContext, fields []*TypeF
 			Op:       OpAssign,
 			Value:    rhs,
 		}
+
 		body.Stmts = append(body.Stmts, assign)
 	}
+
 	ctor.Body = body
 	return ctor
 }
 
 func (v *HirVisitor) VisitMixinDeclStmt(ctx *parser.MixinDeclStmtContext) any {
 	st := &MixinDeclStmt{node: v.mkNode(ctx), docBase: docBase{doc: v.docCommentBefore(ctx)}}
+
 	nameTok := ctx.ID().GetSymbol()
 	st.Name = NameRef{Name: nameTok.GetText(), Span: v.spanFromTok(nameTok)}
 
@@ -3005,27 +3210,33 @@ func (v *HirVisitor) VisitMixinDeclStmt(ctx *parser.MixinDeclStmtContext) any {
 				st.Fields = append(st.Fields, field)
 			}
 		}
+
 		if methodCtx := memberCtx.MethodDecl(); methodCtx != nil {
 			if method, ok := v.Visit(methodCtx).(*TypeMethodDecl); ok {
 				st.Methods = append(st.Methods, method)
 			}
 		}
 	}
+
 	return st
 }
 
 func (v *HirVisitor) VisitTypeAliasStmt(ctx *parser.TypeAliasStmtContext) any {
 	st := &TypeAliasStmt{node: v.mkNode(ctx), docBase: docBase{doc: v.docCommentBefore(ctx)}}
+
 	nameTok := ctx.ID().GetSymbol()
 	st.Name = NameRef{Name: nameTok.GetText(), Span: v.spanFromTok(nameTok)}
+
 	if t, ok := v.Visit(ctx.Type_()).(*TypeRef); ok {
 		st.Target = t
 	}
+
 	return st
 }
 
 func (v *HirVisitor) VisitInterfaceDeclStmt(ctx *parser.InterfaceDeclStmtContext) any {
 	st := &InterfaceDeclStmt{node: v.mkNode(ctx), docBase: docBase{doc: v.docCommentBefore(ctx)}}
+
 	nameTok := ctx.ID().GetSymbol()
 	st.Name = NameRef{Name: nameTok.GetText(), Span: v.spanFromTok(nameTok)}
 
@@ -3040,11 +3251,13 @@ func (v *HirVisitor) VisitInterfaceDeclStmt(ctx *parser.InterfaceDeclStmtContext
 			st.Methods = append(st.Methods, sig)
 		}
 	}
+
 	return st
 }
 
 func (v *HirVisitor) VisitMethodSignature(ctx *parser.MethodSignatureContext) any {
 	sig := &InterfaceMethodSig{node: v.mkNode(ctx)}
+
 	sig.IsShared = hasModifierChild(ctx, "shared")
 	sname, sspan := v.softIdNameAndSpan(ctx.SoftId())
 	sig.Name = NameRef{Name: sname, Span: sspan}
@@ -3055,21 +3268,25 @@ func (v *HirVisitor) VisitMethodSignature(ctx *parser.MethodSignatureContext) an
 			sig.Params = append(sig.Params, &param)
 		}
 	}
+
 	if ctx.TypeAnnot() != nil {
 		if tr, ok := v.Visit(ctx.TypeAnnot()).(*TypeRef); ok {
 			sig.ReturnType = tr
 		}
 	}
+
 	return sig
 }
 
 func (v *HirVisitor) VisitMethodDecl(ctx *parser.MethodDeclContext) any {
 	method := &TypeMethodDecl{node: v.mkNode(ctx)}
+
 	method.Private = hasModifierChild(ctx, "private")
 	method.IsShared = hasModifierChild(ctx, "shared")
 	method.Annotations = v.collectAnnotations(ctx.AllAnnotation())
 
 	fn := &FuncDeclStmt{node: v.mkNode(ctx)}
+
 	nameCtx := ctx.MethodName()
 	var nameText string
 	var nameSpan diag.TextSpan
@@ -3079,6 +3296,7 @@ func (v *HirVisitor) VisitMethodDecl(ctx *parser.MethodDeclContext) any {
 		nameText = "op" + opSym.GetText()
 		nameSpan = v.spanFromCtx(nameCtx)
 	}
+
 	fn.Name = NameRef{Name: nameText, Span: nameSpan}
 
 	if gp := ctx.GenericParams(); gp != nil {
@@ -3086,28 +3304,33 @@ func (v *HirVisitor) VisitMethodDecl(ctx *parser.MethodDeclContext) any {
 			fn.TypeParams = append(fn.TypeParams, v.buildGenericParamDecl(p))
 		}
 	}
+
 	if paramListCtx := ctx.FuncParamList(); paramListCtx != nil {
 		for _, paramCtx := range paramListCtx.AllFuncParam() {
 			param := v.Visit(paramCtx).(FuncParam)
 			fn.Params = append(fn.Params, &param)
 		}
 	}
+
 	if ctx.TypeAnnot() != nil {
 		if tr, ok := v.Visit(ctx.TypeAnnot()).(*TypeRef); ok {
 			fn.ReturnType = tr
 		}
 	}
+
 	if blockCtx := ctx.Block(); blockCtx != nil {
 		if block, ok := v.Visit(blockCtx).(*BlockStmt); ok {
 			fn.Body = block
 		}
 	}
+
 	method.Func = fn
 	return method
 }
 
 func (v *HirVisitor) VisitCtorDecl(ctx *parser.CtorDeclContext) any {
 	ctor := &CtorDecl{node: v.mkNode(ctx)}
+
 	ctor.IsShared = hasModifierChild(ctx, "shared")
 	ctor.Annotations = v.collectAnnotations(ctx.AllAnnotation())
 
@@ -3117,16 +3340,19 @@ func (v *HirVisitor) VisitCtorDecl(ctx *parser.CtorDeclContext) any {
 			ctor.Params = append(ctor.Params, &param)
 		}
 	}
+
 	if blockCtx := ctx.Block(); blockCtx != nil {
 		if block, ok := v.Visit(blockCtx).(*BlockStmt); ok {
 			ctor.Body = block
 		}
 	}
+
 	return ctor
 }
 
 func (v *HirVisitor) VisitCastDecl(ctx *parser.CastDeclContext) any {
 	decl := &CastDecl{node: v.mkNode(ctx)}
+
 	decl.IsShared = hasModifierChild(ctx, "shared")
 	decl.Annotations = v.collectAnnotations(ctx.AllAnnotation())
 
@@ -3141,53 +3367,62 @@ func (v *HirVisitor) VisitCastDecl(ctx *parser.CastDeclContext) any {
 			Type: paramType,
 		}
 	}
+
 	if len(annotList) >= 2 {
 		if rt, ok := v.Visit(annotList[1]).(*TypeRef); ok {
 			decl.ReturnType = rt
 		}
 	}
+
 	if blockCtx := ctx.Block(); blockCtx != nil {
 		if block, ok := v.Visit(blockCtx).(*BlockStmt); ok {
 			decl.Body = block
 		}
 	}
+
 	return decl
 }
 
-// collectAnnotations walks a slice of annotation parse contexts, builds IR Annotation values, and returns them in source order. Arg expressions are visited but not folded; pass_fold_annotations does the const folding later.
 func (v *HirVisitor) collectAnnotations(ctxs []parser.IAnnotationContext) []Annotation {
 	if len(ctxs) == 0 {
 		return nil
 	}
+
 	out := make([]Annotation, 0, len(ctxs))
 	for _, ac := range ctxs {
 		anno := Annotation{}
+
 		if id := ac.ID(); id != nil {
 			tok := id.GetSymbol()
 			anno.Name = NameRef{Name: tok.GetText(), Span: v.spanFromTok(tok)}
 		}
+
 		for _, argCtx := range ac.AllAnnotationArg() {
 			exprCtx := argCtx.Expr()
 			if exprCtx == nil {
 				continue
 			}
+
 			e, ok := v.Visit(exprCtx).(Expr)
 			if !ok {
 				continue
 			}
+
 			name := ""
 			if sid := argCtx.SoftId(); sid != nil {
 				name = sid.GetText()
 			}
+
 			anno.Args = append(anno.Args, e)
 			anno.ArgNames = append(anno.ArgNames, name)
 		}
+
 		out = append(out, anno)
 	}
+
 	return out
 }
 
-// hasLiteralChild returns true when one of ctx's direct children is a terminal node whose token text equals literal. This is the modifier-presence check (`private`, etc.) used by decls that may be preceded by annotation rule nodes.
 func hasLiteralChild(ctx antlr.ParserRuleContext, literal string) bool {
 	for _, child := range ctx.GetChildren() {
 		if tn, ok := child.(antlr.TerminalNode); ok {
@@ -3196,10 +3431,10 @@ func hasLiteralChild(ctx antlr.ParserRuleContext, literal string) bool {
 			}
 		}
 	}
+
 	return false
 }
 
-// hasModifierChild returns true when any of ctx's direct children is a `memberModifier` rule whose terminal text matches `literal`. Mirrors `hasLiteralChild` for the per-member-modifier (`private`, `shared`) grammar shape used inside type members. The grammar wraps each modifier in its own production (`memberModifier : 'private' | 'shared'`) so the terminal-text scan walks one level deeper than `hasLiteralChild`'s direct-child match.
 func hasModifierChild(ctx antlr.ParserRuleContext, literal string) bool {
 	for _, child := range ctx.GetChildren() {
 		ruleCtx, ok := child.(antlr.RuleNode)
@@ -3207,19 +3442,23 @@ func hasModifierChild(ctx antlr.ParserRuleContext, literal string) bool {
 			if tn, ok := child.(antlr.TerminalNode); ok && tn.GetSymbol().GetText() == literal {
 				return true
 			}
+
 			continue
 		}
+
 		for _, sub := range ruleCtx.GetChildren() {
 			if tn, ok := sub.(antlr.TerminalNode); ok && tn.GetSymbol().GetText() == literal {
 				return true
 			}
 		}
 	}
+
 	return false
 }
 
 func (v *HirVisitor) VisitFieldDecl(ctx *parser.FieldDeclContext) any {
 	field := &TypeField{node: v.mkNode(ctx)}
+
 	field.Annotations = v.collectAnnotations(ctx.AllAnnotation())
 
 	soft := ctx.SoftId()
@@ -3227,6 +3466,7 @@ func (v *HirVisitor) VisitFieldDecl(ctx *parser.FieldDeclContext) any {
 		v.diag.Report(diag.ErrUnexpectedToken, v.spanFromCtx(ctx), ctx.GetText())
 		return field
 	}
+
 	fname, fspan := v.softIdNameAndSpan(soft)
 	field.Name = NameRef{Name: fname, Span: fspan}
 
@@ -3235,11 +3475,13 @@ func (v *HirVisitor) VisitFieldDecl(ctx *parser.FieldDeclContext) any {
 			field.Type = tr
 		}
 	}
+
 	if ctx.Expr() != nil {
 		if e, ok := v.Visit(ctx.Expr()).(Expr); ok {
 			field.Default = e
 		}
 	}
+
 	field.Private = hasModifierChild(ctx, "private")
 	field.IsShared = hasModifierChild(ctx, "shared")
 	return field
@@ -3257,6 +3499,7 @@ func (v *HirVisitor) buildTemplateString(ctx *parser.LiteralContext) Expr {
 	parts := splitTemplateBody(body)
 
 	out := &StringTemplateExpr{node: v.mkNode(ctx)}
+
 	for _, p := range parts {
 		if p.isExpr {
 			expr := v.subParseExpr(p.text)
@@ -3265,6 +3508,7 @@ func (v *HirVisitor) buildTemplateString(ctx *parser.LiteralContext) Expr {
 			out.Parts = append(out.Parts, StringTemplatePart{Lit: unescapeTemplateLiteral(p.text)})
 		}
 	}
+
 	return out
 }
 
@@ -3285,11 +3529,13 @@ func splitTemplateBody(body string) []templatePiece {
 			i += 2
 			continue
 		}
+
 		if c == '$' && i+1 < len(body) && body[i+1] == '{' {
 			if lit.Len() > 0 {
 				pieces = append(pieces, templatePiece{text: lit.String()})
 				lit.Reset()
 			}
+
 			depth := 1
 			j := i + 2
 			for j < len(body) && depth > 0 {
@@ -3303,25 +3549,32 @@ func splitTemplateBody(body string) []templatePiece {
 						j++
 					}
 				}
+
 				if depth == 0 {
 					break
 				}
+
 				j++
 			}
+
 			if j >= len(body) {
 				pieces = append(pieces, templatePiece{isExpr: true, text: body[i+2:]})
 				return pieces
 			}
+
 			pieces = append(pieces, templatePiece{isExpr: true, text: body[i+2 : j]})
 			i = j + 1
 			continue
 		}
+
 		lit.WriteByte(c)
 		i++
 	}
+
 	if lit.Len() > 0 {
 		pieces = append(pieces, templatePiece{text: lit.String()})
 	}
+
 	return pieces
 }
 
@@ -3329,6 +3582,7 @@ func unescapeTemplateLiteral(s string) string {
 	if !strings.ContainsRune(s, '\\') {
 		return s
 	}
+
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
 		if s[i] == '\\' && i+1 < len(s) {
@@ -3372,7 +3626,6 @@ func (v *HirVisitor) subParseExpr(text string) Expr {
 	return &LitString{Value: ""}
 }
 
-// VisitSynthDeclStmt builds an IR `SynthDeclStmt` from `synth Name(params) on <kind> Bind { body }`. The target-kind token comes from the grammar's `synthTargetKind` production which accepts the keyword tokens (`type`, `func`, `let`) plus a bare ID fallback for `field` and `param` (neither is a Sova-wide reserved word). Unknown kinds produce a diagnostic at parse time so the synth never reaches the expander with an unrecognised target.
 func (v *HirVisitor) VisitSynthDeclStmt(ctx *parser.SynthDeclStmtContext) any {
 	st := &SynthDeclStmt{
 		node:    v.mkNode(ctx),
@@ -3483,7 +3736,6 @@ func (v *HirVisitor) parseSynthTarget(ctx parser.ISynthTargetContext) SynthTarge
 	return out
 }
 
-// VisitSynthEmitOn builds an `emit on <scope> { @annotation* }` block. The scope is a bare identifier that the interpreter resolves at expansion time against the current bind environment (the synth's outer target, or a for-loop iteration variable).
 func (v *HirVisitor) VisitSynthEmitOn(ctx *parser.SynthEmitOnContext) any {
 	out := &SynthEmitOn{node: v.mkNode(ctx)}
 	if idTok := ctx.ID(); idTok != nil {
@@ -3493,7 +3745,6 @@ func (v *HirVisitor) VisitSynthEmitOn(ctx *parser.SynthEmitOnContext) any {
 	return out
 }
 
-// VisitSynthEmitAppend builds an `emit append to <registry> { <expr> }` clause. The expression is visited like any other Sova expression so it participates in synth-param substitution before being appended to the registry slice in the compiler cache.
 func (v *HirVisitor) VisitSynthEmitAppend(ctx *parser.SynthEmitAppendContext) any {
 	out := &SynthEmitAppend{node: v.mkNode(ctx)}
 	if idTok := ctx.ID(); idTok != nil {
@@ -3507,7 +3758,6 @@ func (v *HirVisitor) VisitSynthEmitAppend(ctx *parser.SynthEmitAppendContext) an
 	return out
 }
 
-// VisitSynthForStmt builds a `for <loopVar> in <bind>.<member> [where <pred>] { <body> }` clause. The iterable is parsed as a `<bind>.<member>` pair — interpreted at expansion time, not at parse time — so adding new iterable members later is a one-line interpreter change. The optional `where` predicate is captured for filter-time evaluation.
 func (v *HirVisitor) VisitSynthForStmt(ctx *parser.SynthForStmtContext) any {
 	out := &SynthForStmt{node: v.mkNode(ctx)}
 	if idTok := ctx.ID(); idTok != nil {
@@ -3531,7 +3781,6 @@ func (v *HirVisitor) VisitSynthForStmt(ctx *parser.SynthForStmtContext) any {
 	return out
 }
 
-// VisitSynthEmitField wraps a regular `fieldDecl` parse-tree in a synth body item. We delegate to the existing field visitor so the produced TypeField is structurally identical to a hand-written one — the synth interpreter just clones-and-appends it onto the target type's `Fields` slice.
 func (v *HirVisitor) VisitSynthEmitField(ctx *parser.SynthEmitFieldContext) any {
 	out := &SynthEmitField{node: v.mkNode(ctx)}
 	if fd := ctx.FieldDecl(); fd != nil {
@@ -3542,7 +3791,6 @@ func (v *HirVisitor) VisitSynthEmitField(ctx *parser.SynthEmitFieldContext) any 
 	return out
 }
 
-// VisitSynthEmitMethod wraps a regular `methodDecl` parse-tree (so the synth author writes `emit func compute(): int { ... }` — same shape as a hand-written method on a type body).
 func (v *HirVisitor) VisitSynthEmitMethod(ctx *parser.SynthEmitMethodContext) any {
 	out := &SynthEmitMethod{node: v.mkNode(ctx)}
 	if md := ctx.MethodDecl(); md != nil {
@@ -3553,7 +3801,6 @@ func (v *HirVisitor) VisitSynthEmitMethod(ctx *parser.SynthEmitMethodContext) an
 	return out
 }
 
-// VisitSynthEmitCtor wraps a regular `ctorDecl` parse-tree (so the synth author writes `emit new(x: int) { ... }` — same shape as a hand-written ctor on a type body).
 func (v *HirVisitor) VisitSynthEmitCtor(ctx *parser.SynthEmitCtorContext) any {
 	out := &SynthEmitCtor{node: v.mkNode(ctx)}
 	if cd := ctx.CtorDecl(); cd != nil {

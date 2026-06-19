@@ -12,20 +12,20 @@ import (
 	"github.com/dave/jennifer/jen"
 )
 
-// isTestMode reports whether the current build is a `sova test` run. Codegen branches on this to swap the wire/dev `main()` for the test driver and to unlock the special `assert` / `test` / `group` statement handlers.
 func isTestMode(ctx *codegen.EmitContext) bool {
 	if ctx == nil || ctx.Cache == nil {
 		return false
 	}
+
 	raw, ok := ctx.Cache["build_config"]
 	if !ok {
 		return false
 	}
+
 	cfg, ok := raw.(interface{ TestModeValue() bool })
 	return ok && cfg.TestModeValue()
 }
 
-// emitTestRuntime drops the Go-side test runtime - the `__sovaT` context type, the per-test runner, the assertion-failure recorder, and the final reporter - at the top of the generated file. Always emitted in test mode so user-authored `test "..." { ... }` bodies can reference these helpers regardless of which package they live in.
 func emitTestRuntime(block *jen.Group) {
 	block.Add(jen.Type().Id("__sovaTestFailure").Struct(
 		jen.Id("Source").String(),
@@ -361,7 +361,6 @@ func emitTestRuntime(block *jen.Group) {
 	))
 }
 
-// hashTestName produces a deterministic, Go-identifier-safe suffix from a fully qualified test path (group chain + leaf name). Used to name the per-test driver function emitted alongside the test body.
 func hashTestName(pkgPath string, groupPath []string, name string) string {
 	h := sha1.New()
 	h.Write([]byte(pkgPath))
@@ -369,20 +368,20 @@ func hashTestName(pkgPath string, groupPath []string, name string) string {
 		h.Write([]byte("/"))
 		h.Write([]byte(g))
 	}
+
 	h.Write([]byte("/"))
 	h.Write([]byte(name))
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
-// fullTestName builds the human-readable test name including any enclosing group path, used in reporter output.
 func fullTestName(groupPath []string, name string) string {
 	if len(groupPath) == 0 {
 		return name
 	}
+
 	return strings.Join(groupPath, " > ") + " > " + name
 }
 
-// emitAssertStmt lowers a Sova `assert <expr>` statement to a runtime check inside the current test function. Comparison-shaped expressions (`==`, `!=`, `<`, `<=`, `>`, `>=`) split into LHS/RHS so the reporter can show both values; everything else lands in a bare-boolean form with only the source text. Power-assert: every distinct VarRef in the asserted expression is captured into a `map[string]any` and attached to the failure record so the reporter can print `var = value` lines under the failed assertion.
 func (e *CodeEmitter) emitAssertStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, block *jen.Group, s *ir.AssertStmt) {
 	span := s.Span()
 	location := fmt.Sprintf("%s:%d:%d", span.File, span.StartLn, span.StartCol)
@@ -390,11 +389,14 @@ func (e *CodeEmitter) emitAssertStmt(ctx *codegen.EmitContext, pkg *ir.PackageCo
 	vars := collectAssertVars(ctx, pkg, f, s.Expr)
 	buildVarsMap := func() jen.Code {
 		entries := jen.Dict{}
+
 		for _, v := range vars {
 			entries[jen.Lit(v.OrigName)] = e.buildExpr(ctx, pkg, f, v.Expr)
 		}
+
 		return jen.Map(jen.String()).Any().Values(entries)
 	}
+
 	if bin, ok := s.Expr.(*ir.BinaryExpr); ok && isComparisonOp(bin.Op) {
 		e.withStmt(block, func() jen.Code {
 			lhs := e.buildExpr(ctx, pkg, f, bin.Left)
@@ -418,6 +420,7 @@ func (e *CodeEmitter) emitAssertStmt(ctx *codegen.EmitContext, pkg *ir.PackageCo
 		})
 		return
 	}
+
 	e.withStmt(block, func() jen.Code {
 		cond := e.buildExpr(ctx, pkg, f, s.Expr)
 		return jen.If(jen.Op("!").Parens(cond)).Block(
@@ -431,21 +434,23 @@ type capturedVar struct {
 	Expr     ir.Expr
 }
 
-// collectAssertVars walks an assert expression and collects each distinct VarRef as a captured var for the power-assert report. The display name is the original Sova identifier (pre-mangle); duplicates are kept only once.
 func collectAssertVars(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, expr ir.Expr) []capturedVar {
 	seen := map[string]bool{}
+
 	var out []capturedVar
 	var walk func(ir.Expr)
 	walk = func(e ir.Expr) {
 		if e == nil {
 			return
 		}
+
 		switch x := e.(type) {
 		case *ir.VarRef:
 			name := x.Ref.Name
 			if name == "" || seen[name] {
 				return
 			}
+
 			if pkg != nil && x.Ref.Sym != 0 {
 				if sym, ok := pkg.Syms.GetByID(x.Ref.Sym); ok {
 					if sym.Kind != ir.SK_Variable {
@@ -453,6 +458,7 @@ func collectAssertVars(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.F
 					}
 				}
 			}
+
 			seen[name] = true
 			out = append(out, capturedVar{OrigName: name, Expr: x})
 		case *ir.BinaryExpr:
@@ -485,11 +491,11 @@ func collectAssertVars(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.F
 			}
 		}
 	}
+
 	walk(expr)
 	return out
 }
 
-// emitAsSessionStmt lowers `asSession("name") { ... }` to a Go block that installs the named test session as the current `@` for the duration of the body, then restores the previous session. An empty Name (`asSession() { ... }`) creates a fresh anonymous session each entry. Only meaningful inside `on test` builds; the named-session registry lives in the test harness runtime.
 func (e *CodeEmitter) emitAsSessionStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, block *jen.Group, s *ir.AsSessionStmt) {
 	name := s.Name
 	block.Add(jen.Func().Params().BlockFunc(func(g *jen.Group) {
@@ -508,56 +514,61 @@ func (e *CodeEmitter) emitAsSessionStmt(ctx *codegen.EmitContext, pkg *ir.Packag
 	}).Call())
 }
 
-// isComparisonOp reports whether the given binary operator produces a bool comparable result the assert reporter can split into LHS/RHS values.
 func isComparisonOp(op ir.Op) bool {
 	switch op {
 	case ir.OpEq, ir.OpNeq, ir.OpLt, ir.OpLte, ir.OpGt, ir.OpGte:
 		return true
 	}
+
 	return false
 }
 
-// assertSourceText returns a best-effort source snippet of the asserted expression. Uses the raw file content sliced by the expression's span when available, otherwise falls back to a synthesised representation.
 func assertSourceText(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, expr ir.Expr) string {
 	if expr == nil {
 		return ""
 	}
+
 	span := expr.Span()
 	if span.File == "" || f == nil {
 		return ""
 	}
+
 	for _, file := range pkg.Files {
 		if file.Filename != span.File {
 			continue
 		}
+
 		content := file.Content
 		lines := strings.Split(content, "\n")
 		if span.StartLn-1 < 0 || span.StartLn-1 >= len(lines) {
 			return ""
 		}
+
 		line := lines[span.StartLn-1]
 		startCol := span.StartCol - 1
 		endCol := span.EndCol - 1
 		if startCol < 0 {
 			startCol = 0
 		}
+
 		if endCol > len(line) {
 			endCol = len(line)
 		}
+
 		if endCol > startCol {
 			return line[startCol:endCol]
 		}
+
 		return strings.TrimSpace(line)
 	}
+
 	return ""
 }
 
-// testModeFromCache mirrors `isTestMode`, kept under this name because callers in `emitter.go` already reference it.
 func testModeFromCache(ctx *codegen.EmitContext) bool {
 	return isTestMode(ctx)
 }
 
-// emitTestDriverMain writes only the test driver `main()` body (the per-test functions and runtime helpers are emitted separately at the top of the file). Reads `[]codegen.TestRegistryEntryView` from the shared `test_registry_view` cache key. Tests that opt into parallel execution (the test decl itself or any enclosing group carries `parallel`) are spawned into goroutines and joined via `sync.WaitGroup`; sequential tests run inline in declaration order. Mixed suites first run all sequential tests, then the parallel ones, then report - keeping sequential output stable while still benefiting from concurrency where requested.
 func emitTestDriverMain(ctx *codegen.EmitContext, g *jen.Group) {
 	entries := readTestRegistryView(ctx)
 	if len(entries) == 0 {
@@ -579,6 +590,7 @@ func emitTestDriverMain(ctx *codegen.EmitContext, g *jen.Group) {
 		g.Var().Id("__wg").Qual("sync", "WaitGroup")
 		g.Id("_").Op("=").Op("&").Id("__resultsMu")
 	}
+
 	for _, entry := range entries {
 		funcName := "__sovaTestImpl_" + hashTestName(entry.Pkg.Path.String(), entry.GroupPath, entry.Decl.Name)
 		fullName := fullTestName(entry.GroupPath, entry.Decl.Name)
@@ -586,26 +598,31 @@ func emitTestDriverMain(ctx *codegen.EmitContext, g *jen.Group) {
 		if entry.File != nil {
 			file = entry.File.Filename
 		}
+
 		if entry.Parallel {
 			continue
 		}
+
 		g.If(jen.Id("__sovaTestShouldRun").Call(jen.Lit(fullName))).Block(
 			jen.Id("__results").Op("=").Append(jen.Id("__results"),
 				jen.Id("__sovaRunTest").Call(jen.Lit(fullName), jen.Lit(file), jen.Id(funcName)),
 			),
 		)
 	}
+
 	if hasParallel {
 		for _, entry := range entries {
 			if !entry.Parallel {
 				continue
 			}
+
 			funcName := "__sovaTestImpl_" + hashTestName(entry.Pkg.Path.String(), entry.GroupPath, entry.Decl.Name)
 			fullName := fullTestName(entry.GroupPath, entry.Decl.Name)
 			file := ""
 			if entry.File != nil {
 				file = entry.File.Filename
 			}
+
 			g.If(jen.Id("__sovaTestShouldRun").Call(jen.Lit(fullName))).Block(
 				jen.Id("__wg").Dot("Add").Call(jen.Lit(1)),
 				jen.Go().Func().Params().Block(
@@ -617,22 +634,26 @@ func emitTestDriverMain(ctx *codegen.EmitContext, g *jen.Group) {
 				).Call(),
 			)
 		}
+
 		g.Id("__wg").Dot("Wait").Call()
 	}
+
 	g.Qual("os", "Exit").Call(jen.Id("__sovaTestReport").Call(jen.Id("__results")))
 }
 
-// emitTestImplFuncs emits one Go function per discovered test plus the global per-group setupAll/teardownAll helpers. Each test function: fires the inherited setupAlls via sync.Once (keyed on the SetupStmt's IR NodeID so all tests in the owning group share the gate), runs per-test setups, the test body, per-test teardowns. teardownAlls are NOT fired here - `emitTestDriverMain` runs them once globally at suite exit.
 func (e *CodeEmitter) emitTestImplFuncs(ctx *codegen.EmitContext, block *jen.Group) {
 	entries := readTestRegistryView(ctx)
 
 	setupAllSeen := map[ir.NodeID]bool{}
+
 	teardownAllSeen := map[ir.NodeID]bool{}
+
 	for _, entry := range entries {
 		for _, s := range entry.SetupAlls {
 			if setupAllSeen[s.ID()] {
 				continue
 			}
+
 			setupAllSeen[s.ID()] = true
 			s := s
 			ent := entry
@@ -645,10 +666,12 @@ func (e *CodeEmitter) emitTestImplFuncs(ctx *codegen.EmitContext, block *jen.Gro
 				}
 			}))
 		}
+
 		for _, t := range entry.TeardownAlls {
 			if teardownAllSeen[t.ID()] {
 				continue
 			}
+
 			teardownAllSeen[t.ID()] = true
 			t := t
 			ent := entry
@@ -670,21 +693,26 @@ func (e *CodeEmitter) emitTestImplFuncs(ctx *codegen.EmitContext, block *jen.Gro
 			for _, s := range entry.SetupAlls {
 				g.Id(setupAllBodyName(s)).Call()
 			}
+
 			emitBody := func(stmts []ir.Stmt) {
 				for _, st := range stmts {
 					e.emitStmt(ctx, entry.Pkg, entry.File.Hir, g, st, false)
 					g.Id("__sovaTestAwaitWires").Call()
 				}
 			}
+
 			for _, body := range entry.SetupBodies {
 				emitBody(body)
 			}
+
 			if entry.Decl.Body != nil {
 				emitBody(entry.Decl.Body.Stmts)
 			}
+
 			for _, body := range entry.TeardownBodies {
 				emitBody(body)
 			}
+
 			for _, t := range entry.TeardownAlls {
 				g.Id(teardownAllBodyName(t)).Call()
 			}
@@ -704,12 +732,15 @@ func readTestRegistryView(ctx *codegen.EmitContext) []codegen.TestRegistryEntryV
 	if ctx == nil || ctx.Cache == nil {
 		return nil
 	}
+
 	raw, ok := ctx.Cache[codegen.TestRegistryViewCacheKey]
 	if !ok {
 		return nil
 	}
+
 	if entries, ok := raw.([]codegen.TestRegistryEntryView); ok {
 		return entries
 	}
+
 	return nil
 }

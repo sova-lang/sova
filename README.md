@@ -32,7 +32,7 @@ sova version
 
 ### Updating
 
-Re-run the same install command — the script overwrites the existing binary and stdlib in place. Alternatively, once installed:
+Re-run the same install command - the script overwrites the existing binary and stdlib in place. Alternatively, once installed:
 
 ```sh
 sova upgrade
@@ -73,7 +73,7 @@ cd sova
 go build -o sova .
 ```
 
-The compiler discovers the stdlib via `<binary-dir>/std`, `<binary-dir>/../std`, the current working directory's `std/`, or `$SOVA_HOME/std` — in that order.
+The compiler discovers the stdlib via `<binary-dir>/std`, `<binary-dir>/../std`, the current working directory's `std/`, or `$SOVA_HOME/std` - in that order.
 
 ## License
 

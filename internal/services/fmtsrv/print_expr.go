@@ -7,11 +7,11 @@ import (
 	"sova/internal/ir"
 )
 
-// printExpr emits a single expression. Operator-precedence is preserved via the `GroupedExpr` wrappers the parser already produces - we don't try to reconstruct minimal parens. Whatever the parser nested inside `( ... )` gets re-emitted with parens; everything else flows flat.
 func (p *Printer) printExpr(e ir.Expr) {
 	if e == nil {
 		return
 	}
+
 	switch n := e.(type) {
 	case *ir.LitInt:
 		p.write(strconv.FormatInt(n.Value, 10))
@@ -27,6 +27,7 @@ func (p *Printer) printExpr(e ir.Expr) {
 		} else {
 			p.write("false")
 		}
+
 	case *ir.LitNone:
 		p.write("none")
 	case *ir.VarRef:
@@ -34,6 +35,7 @@ func (p *Printer) printExpr(e ir.Expr) {
 			p.write(n.Ref.Qualifier + "." + n.Ref.Name)
 			return
 		}
+
 		p.write(n.Ref.Name)
 	case *ir.FieldAccessExpr:
 		p.printExpr(n.Expr)
@@ -41,6 +43,7 @@ func (p *Printer) printExpr(e ir.Expr) {
 			p.write(".")
 			p.write(f.Name)
 		}
+
 	case *ir.IndexExpr:
 		p.printExpr(n.Expr)
 		p.write("[")
@@ -89,6 +92,7 @@ func (p *Printer) printExpr(e ir.Expr) {
 			p.write(" step ")
 			p.printExpr(n.Inc)
 		}
+
 	case *ir.FuncCallExpr:
 		p.printExpr(n.Callee)
 		if len(n.TypeArgs) > 0 {
@@ -96,41 +100,51 @@ func (p *Printer) printExpr(e ir.Expr) {
 			for i, t := range n.TypeArgs {
 				parts[i] = formatTypeRef(t)
 			}
+
 			p.write("<" + strings.Join(parts, ", ") + ">")
 		}
+
 		p.write("(")
 		for i, a := range n.Args {
 			if i > 0 {
 				p.write(", ")
 			}
+
 			if a.Name != "" {
 				p.write(a.Name + ": ")
 			}
+
 			p.printExpr(a.Expr)
 		}
+
 		p.write(")")
 	case *ir.NewExpr:
 		p.write("new ")
 		if n.Qualifier != "" {
 			p.write(n.Qualifier + ".")
 		}
+
 		p.write(n.TypeName.Name)
 		p.write("(")
 		for i, a := range n.Args {
 			if i > 0 {
 				p.write(", ")
 			}
+
 			if a.Name != "" {
 				p.write(a.Name + ": ")
 			}
+
 			p.printExpr(a.Expr)
 		}
+
 		p.write(")")
 	case *ir.ChanInitExpr:
 		p.write("chan<" + formatTypeRef(n.ElemType) + ">(")
 		if n.Capacity != nil {
 			p.printExpr(n.Capacity)
 		}
+
 		p.write(")")
 	case *ir.FuncLitExpr:
 		p.write("func(")
@@ -138,21 +152,25 @@ func (p *Printer) printExpr(e ir.Expr) {
 			if i > 0 {
 				p.write(", ")
 			}
+
 			p.write(param.Name.Name)
 			if param.Type != nil {
 				p.write(": ")
 				p.printType(param.Type)
 			}
+
 			if param.Default != nil {
 				p.write(" = ")
 				p.printExpr(param.Default)
 			}
 		}
+
 		p.write(")")
 		if n.ReturnType != nil {
 			p.write(": ")
 			p.printType(n.ReturnType)
 		}
+
 		p.write(" ")
 		p.printBlock(n.Body)
 	case *ir.ArrayLiteral:
@@ -161,23 +179,28 @@ func (p *Printer) printExpr(e ir.Expr) {
 			if i > 0 {
 				p.write(", ")
 			}
+
 			p.printExpr(el)
 		}
+
 		p.write("]")
 	case *ir.MapLiteral:
 		if len(n.Entries) == 0 {
 			p.write("{}")
 			return
 		}
+
 		p.write("{")
 		for i, kv := range n.Entries {
 			if i > 0 {
 				p.write(", ")
 			}
+
 			p.printExpr(kv.Key)
 			p.write(": ")
 			p.printExpr(kv.Value)
 		}
+
 		p.write("}")
 	case *ir.TupleLiteral:
 		p.write("(")
@@ -185,8 +208,10 @@ func (p *Printer) printExpr(e ir.Expr) {
 			if i > 0 {
 				p.write(", ")
 			}
+
 			p.printExpr(el)
 		}
+
 		p.write(")")
 	case *ir.StringTemplateExpr:
 		p.write("`")
@@ -199,6 +224,7 @@ func (p *Printer) printExpr(e ir.Expr) {
 				p.write(part.Lit)
 			}
 		}
+
 		p.write("`")
 	case *ir.WhenExpr:
 		p.write("when ")
@@ -211,12 +237,15 @@ func (p *Printer) printExpr(e ir.Expr) {
 					if i > 0 {
 						p.write(", ")
 					}
+
 					p.printExpr(v)
 				}
+
 				p.write(" => ")
 				p.printExpr(c.Then)
 				p.writeNewline()
 			}
+
 			if n.Default != nil {
 				p.write("else => ")
 				p.printExpr(n.Default)
@@ -229,7 +258,6 @@ func (p *Printer) printExpr(e ir.Expr) {
 	}
 }
 
-// quoteString re-emits a string literal as a `"..."` form, escaping the bytes that need escaping for round-trip safety.
 func quoteString(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')
@@ -249,6 +277,7 @@ func quoteString(s string) string {
 			b.WriteRune(r)
 		}
 	}
+
 	b.WriteByte('"')
 	return b.String()
 }
@@ -266,5 +295,6 @@ func escapeRune(r rune) string {
 	case '\r':
 		return `\r`
 	}
+
 	return string(r)
 }

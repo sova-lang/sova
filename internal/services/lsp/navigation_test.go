@@ -14,7 +14,6 @@ import (
 	"go.lsp.dev/uri"
 )
 
-// TestNavigationSmoke exercises Phase 2 of the LSP: open a file with two functions and a call site, then ask the server for Hover, Definition, and DocumentSymbol. Asserts each request returns useful, well-formed data. Runs entirely in-process.
 func TestNavigationSmoke(t *testing.T) {
 	restore := withTerminate(func(int) {})
 	defer restore()
@@ -58,6 +57,7 @@ func main() {
 				diagMu.Unlock()
 			}
 		}
+
 		return reply(ctx, nil, nil)
 	})
 
@@ -67,6 +67,7 @@ func main() {
 	}, &initResult); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
+
 	assertCapTrue(t, "hoverProvider", initResult.Capabilities.HoverProvider)
 	assertCapTrue(t, "definitionProvider", initResult.Capabilities.DefinitionProvider)
 	assertCapTrue(t, "documentSymbolProvider", initResult.Capabilities.DocumentSymbolProvider)
@@ -83,20 +84,22 @@ func main() {
 		t.Fatalf("didOpen: %v", err)
 	}
 
-	// Hover on `add` inside `add(1, 2)` at line 7 (0-based), col 12.
 	hoverParams := &protocol.HoverParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 			TextDocument: protocol.TextDocumentIdentifier{URI: docURI},
 			Position:     protocol.Position{Line: 7, Character: 13},
 		},
 	}
+
 	var hover protocol.Hover
 	if _, err := clientConn.Call(ctx, protocol.MethodTextDocumentHover, hoverParams, &hover); err != nil {
 		t.Fatalf("hover call: %v", err)
 	}
+
 	if hover.Contents.Value == "" {
 		t.Fatalf("hover on `add` returned empty contents")
 	}
+
 	if !strings.Contains(hover.Contents.Value, "add") {
 		t.Fatalf("hover should mention `add`, got: %q", hover.Contents.Value)
 	}
@@ -107,16 +110,20 @@ func main() {
 			Position:     protocol.Position{Line: 7, Character: 13},
 		},
 	}
+
 	var defs []protocol.Location
 	if _, err := clientConn.Call(ctx, protocol.MethodTextDocumentDefinition, defParams, &defs); err != nil {
 		t.Fatalf("definition call: %v", err)
 	}
+
 	if len(defs) == 0 {
 		t.Fatalf("definition returned no locations")
 	}
+
 	if defs[0].URI != docURI {
 		t.Fatalf("definition URI mismatch: got %s want %s", defs[0].URI, docURI)
 	}
+
 	if defs[0].Range.Start.Line != 2 {
 		t.Fatalf("definition should point at line 2 (func add), got line %d", defs[0].Range.Start.Line)
 	}
@@ -124,14 +131,18 @@ func main() {
 	symParams := &protocol.DocumentSymbolParams{
 		TextDocument: protocol.TextDocumentIdentifier{URI: docURI},
 	}
+
 	var rawSyms []protocol.DocumentSymbol
 	if _, err := clientConn.Call(ctx, protocol.MethodTextDocumentDocumentSymbol, symParams, &rawSyms); err != nil {
 		t.Fatalf("documentSymbol call: %v", err)
 	}
+
 	if len(rawSyms) < 2 {
 		t.Fatalf("expected at least 2 top-level symbols (add, main), got %d", len(rawSyms))
 	}
+
 	names := []string{rawSyms[0].Name, rawSyms[1].Name}
+
 	if !containsString(names, "add") || !containsString(names, "main") {
 		t.Fatalf("expected `add` and `main` in document symbols, got %v", names)
 	}
@@ -139,6 +150,7 @@ func main() {
 	if _, err := clientConn.Call(ctx, protocol.MethodShutdown, nil, nil); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
+
 	_ = clientConn.Notify(ctx, protocol.MethodExit, nil)
 	cancel()
 }
@@ -149,10 +161,10 @@ func containsString(xs []string, target string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
-// assertCapTrue fails the test when the protocol capability `cap` is neither a `true` boolean nor a non-nil options struct. Protocol capabilities are `interface{}` because LSP allows two shapes per provider (plain bool or options); we accept either as "enabled".
 func assertCapTrue(t *testing.T, name string, cap interface{}) {
 	t.Helper()
 	switch v := cap.(type) {
@@ -160,6 +172,7 @@ func assertCapTrue(t *testing.T, name string, cap interface{}) {
 		if !v {
 			t.Fatalf("server didn't advertise %s", name)
 		}
+
 	case nil:
 		t.Fatalf("server didn't advertise %s", name)
 	}

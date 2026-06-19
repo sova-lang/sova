@@ -4,19 +4,14 @@ import (
 	"sova/internal/ir"
 )
 
-// SessionsPackagePath is the canonical import path for the built-in sessions package. User code writes `import "sessions"` to bring `sessions.Session`, the free helpers, and the lifecycle hooks into scope.
 const SessionsPackagePath = "sessions"
 
-// SessionsSessionTypeCacheKey holds the TypID of the sessions.Session struct in CompilerContext.Cache. Downstream consumers (analyze_wire's `@` resolution, codegen) read it to interoperate with the user-visible type.
 const SessionsSessionTypeCacheKey = "sessions_session_typ"
 
-// SessionsBroadcastTypeCacheKey holds the TypID of the sessions.Broadcast struct in CompilerContext.Cache.
 const SessionsBroadcastTypeCacheKey = "sessions_broadcast_typ"
 
-// SessionsPackageCacheKey holds the *ir.PackageContext of the synthetic sessions package so that later passes (codegen of frontend-wire-on-Session method dispatch, runtime wiring) can address it directly.
 const SessionsPackageCacheKey = "sessions_package"
 
-// registerBuiltinPackages installs every compiler-provided package into the CompilerContext so that `import "<name>"` resolves without touching the filesystem. Today this is just the `sessions` package; future built-ins (a `wire` package, etc.) hook in here.
 func registerBuiltinPackages(c *CompilerContext) {
 	buildSessionsPackage(c)
 }
@@ -50,6 +45,7 @@ func buildSessionsPackage(c *CompilerContext) {
 		{Name: "connectedAt", Type: intTyp},
 		{Name: "isConnected", Type: boolTyp},
 	}
+
 	sessionTyp := t.StructOf("sessions", "Session", sessionFields)
 	sessionStructTy, _ := t.GetByID(sessionTyp)
 	sessionStructTy.StructFields = sessionFields
@@ -60,6 +56,7 @@ func buildSessionsPackage(c *CompilerContext) {
 			Type: &ir.TypeRef{Typ: typ},
 		}
 	}
+
 	mkParamDefault := func(name string, typ ir.TypID, def ir.Expr) *ir.FuncParam {
 		return &ir.FuncParam{
 			Name:    ir.NameRef{Name: name},
@@ -67,6 +64,7 @@ func buildSessionsPackage(c *CompilerContext) {
 			Default: def,
 		}
 	}
+
 	_ = mkParamDefault
 
 	sessionStructTy.StructMethods = []ir.StructMethodInfo{
@@ -88,6 +86,7 @@ func buildSessionsPackage(c *CompilerContext) {
 	pkg.Scopes.DeclareSymbol(pkg.Root, "Session", sessionSym, pkg.Syms)
 
 	broadcastFields := []ir.StructFieldInfo{}
+
 	broadcastTyp := t.StructOf("sessions", "Broadcast", broadcastFields)
 	broadcastStructTy, _ := t.GetByID(broadcastTyp)
 	broadcastStructTy.StructFields = broadcastFields
@@ -124,6 +123,7 @@ func buildSessionsPackage(c *CompilerContext) {
 		{"onRoomJoin", []*ir.FuncParam{mkParam("handler", roomHandlerTyp)}, noneTyp, "Registers a handler invoked when a session joins a room via `Session.join(room)`.\n\n@param handler called with the joining session and the room name"},
 		{"onRoomLeave", []*ir.FuncParam{mkParam("handler", roomHandlerTyp)}, noneTyp, "Registers a handler invoked when a session leaves a room via `Session.leave(room)` or disconnects.\n\n@param handler called with the leaving session and the room name"},
 	}
+
 	for _, f := range freeFuncs {
 		ft := t.FuncOf(f.params, f.ret)
 		sym := pkg.Syms.NewSymbol(ir.SK_Function, f.name, pkg.Root, ft, 0)

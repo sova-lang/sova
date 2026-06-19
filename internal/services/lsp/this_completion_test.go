@@ -12,10 +12,6 @@ import (
 	"go.lsp.dev/uri"
 )
 
-// TestThisCompletionInsideMethodBody verifies that typing `this.` inside a struct method body
-// lists the type's fields and methods. `this` is a synthetic receiver with no VarRef of its
-// own, so the symbol-by-name fallback misses it; member-completion must consult the enclosing
-// TypeDeclStmt to recover the receiver type.
 func TestThisCompletionInsideMethodBody(t *testing.T) {
 	restore := withTerminate(func(int) {})
 	defer restore()
@@ -52,6 +48,7 @@ type User {
 	if _, err := cc.Call(ctx, protocol.MethodInitialize, &protocol.InitializeParams{RootURI: rootURI}, &initResult); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodInitialized, &protocol.InitializedParams{})
 	if err := cc.Notify(ctx, protocol.MethodTextDocumentDidOpen, &protocol.DidOpenTextDocumentParams{
 		TextDocument: protocol.TextDocumentItem{URI: modelURI, LanguageID: "sova", Version: 1, Text: model},
@@ -63,10 +60,12 @@ type User {
 		TextDocument: protocol.TextDocumentIdentifier{URI: modelURI},
 		Position:     protocol.Position{Line: 7, Character: 21},
 	}}
+
 	var compList protocol.CompletionList
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentCompletion, compParams, &compList); err != nil {
 		t.Fatalf("completion: %v", err)
 	}
+
 	labels := completionLabels(compList.Items)
 	for _, want := range []string{"id", "name", "describe"} {
 		if !containsString(labels, want) {
@@ -77,6 +76,7 @@ type User {
 	if _, err := cc.Call(ctx, protocol.MethodShutdown, nil, nil); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodExit, nil)
 	cancel()
 }

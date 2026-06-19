@@ -6,7 +6,6 @@ import (
 	"sova/internal/ir"
 )
 
-// formatType renders a TypID as a human-friendly Sova type string. Used for hover popups; the compiler's internal `Type.Key` is a deduplication key (e.g. `chan:<id>`), not something we want to show users. Falls back to `<unknown>` if the type isn't registered, and to a Kind label if we don't have a dedicated renderer.
 func formatType(tt *ir.TypeTable, id ir.TypID) string {
 	return formatTypeInner(tt, id, map[ir.TypID]bool{})
 }
@@ -15,12 +14,15 @@ func formatTypeInner(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) stri
 	if id == 0 {
 		return "<unknown>"
 	}
+
 	if id == tt.TypError() {
 		return "<unresolved>"
 	}
+
 	if seen[id] {
 		return "..."
 	}
+
 	seen[id] = true
 	defer delete(seen, id)
 
@@ -28,6 +30,7 @@ func formatTypeInner(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) stri
 	if !ok {
 		return "<unknown>"
 	}
+
 	switch ty.Kind {
 	case ir.TK_PrimitiveAny:
 		return "any"
@@ -60,6 +63,7 @@ func formatTypeInner(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) stri
 				parts = append(parts, formatTypeInner(tt, f.Type, seen))
 			}
 		}
+
 		return "(" + strings.Join(parts, ", ") + ")"
 	case ir.TK_Chan:
 		return "chan<" + formatTypeInner(tt, ty.ElemType, seen) + ">"
@@ -70,16 +74,20 @@ func formatTypeInner(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) stri
 			if p.Name.Name != "" {
 				label = p.Name.Name + ": "
 			}
+
 			parts = append(parts, label+formatTypeInner(tt, p.Type.Typ, seen))
 		}
+
 		prefix := "func"
 		if ty.IsAsync {
 			prefix = "async func"
 		}
+
 		head := prefix + "(" + strings.Join(parts, ", ") + ")"
 		if ty.ReturnType == 0 || ty.ReturnType == tt.TypNone() {
 			return head
 		}
+
 		return head + ": " + formatTypeInner(tt, ty.ReturnType, seen)
 	case ir.TK_Struct:
 		return qualifyName(ty.PackagePath, ty.StructName)
@@ -88,31 +96,28 @@ func formatTypeInner(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) stri
 	case ir.TK_Interface:
 		return qualifyName(ty.PackagePath, ty.InterfaceName)
 	}
-	// Compiler-internal sentinels carry leading-`!` keys (e.g. the error
-	// type). Never expose those to the user - show the neutral fallback
-	// so hover panels and signature help don't leak placeholder names.
+
 	if key := string(ty.Key); key != "" && !strings.HasPrefix(key, "!") {
 		return key
 	}
+
 	return "<unresolved>"
 }
 
-// qualifyName prefixes a user-type name with the *alias* a Sova `import`
-// would assign to its package - i.e. the last segment of the package path.
-// `std/browser.Element` collapses to `browser.Element`, matching the form
-// users actually write in their code. Internal compiler-injected types use
-// the empty path and render without prefix.
 func qualifyName(pkgPath, name string) string {
 	if pkgPath == "" {
 		return name
 	}
+
 	alias := pkgPath
 	if idx := strings.LastIndex(alias, "/"); idx >= 0 {
 		alias = alias[idx+1:]
 	}
+
 	if alias == "" {
 		return name
 	}
+
 	return alias + "." + name
 }
 
@@ -120,22 +125,27 @@ func intToString(n int64) string {
 	if n == 0 {
 		return "0"
 	}
+
 	neg := false
 	if n < 0 {
 		neg = true
 		n = -n
 	}
+
 	var b strings.Builder
 	digits := make([]byte, 0, 20)
 	for n > 0 {
 		digits = append(digits, byte('0'+n%10))
 		n /= 10
 	}
+
 	for i := len(digits) - 1; i >= 0; i-- {
 		b.WriteByte(digits[i])
 	}
+
 	if neg {
 		return "-" + b.String()
 	}
+
 	return b.String()
 }

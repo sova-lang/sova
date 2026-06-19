@@ -12,18 +12,19 @@ import (
 	"time"
 )
 
-// runOnce compiles the project once with no dev/watch overlays and spawns the resulting backend binary in the foreground, forwarding stdout/stderr verbatim and propagating SIGINT/SIGTERM to the child so Ctrl-C in the parent cleanly shuts down the server. Unlike `runDev` it does NOT register the SSE reload helper, the file watcher, or the dev-origin env var - the spawned process behaves as if started by `sova build`'s output binary. Port resolution still walks upward unless `--strict-port` was passed.
 func runOnce(cfg BuildConfig) error {
 	root, _, err := collectSources(cfg)
 	if err != nil {
 		return err
 	}
+
 	cfg.SourceDir = root
 
 	port, err := resolvePort(cfg.ServeHost, cfg.ServePort, cfg.ServeStrictPort)
 	if err != nil {
 		return err
 	}
+
 	if port != cfg.ServePort && cfg.ServePort != 0 {
 		fmt.Fprintf(os.Stderr, "[run] port %d in use, using %d instead\n", cfg.ServePort, port)
 	}
@@ -71,6 +72,7 @@ func runOnce(cfg BuildConfig) error {
 				<-waitErr
 			}
 		}
+
 		return nil
 	case err := <-waitErr:
 		return err

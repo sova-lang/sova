@@ -11,26 +11,22 @@ import (
 	"sova/internal/services/compiler"
 )
 
-// CodeLens emits "actionable annotations" above declarations. For Sova v1 we surface three kinds:
-//
-//   - `▶ Run test` above every `test "..." { ... }` decl (command `sova.runTest`)
-//   - `▶ Run` above a top-level `func main()` (command `sova.runMain`)
-//   - `N references` above every top-level decl, computed from the cross-file reference walker
-//
-// The `▶ Run` lenses fire commands the editor's Sova extension is expected to implement (they aren't built into the server). The reference-count lens is pure display: no Command.Command, just a Title.
 func (s *Server) CodeLens(ctx context.Context, params *protocol.CodeLensParams) ([]protocol.CodeLens, error) {
 	snap := s.session.Snapshot()
 	if snap == nil {
 		return nil, nil
 	}
+
 	c, _, err := snap.Compile(s.compileSnapshot)
 	if err != nil || c == nil {
 		return nil, nil
 	}
+
 	_, file, _ := lookupFileByURI(c, params.TextDocument.URI)
 	if file == nil {
 		return nil, nil
 	}
+
 	var lenses []protocol.CodeLens
 	for _, st := range file.Statements {
 		switch n := st.(type) {
@@ -46,6 +42,7 @@ func (s *Server) CodeLens(ctx context.Context, params *protocol.CodeLensParams) 
 					},
 				})
 			}
+
 		case *ir.TypeDeclStmt:
 			lenses = append(lenses, refsCountLens(c, n.Name.Sym, n.Name.Span))
 		case *ir.EnumDeclStmt:
@@ -57,8 +54,10 @@ func (s *Server) CodeLens(ctx context.Context, params *protocol.CodeLensParams) 
 				if tgt.Name == nil {
 					continue
 				}
+
 				lenses = append(lenses, refsCountLens(c, tgt.Name.Sym, tgt.Name.Span))
 			}
+
 		case *ir.TestDeclStmt:
 			lenses = append(lenses, protocol.CodeLens{
 				Range: spanToLSPRange(n.Span()),
@@ -70,10 +69,10 @@ func (s *Server) CodeLens(ctx context.Context, params *protocol.CodeLensParams) 
 			})
 		}
 	}
+
 	return lenses, nil
 }
 
-// refsCountLens builds a non-executable lens with `N references` as the title. We count usages excluding the decl itself so a function that is called from N places reads as `N references`.
 func refsCountLens(c *compiler.CompilerContext, sym ir.SymID, span diag.TextSpan) protocol.CodeLens {
 	count := 0
 	if sym != 0 {
@@ -83,6 +82,7 @@ func refsCountLens(c *compiler.CompilerContext, sym ir.SymID, span diag.TextSpan
 			}
 		}
 	}
+
 	return protocol.CodeLens{
 		Range: spanToLSPRange(span),
 		Command: &protocol.Command{

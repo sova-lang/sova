@@ -2,20 +2,22 @@ package passes
 
 import "sova/internal/ir"
 
-// PassResolveTypeRefs is a pass that resolves type references in the code to their respective type IDs.
 type PassResolveTypeRefs struct {
 	imports         map[string]*ir.PackageContext
 	allPkgs         []*ir.PackageContext
 	currentPkgPath  string
-	genericParamMap map[string]ir.TypID                  // generic param name -> TypID, populated per generic decl
-	aliases         map[string]map[string]*ir.TypeAliasStmt // pkgPath -> name -> alias decl, populated once per build
-	aliasResolving  map[string]bool                      // cycle guard: "pkgPath:name" currently being resolved
-	mixinNames      map[string]map[string]bool             // pkgPath -> mixin name -> exists. Populated once per build so mixin-typed return annotations (`: Composable`) can resolve to `any` instead of failing — see BUGS.md #19. Mixins aren't first-class types in Sova (they're inlined at type-declare time), so any concrete value can stand in for a mixin-typed slot at the call site.
+	genericParamMap map[string]ir.TypID
+	aliases         map[string]map[string]*ir.TypeAliasStmt
+	aliasResolving  map[string]bool
+	mixinNames      map[string]map[string]bool
 }
 
 func (p *PassResolveTypeRefs) Name() string       { return "resolve_typerefs" }
+
 func (p *PassResolveTypeRefs) Scope() PassScope   { return PerPackage }
+
 func (p *PassResolveTypeRefs) Requires() []string { return []string{"bind_declare"} }
+
 func (p *PassResolveTypeRefs) NoErrors() bool     { return false }
 
 func (p *PassResolveTypeRefs) Run(pc *PassContext) error {
@@ -24,7 +26,9 @@ func (p *PassResolveTypeRefs) Run(pc *PassContext) error {
 	p.currentPkgPath = pc.Pkg.Path.String()
 	if p.aliases == nil {
 		p.aliases = map[string]map[string]*ir.TypeAliasStmt{}
+
 		p.mixinNames = map[string]map[string]bool{}
+
 		for _, pkg := range pc.Pkgs {
 			pkgPath := pkg.Path.String()
 			for _, f := range pkg.Files {
@@ -33,54 +37,66 @@ func (p *PassResolveTypeRefs) Run(pc *PassContext) error {
 						if p.aliases[pkgPath] == nil {
 							p.aliases[pkgPath] = map[string]*ir.TypeAliasStmt{}
 						}
+
 						p.aliases[pkgPath][ta.Name.Name] = ta
 					}
+
 					if md, ok := st.(*ir.MixinDeclStmt); ok && md.Name.Name != "" {
 						if p.mixinNames[pkgPath] == nil {
 							p.mixinNames[pkgPath] = map[string]bool{}
 						}
+
 						p.mixinNames[pkgPath][md.Name.Name] = true
 					}
 				}
 			}
 		}
+
 		p.aliasResolving = map[string]bool{}
 	}
+
 	for _, f := range pc.Pkg.Files {
 		p.imports = buildImportAliasMap(f.Hir, pc.Pkgs)
 		p.resolveStmts(tt, f.Hir.Statements)
 	}
+
 	p.imports = nil
 	p.currentPkgPath = ""
 	return nil
 }
 
-// mergeGenericParams produces a copy of prev (or a fresh map) with each of `params` mapped to a fresh `TypeParamOf(ownerKey, name)` TypID. Used at the entry of a generic decl so unknown type names inside the decl body resolve to the right parameter symbol. Owner-key disambiguates `T` declared in two different generic decls. Constraints attached to each param are not enforced here; they live on the TypeParamDecl for later cross-checking when type arguments get supplied at instantiation sites.
 func mergeGenericParams(prev map[string]ir.TypID, ownerKey string, params []ir.TypeParamDecl, tt *ir.TypeTable) map[string]ir.TypID {
 	out := map[string]ir.TypID{}
+
 	for k, v := range prev {
 		out[k] = v
 	}
+
 	for _, p := range params {
 		out[p.Name] = tt.TypeParamOf(ownerKey, p.Name)
 	}
+
 	return out
 }
 
 func buildImportAliasMap(f *ir.File, all []*ir.PackageContext) map[string]*ir.PackageContext {
 	out := map[string]*ir.PackageContext{}
+
 	if f == nil {
 		return out
 	}
+
 	for _, st := range f.Statements {
 		imp, ok := st.(*ir.ImportStmt)
 		if !ok {
 			continue
 		}
+
 		alias := imp.Alias
 		if alias == "" && len(imp.Path) > 0 {
 			alias = imp.Path[len(imp.Path)-1]
 		}
+
 		key := imp.Path.String()
 		for _, pkg := range all {
 			if pkg.Path.String() == key {
@@ -89,6 +105,7 @@ func buildImportAliasMap(f *ir.File, all []*ir.PackageContext) map[string]*ir.Pa
 			}
 		}
 	}
+
 	return out
 }
 
@@ -97,6 +114,7 @@ func (p *PassResolveTypeRefs) resolveStmts(tt *ir.TypeTable, stmts []ir.Stmt) {
 		if ir.IsNilStmt(st) {
 			continue
 		}
+
 		switch s := st.(type) {
 		case *ir.BlockStmt:
 			p.resolveStmts(tt, s.Stmts)
@@ -110,11 +128,13 @@ func (p *PassResolveTypeRefs) resolveStmts(tt *ir.TypeTable, stmts []ir.Stmt) {
 			if s.Init != nil {
 				p.resolveExpr(tt, s.Init)
 			}
+
 		case *ir.FuncDeclStmt:
 			prevMap := p.genericParamMap
 			if len(s.TypeParams) > 0 {
 				p.genericParamMap = mergeGenericParams(prevMap, p.currentPkgPath+":"+s.Name.Name, s.TypeParams, tt)
 			}
+
 			if s.ReturnType != nil {
 				s.ReturnType.Typ = p.resolveTypeRef(tt, s.ReturnType)
 			}
@@ -137,6 +157,7 @@ func (p *PassResolveTypeRefs) resolveStmts(tt *ir.TypeTable, stmts []ir.Stmt) {
 				if len(fn.TypeParams) > 0 {
 					p.genericParamMap = mergeGenericParams(prevMap, p.currentPkgPath+":"+fn.Name.Name, fn.TypeParams, tt)
 				}
+
 				if fn.ReturnType != nil {
 					fn.ReturnType.Typ = p.resolveTypeRef(tt, fn.ReturnType)
 				}
@@ -146,78 +167,98 @@ func (p *PassResolveTypeRefs) resolveStmts(tt *ir.TypeTable, stmts []ir.Stmt) {
 						param.Type.Typ = p.resolveTypeRef(tt, param.Type)
 					}
 				}
+
 				p.genericParamMap = prevMap
 			}
+
 			for _, v := range s.Vars {
 				if v.Type != nil {
 					v.Type.Typ = p.resolveTypeRef(tt, v.Type)
 				}
 			}
+
 			for _, t := range s.Types {
 				p.resolveStmts(tt, []ir.Stmt{t})
 			}
+
 			for _, iface := range s.Interfaces {
 				p.resolveStmts(tt, []ir.Stmt{iface})
 			}
+
 		case *ir.TypeDeclStmt:
 			prevMap := p.genericParamMap
 			if len(s.TypeParams) > 0 {
 				p.genericParamMap = mergeGenericParams(prevMap, p.currentPkgPath+":"+s.Name.Name, s.TypeParams, tt)
 			}
+
 			for _, field := range s.Fields {
 				if field.Type != nil {
 					field.Type.Typ = p.resolveTypeRef(tt, field.Type)
 				}
+
 				if field.Default != nil {
 					p.resolveExpr(tt, field.Default)
 				}
 			}
+
 			for _, ctor := range s.Ctors {
 				for _, param := range ctor.Params {
 					if param.Type != nil {
 						param.Type.Typ = p.resolveTypeRef(tt, param.Type)
 					}
+
 					if param.Default != nil {
 						p.resolveExpr(tt, param.Default)
 					}
 				}
+
 				if ctor.Body != nil {
 					p.resolveStmts(tt, ir.BlockStmts(ctor.Body))
 				}
 			}
+
 			for _, method := range s.Methods {
 				fn := method.Func
 				methodPrevMap := p.genericParamMap
 				if len(fn.TypeParams) > 0 {
 					p.genericParamMap = mergeGenericParams(methodPrevMap, p.currentPkgPath+":"+s.Name.Name+"."+fn.Name.Name, fn.TypeParams, tt)
 				}
+
 				if fn.ReturnType != nil {
 					fn.ReturnType.Typ = p.resolveTypeRef(tt, fn.ReturnType)
 				}
+
 				for _, param := range fn.Params {
 					if param.Type != nil {
 						param.Type.Typ = p.resolveTypeRef(tt, param.Type)
 					}
+
 					if param.Default != nil {
 						p.resolveExpr(tt, param.Default)
 					}
 				}
+
 				if fn.Body != nil {
 					p.resolveStmts(tt, ir.BlockStmts(fn.Body))
 				}
+
 				p.genericParamMap = methodPrevMap
 			}
+
 			for _, cast := range s.Casts {
 				if cast.Param != nil && cast.Param.Type != nil {
 					cast.Param.Type.Typ = p.resolveTypeRef(tt, cast.Param.Type)
 				}
+
 				if cast.ReturnType != nil {
 					cast.ReturnType.Typ = p.resolveTypeRef(tt, cast.ReturnType)
 				}
+
 				if cast.Body != nil {
 					p.resolveStmts(tt, ir.BlockStmts(cast.Body))
 				}
 			}
+
 			p.genericParamMap = prevMap
 		case *ir.TypeAliasStmt:
 			_ = p.resolveAlias(tt, p.currentPkgPath, s.Name.Name)
@@ -226,31 +267,32 @@ func (p *PassResolveTypeRefs) resolveStmts(tt *ir.TypeTable, stmts []ir.Stmt) {
 				if sig.ReturnType != nil {
 					sig.ReturnType.Typ = p.resolveTypeRef(tt, sig.ReturnType)
 				}
+
 				for _, param := range sig.Params {
 					if param.Type != nil {
 						param.Type.Typ = p.resolveTypeRef(tt, param.Type)
 					}
 				}
 			}
+
 		case *ir.EnumDeclStmt:
-			// Resolve field types
+
 			for _, field := range s.Fields {
 				if field.Type != nil {
 					field.Type.Typ = p.resolveTypeRef(tt, field.Type)
 				}
+
 				if field.Default != nil {
 					p.resolveExpr(tt, field.Default)
 				}
 			}
 
-			// Resolve case argument expressions
 			for _, c := range s.Cases {
 				for _, arg := range c.Args {
 					p.resolveExpr(tt, arg)
 				}
 			}
 
-			// Resolve method types
 			for _, method := range s.Methods {
 				if method.ReturnType != nil {
 					method.ReturnType.Typ = p.resolveTypeRef(tt, method.ReturnType)
@@ -268,6 +310,7 @@ func (p *PassResolveTypeRefs) resolveStmts(tt *ir.TypeTable, stmts []ir.Stmt) {
 
 				p.resolveStmts(tt, ir.BlockStmts(method.Body))
 			}
+
 		case *ir.ExprStmt:
 			p.resolveExpr(tt, s.Expr)
 		case *ir.FieldAssignmentStmt:
@@ -279,29 +322,36 @@ func (p *PassResolveTypeRefs) resolveStmts(tt *ir.TypeTable, stmts []ir.Stmt) {
 				p.resolveExpr(tt, eb.Cond)
 				p.resolveStmts(tt, ir.BlockStmts(eb.Then))
 			}
+
 			if s.Else != nil {
 				p.resolveStmts(tt, ir.BlockStmts(s.Else))
 			}
+
 		case *ir.SwitchStmt:
 			p.resolveExpr(tt, s.Expr)
 			for _, cs := range s.Cases {
 				for _, ce := range cs.Values {
 					p.resolveExpr(tt, ce)
 				}
+
 				p.resolveStmts(tt, cs.Stmts)
 			}
+
 			if s.Default != nil {
 				p.resolveStmts(tt, s.Default)
 			}
+
 		case *ir.ReturnStmt:
 			for _, result := range s.Results {
 				p.resolveExpr(tt, result)
 			}
+
 		case *ir.GuardStmt:
 			p.resolveExpr(tt, s.Cond)
 			for _, ret := range s.Returns {
 				p.resolveExpr(tt, ret)
 			}
+
 		case *ir.ForStmt:
 			if s.CondInt != nil && s.CondInt.Init != nil {
 				for i, target := range s.CondInt.Init.Targets {
@@ -330,27 +380,33 @@ func (p *PassResolveTypeRefs) resolveStmts(tt *ir.TypeTable, stmts []ir.Stmt) {
 			if s.Call != nil {
 				p.resolveExpr(tt, s.Call)
 			}
+
 			p.resolveStmts(tt, ir.BlockStmts(s.Body))
 		case *ir.DeferStmt:
 			if s.Call != nil {
 				p.resolveExpr(tt, s.Call)
 			}
+
 			p.resolveStmts(tt, ir.BlockStmts(s.Body))
 		case *ir.SelectStmt:
 			for _, cc := range s.Cases {
 				if cc.ChanExpr != nil {
 					p.resolveExpr(tt, cc.ChanExpr)
 				}
+
 				if cc.SendValue != nil {
 					p.resolveExpr(tt, cc.SendValue)
 				}
+
 				for i := range cc.Targets {
 					if cc.Targets[i].TypeAnn != nil {
 						cc.Targets[i].TypeAnn.Typ = p.resolveTypeRef(tt, cc.Targets[i].TypeAnn)
 					}
 				}
+
 				p.resolveStmts(tt, ir.BlockStmts(cc.Body))
 			}
+
 			p.resolveStmts(tt, ir.BlockStmts(s.Default))
 		}
 	}
@@ -360,6 +416,7 @@ func (p *PassResolveTypeRefs) resolveExpr(tt *ir.TypeTable, expr ir.Expr) {
 	if ir.IsNilExpr(expr) {
 		return
 	}
+
 	switch x := expr.(type) {
 	case *ir.WhenExpr:
 		p.resolveExpr(tt, x.Expr)
@@ -367,11 +424,14 @@ func (p *PassResolveTypeRefs) resolveExpr(tt *ir.TypeTable, expr ir.Expr) {
 			for _, v := range c.Values {
 				p.resolveExpr(tt, v)
 			}
+
 			p.resolveExpr(tt, c.Then)
 		}
+
 		if x.Default != nil {
 			p.resolveExpr(tt, x.Default)
 		}
+
 	case *ir.UnaryExpr:
 		p.resolveExpr(tt, x.Expr)
 	case *ir.PrefixUnaryExpr:
@@ -391,11 +451,13 @@ func (p *PassResolveTypeRefs) resolveExpr(tt *ir.TypeTable, expr ir.Expr) {
 		if x.Target != nil {
 			x.Target.Typ = p.resolveTypeRef(tt, x.Target)
 		}
+
 		p.resolveExpr(tt, x.Expr)
 	case *ir.InstanceofExpr:
 		if x.Target != nil {
 			x.Target.Typ = p.resolveTypeRef(tt, x.Target)
 		}
+
 		p.resolveExpr(tt, x.Expr)
 	case *ir.AssignmentExpr:
 		p.resolveExpr(tt, x.Right)
@@ -407,9 +469,11 @@ func (p *PassResolveTypeRefs) resolveExpr(tt *ir.TypeTable, expr ir.Expr) {
 		if x.Low != nil {
 			p.resolveExpr(tt, x.Low)
 		}
+
 		if x.High != nil {
 			p.resolveExpr(tt, x.High)
 		}
+
 	case *ir.FieldAccessExpr:
 		p.resolveExpr(tt, x.Expr)
 	case *ir.RangeExpr:
@@ -419,27 +483,33 @@ func (p *PassResolveTypeRefs) resolveExpr(tt *ir.TypeTable, expr ir.Expr) {
 		if x.Inc != nil {
 			p.resolveExpr(tt, x.Inc)
 		}
+
 	case *ir.FuncCallExpr:
 		p.resolveExpr(tt, x.Callee)
 		for _, ta := range x.TypeArgs {
 			ta.Typ = p.resolveTypeRef(tt, ta)
 		}
+
 		for _, arg := range x.Args {
 			p.resolveExpr(tt, arg.Expr)
 		}
+
 	case *ir.ComposableCallExpr:
 		p.resolveExpr(tt, x.Callee)
 		for _, arg := range x.Args {
 			p.resolveExpr(tt, arg.Expr)
 		}
+
 		for _, child := range x.Children {
 			if child.Expr != nil {
 				p.resolveExpr(tt, child.Expr)
 			}
+
 			if child.Stmt != nil {
 				p.resolveStmts(tt, []ir.Stmt{child.Stmt})
 			}
 		}
+
 	case *ir.FuncLitExpr:
 		if x.ReturnType != nil {
 			x.ReturnType.Typ = p.resolveTypeRef(tt, x.ReturnType)
@@ -460,39 +530,48 @@ func (p *PassResolveTypeRefs) resolveExpr(tt *ir.TypeTable, expr ir.Expr) {
 		if x.Left != nil {
 			p.resolveExpr(tt, x.Left)
 		}
+
 		if x.Default != nil {
 			p.resolveExpr(tt, x.Default)
 		}
+
 	case *ir.ArrayLiteral:
 		for _, elem := range x.Elems {
 			p.resolveExpr(tt, elem)
 		}
+
 	case *ir.MapLiteral:
 		for _, kv := range x.Entries {
 			p.resolveExpr(tt, kv.Key)
 			p.resolveExpr(tt, kv.Value)
 		}
+
 	case *ir.TupleLiteral:
 		for _, elem := range x.Elems {
 			p.resolveExpr(tt, elem)
 		}
+
 	case *ir.StringTemplateExpr:
 		for _, part := range x.Parts {
 			if part.Expr != nil {
 				p.resolveExpr(tt, part.Expr)
 			}
 		}
+
 	case *ir.NewExpr:
 		for _, ta := range x.TypeArgs {
 			ta.Typ = p.resolveTypeRef(tt, ta)
 		}
+
 		for _, arg := range x.Args {
 			p.resolveExpr(tt, arg.Expr)
 		}
+
 	case *ir.ChanInitExpr:
 		if x.ElemType != nil {
 			x.ElemType.Typ = p.resolveTypeRef(tt, x.ElemType)
 		}
+
 		if x.Capacity != nil {
 			p.resolveExpr(tt, x.Capacity)
 		}
@@ -503,6 +582,7 @@ func (p *PassResolveTypeRefs) resolveTypeRef(tt *ir.TypeTable, tr *ir.TypeRef) i
 	if tr.Typ != 0 {
 		return tr.Typ
 	}
+
 	switch tr.Kind {
 	case ir.TK_PrimitiveAny:
 		return tt.PrimAny()
@@ -539,6 +619,7 @@ func (p *PassResolveTypeRefs) resolveTypeRef(tt *ir.TypeTable, tr *ir.TypeRef) i
 		for i, f := range tr.Tuple {
 			fields[i] = ir.TupleField{Name: f.Name, Type: p.resolveTypeRef(tt, f.Type)}
 		}
+
 		return tt.DeclareType(ir.TupleType(fields...))
 	case ir.TK_Function:
 		params := make([]*ir.FuncParam, 0, len(tr.FuncParams))
@@ -546,30 +627,36 @@ func (p *PassResolveTypeRefs) resolveTypeRef(tt *ir.TypeTable, tr *ir.TypeRef) i
 			if p2.Type == nil {
 				continue
 			}
+
 			paramTyp := p.resolveTypeRef(tt, p2.Type)
 			params = append(params, &ir.FuncParam{
 				Name: ir.NameRef{Name: p2.Name},
 				Type: &ir.TypeRef{Typ: paramTyp},
 			})
 		}
+
 		retTyp := tt.TypNone()
 		if tr.FuncReturn != nil {
 			retTyp = p.resolveTypeRef(tt, tr.FuncReturn)
 		}
+
 		return tt.FuncOf(params, retTyp)
 	case ir.TK_Enum:
 		if tr.CustomName == "" {
 			return 0
 		}
+
 		for _, argRef := range tr.TypeArgs {
 			argRef.Typ = p.resolveTypeRef(tt, argRef)
 		}
+
 		if tr.CustomQualifier == "" {
 			if id, ok := p.genericParamMap[tr.CustomName]; ok {
 				tr.Kind = ir.TK_TypeParam
 				return id
 			}
 		}
+
 		lookup := tt
 		lookupPkg := p.currentPkgPath
 		if tr.CustomQualifier != "" {
@@ -577,24 +664,30 @@ func (p *PassResolveTypeRefs) resolveTypeRef(tt *ir.TypeTable, tr *ir.TypeRef) i
 			if !ok {
 				return 0
 			}
+
 			lookup = pkg.Types
 			lookupPkg = pkg.Path.String()
 		}
+
 		if id := p.resolveAlias(tt, lookupPkg, tr.CustomName); id != 0 {
 			return id
 		}
+
 		for _, kind := range []string{"struct", "interface", "enum"} {
 			if id, ok := lookup.GetByType(ir.TypeKey(kind + ":" + lookupPkg + ":" + tr.CustomName)); ok {
 				return id
 			}
+
 			if id, ok := lookup.GetByType(ir.TypeKey(kind + "::" + tr.CustomName)); ok {
 				return id
 			}
 		}
+
 		if p.mixinNames != nil {
 			if names, ok := p.mixinNames[lookupPkg]; ok && names[tr.CustomName] {
 				return tt.PrimAny()
 			}
+
 			if tr.CustomQualifier == "" {
 				for _, pkgMixins := range p.mixinNames {
 					if pkgMixins[tr.CustomName] {
@@ -603,38 +696,44 @@ func (p *PassResolveTypeRefs) resolveTypeRef(tt *ir.TypeTable, tr *ir.TypeRef) i
 				}
 			}
 		}
+
 		return 0
 	case ir.TK_TypeParam:
 		if tr.CustomName == "?" {
 			return tt.PrimAny()
 		}
+
 		if id, ok := p.genericParamMap[tr.CustomName]; ok {
 			return id
 		}
+
 		return 0
 	default:
 		return 0
 	}
 }
 
-// resolveAlias looks up `name` in the alias table for `pkgPath` and recursively resolves the alias's target type. The result is cached on the alias's Target TypeRef so re-resolution returns the same TypID. Returns 0 when no alias exists or the cycle guard fires.
 func (p *PassResolveTypeRefs) resolveAlias(tt *ir.TypeTable, pkgPath, name string) ir.TypID {
 	pkgAliases := p.aliases[pkgPath]
 	if pkgAliases == nil {
 		return 0
 	}
+
 	alias := pkgAliases[name]
 	if alias == nil || alias.Target == nil {
 		return 0
 	}
+
 	if alias.Target.Typ != 0 {
 		tt.RegisterAlias(pkgPath, name, alias.Target.Typ)
 		return alias.Target.Typ
 	}
+
 	guard := pkgPath + ":" + name
 	if p.aliasResolving[guard] {
 		return 0
 	}
+
 	p.aliasResolving[guard] = true
 	defer delete(p.aliasResolving, guard)
 	prevPkg := p.currentPkgPath
@@ -645,5 +744,6 @@ func (p *PassResolveTypeRefs) resolveAlias(tt *ir.TypeTable, pkgPath, name strin
 		alias.Target.Typ = resolved
 		tt.RegisterAlias(pkgPath, name, resolved)
 	}
+
 	return resolved
 }

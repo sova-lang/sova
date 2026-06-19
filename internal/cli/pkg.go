@@ -11,21 +11,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// findProjectRoot walks upward from cwd looking for the nearest `sova.toml`. Returns cwd as-is when no manifest is found (so commands that don't strictly need one - like `sova index update` - can still run).
 func findProjectRoot() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
+
 	dir := cwd
 	for {
 		if _, err := os.Stat(filepath.Join(dir, pkgmgr.ManifestFilename)); err == nil {
 			return dir, nil
 		}
+
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			return cwd, nil
 		}
+
 		dir = parent
 	}
 }
@@ -40,15 +42,18 @@ func newInstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
 			svc := pkgmgr.NewService(root)
 			res, err := svc.Install(pkgmgr.InstallOptions{Frozen: frozen, Offline: offline, IncludeDev: includeDev})
 			if err != nil {
 				return err
 			}
+
 			fmt.Fprintf(os.Stderr, "[install] resolved %d package(s)\n", len(res.Packages))
 			return nil
 		},
 	}
+
 	cmd.Flags().BoolVar(&frozen, "frozen", false, "fail if the lockfile would change (CI mode)")
 	cmd.Flags().BoolVar(&offline, "offline", false, "skip all network operations; resolve only against the local cache")
 	cmd.Flags().BoolVar(&includeDev, "include-dev", false, "also resolve [dev-dependencies] of the root package(s)")
@@ -66,15 +71,18 @@ func newAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
 			svc := pkgmgr.NewService(root)
 			res, err := svc.Add(pkgmgr.AddOptions{Name: args[0], Spec: args[1], Dev: dev})
 			if err != nil {
 				return err
 			}
+
 			fmt.Fprintf(os.Stderr, "[add] %s; resolved %d package(s)\n", args[0], len(res.Packages))
 			return nil
 		},
 	}
+
 	cmd.Flags().BoolVar(&dev, "dev", false, "add to [dev-dependencies] instead of [dependencies]")
 	return cmd
 }
@@ -89,15 +97,18 @@ func newRemoveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
 			svc := pkgmgr.NewService(root)
 			res, err := svc.Remove(args[0])
 			if err != nil {
 				return err
 			}
+
 			fmt.Fprintf(os.Stderr, "[remove] %s; resolved %d package(s)\n", args[0], len(res.Packages))
 			return nil
 		},
 	}
+
 	return cmd
 }
 
@@ -110,15 +121,18 @@ func newUpdateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
 			svc := pkgmgr.NewService(root)
 			res, err := svc.Update(args)
 			if err != nil {
 				return err
 			}
+
 			fmt.Fprintf(os.Stderr, "[update] resolved %d package(s)\n", len(res.Packages))
 			return nil
 		},
 	}
+
 	return cmd
 }
 
@@ -132,15 +146,18 @@ func newLinkCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
 			svc := pkgmgr.NewService(root)
 			name, err := svc.Link(args[0])
 			if err != nil {
 				return err
 			}
+
 			fmt.Fprintf(os.Stderr, "[link] %s -> %s; run `sova install` to apply\n", name, args[0])
 			return nil
 		},
 	}
+
 	return cmd
 }
 
@@ -154,19 +171,23 @@ func newUnlinkCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
 			svc := pkgmgr.NewService(root)
 			ok, err := svc.Unlink(args[0])
 			if err != nil {
 				return err
 			}
+
 			if !ok {
 				fmt.Fprintf(os.Stderr, "[unlink] no link for %s\n", args[0])
 				return nil
 			}
+
 			fmt.Fprintf(os.Stderr, "[unlink] %s; run `sova install` to apply\n", args[0])
 			return nil
 		},
 	}
+
 	return cmd
 }
 
@@ -179,15 +200,18 @@ func newOutdatedCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
 			svc := pkgmgr.NewService(root)
 			rep, err := svc.Outdated()
 			if err != nil {
 				return err
 			}
+
 			if len(rep.Entries) == 0 {
 				fmt.Println("No git-source packages to check.")
 				return nil
 			}
+
 			drift := 0
 			for _, e := range rep.Entries {
 				marker := "  "
@@ -195,12 +219,15 @@ func newOutdatedCmd() *cobra.Command {
 					marker = "* "
 					drift++
 				}
+
 				fmt.Printf("%s%-30s current=%s latest=%s\n", marker, e.Name, e.Current, e.Latest)
 			}
+
 			fmt.Fprintf(os.Stderr, "[outdated] %d package(s) with newer versions available\n", drift)
 			return nil
 		},
 	}
+
 	return cmd
 }
 
@@ -209,6 +236,7 @@ func newIndexCmd() *cobra.Command {
 		Use:   "index",
 		Short: "Manage the package indexes",
 	}
+
 	cmd.AddCommand(&cobra.Command{
 		Use:   "update",
 		Short: "Force-refresh every configured index repo",
@@ -217,10 +245,12 @@ func newIndexCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
 			svc := pkgmgr.NewService(root)
 			if err := svc.RefreshIndex(); err != nil {
 				return err
 			}
+
 			fmt.Fprintln(os.Stderr, "[index] refreshed")
 			return nil
 		},

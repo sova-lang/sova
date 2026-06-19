@@ -1,4 +1,4 @@
-﻿package passes
+package passes
 
 import (
 	"fmt"
@@ -51,18 +51,20 @@ type InitStep struct {
 	Seq  int
 }
 
-// PassInitOrder is a pass that determines the correct initialization order of package-level expressions and code
-// passages like if statements to ensure proper execution order in the generated init function.
 type PassInitOrder struct{}
 
 func (p *PassInitOrder) Name() string       { return "init_order" }
+
 func (p *PassInitOrder) Scope() PassScope   { return PerBuild }
+
 func (p *PassInitOrder) Requires() []string { return []string{"infer_types"} }
+
 func (p *PassInitOrder) NoErrors() bool     { return false }
 
 func (p *PassInitOrder) Run(pc *PassContext) error {
-	// Placeholder for later import resolving: key is pkg path and value is list of pkg paths it depends on
+
 	var buildImportDeps = map[string][]string{}
+
 	var steps []*InitStep
 
 	for _, pkg := range pc.Pkgs {
@@ -118,8 +120,10 @@ func (p *PassInitOrder) Run(pc *PassContext) error {
 			if steps[i].File.Path == steps[j].File.Path {
 				return steps[i].Seq < steps[j].Seq
 			}
+
 			return steps[i].File.Path < steps[j].File.Path
 		}
+
 		return pi < pj
 	})
 	for i := 0; i+1 < len(steps); i++ {
@@ -130,14 +134,18 @@ func (p *PassInitOrder) Run(pc *PassContext) error {
 
 	if len(buildImportDeps) > 0 {
 		firstStepOfPkg := map[string]int{}
+
 		lastStepOfPkg := map[string]int{}
+
 		for i, s := range steps {
 			p := s.File.Package.String()
 			if _, ok := firstStepOfPkg[p]; !ok {
 				firstStepOfPkg[p] = i
 			}
+
 			lastStepOfPkg[p] = i
 		}
+
 		for p, deps := range buildImportDeps {
 			for _, q := range deps {
 				pi, okP := lastStepOfPkg[p]
@@ -191,6 +199,7 @@ func topoWithCycle(adj [][]int, indeg []int) (order []int, cycle []int, ok bool)
 			q = append(q, i)
 		}
 	}
+
 	for len(q) > 0 {
 		v := q[0]
 		q = q[1:]
@@ -202,6 +211,7 @@ func topoWithCycle(adj [][]int, indeg []int) (order []int, cycle []int, ok bool)
 			}
 		}
 	}
+
 	if len(order) == n {
 		return order, nil, true
 	}
@@ -225,6 +235,7 @@ func topoWithCycle(adj [][]int, indeg []int) (order []int, cycle []int, ok bool)
 			if !rest[w] {
 				continue
 			}
+
 			if vis[w] == 0 {
 				if dfs(w) {
 					return true
@@ -237,13 +248,16 @@ func topoWithCycle(adj [][]int, indeg []int) (order []int, cycle []int, ok bool)
 						break
 					}
 				}
+
 				if pos >= 0 {
 					found = append([]int{}, stack[pos:]...)
 					found = append(found, w)
 				}
+
 				return true
 			}
 		}
+
 		stack = stack[:len(stack)-1]
 		vis[v] = 2
 		return false
@@ -256,8 +270,10 @@ func topoWithCycle(adj [][]int, indeg []int) (order []int, cycle []int, ok bool)
 			}
 		}
 	}
+
 	if len(found) == 0 {
 		return order, nil, false
 	}
+
 	return order, found, false
 }

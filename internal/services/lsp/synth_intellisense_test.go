@@ -13,7 +13,6 @@ import (
 	"go.lsp.dev/uri"
 )
 
-// TestSynthAnnotationCompletionListsRegisteredSynths verifies that typing `@` inside a non-synth file surfaces every `synth` declaration the build saw. The synth lives in an `on synth` package and the use site lives in an `on backend` package; the LSP must read the registry the `expand_synths` pass populated and include those names alongside the built-in annotations.
 func TestSynthAnnotationCompletionListsRegisteredSynths(t *testing.T) {
 	restore := withTerminate(func(int) {})
 	defer restore()
@@ -58,6 +57,7 @@ type User {
 	if _, err := cc.Call(ctx, protocol.MethodInitialize, &protocol.InitializeParams{RootURI: rootURI}, &initResult); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodInitialized, &protocol.InitializedParams{})
 
 	if err := cc.Notify(ctx, protocol.MethodTextDocumentDidOpen, &protocol.DidOpenTextDocumentParams{
@@ -65,6 +65,7 @@ type User {
 	}); err != nil {
 		t.Fatalf("didOpen anno: %v", err)
 	}
+
 	if err := cc.Notify(ctx, protocol.MethodTextDocumentDidOpen, &protocol.DidOpenTextDocumentParams{
 		TextDocument: protocol.TextDocumentItem{URI: modelURI, LanguageID: "sova", Version: 1, Text: model},
 	}); err != nil {
@@ -75,15 +76,18 @@ type User {
 		TextDocument: protocol.TextDocumentIdentifier{URI: modelURI},
 		Position:     protocol.Position{Line: 5, Character: 5},
 	}}
+
 	var compList protocol.CompletionList
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentCompletion, compParams, &compList); err != nil {
 		t.Fatalf("completion: %v", err)
 	}
+
 	labels := completionLabels(compList.Items)
 
 	if !containsString(labels, "GormPK") {
 		t.Errorf("expected synth `GormPK` in completion, got: %v", labels)
 	}
+
 	if !containsString(labels, "structTag") {
 		t.Errorf("expected built-in `structTag` still present alongside synth: %v", labels)
 	}
@@ -91,11 +95,11 @@ type User {
 	if _, err := cc.Call(ctx, protocol.MethodShutdown, nil, nil); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodExit, nil)
 	cancel()
 }
 
-// TestSynthInjectedMembersAppearInCompletion verifies that when a synth declares `emit field x: int` or `emit func compute()` (so the expander injects new members into the target type), those members are visible to the LSP's member-completion path — i.e., typing `myUser.` lists not just the hand-written fields but also the synth-injected ones. This is the user-facing reason field injection exists: the developer experience has to match what the runtime produces.
 func TestSynthInjectedMembersAppearInCompletion(t *testing.T) {
 	restore := withTerminate(func(int) {})
 	defer restore()
@@ -148,6 +152,7 @@ func main() {
 	if _, err := cc.Call(ctx, protocol.MethodInitialize, &protocol.InitializeParams{RootURI: rootURI}, &initResult); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodInitialized, &protocol.InitializedParams{})
 	for _, doc := range []struct {
 		u    uri.URI
@@ -164,12 +169,15 @@ func main() {
 		TextDocument: protocol.TextDocumentIdentifier{URI: modelURI},
 		Position:     protocol.Position{Line: 12, Character: 14},
 	}}
+
 	var compList protocol.CompletionList
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentCompletion, compParams, &compList); err != nil {
 		t.Fatalf("completion: %v", err)
 	}
+
 	labels := completionLabels(compList.Items)
 	want := []string{"id", "name", "createdAt", "updatedAt", "touch"}
+
 	for _, w := range want {
 		if !containsString(labels, w) {
 			t.Errorf("completion missing %q (synth-injected or hand-written): got %v", w, labels)
@@ -179,11 +187,11 @@ func main() {
 	if _, err := cc.Call(ctx, protocol.MethodShutdown, nil, nil); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodExit, nil)
 	cancel()
 }
 
-// TestSynthAnnotationHoverAndDefinition verifies that hovering over `@SynthName` at a use site renders the synth signature + body in markdown, and that go-to-definition on the same token jumps to the `synth` declaration's name span. Together these make custom annotations behave like first-class language items in the editor.
 func TestSynthAnnotationHoverAndDefinition(t *testing.T) {
 	restore := withTerminate(func(int) {})
 	defer restore()
@@ -228,6 +236,7 @@ type User {
 	if _, err := cc.Call(ctx, protocol.MethodInitialize, &protocol.InitializeParams{RootURI: rootURI}, &initResult); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodInitialized, &protocol.InitializedParams{})
 	for _, doc := range []struct {
 		u    uri.URI
@@ -244,14 +253,17 @@ type User {
 		TextDocument: protocol.TextDocumentIdentifier{URI: modelURI},
 		Position:     protocol.Position{Line: 5, Character: 8},
 	}}
+
 	var hover protocol.Hover
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentHover, hoverParams, &hover); err != nil {
 		t.Fatalf("hover: %v", err)
 	}
+
 	value := hover.Contents.Value
 	if !strings.Contains(value, "@GormPK") {
 		t.Errorf("hover content missing @GormPK signature, got %q", value)
 	}
+
 	if !strings.Contains(value, "synth GormPK on field F") {
 		t.Errorf("hover content missing synth body summary, got %q", value)
 	}
@@ -260,13 +272,16 @@ type User {
 		TextDocument: protocol.TextDocumentIdentifier{URI: modelURI},
 		Position:     protocol.Position{Line: 5, Character: 8},
 	}}
+
 	var defLocs []protocol.Location
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentDefinition, defParams, &defLocs); err != nil {
 		t.Fatalf("definition: %v", err)
 	}
+
 	if len(defLocs) != 1 {
 		t.Fatalf("definition: want 1 location, got %d (%+v)", len(defLocs), defLocs)
 	}
+
 	if defLocs[0].URI != annoURI {
 		t.Errorf("definition URI: want %s, got %s", annoURI, defLocs[0].URI)
 	}
@@ -274,6 +289,7 @@ type User {
 	if _, err := cc.Call(ctx, protocol.MethodShutdown, nil, nil); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodExit, nil)
 	cancel()
 }

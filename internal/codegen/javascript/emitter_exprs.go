@@ -8,27 +8,26 @@ import (
 	"strings"
 )
 
-// classMemberLookup resolves `sym` against the currently-emitted type declaration, returning the JS member name to use after `this.` plus a flag distinguishing fields from methods. The Sova surface lets a method body reference its own type's fields and methods without an explicit `this.` qualifier (e.g. `count = newCount`, `Button(onClick: increment)` inside a method of `CounterView`), which the resolver correctly threads through the type's scope. This helper closes the loop on the codegen side: it lets `VarRef`/`AssignmentExpr` recognise such references and emit the required `this.<name>` (`this.<name>.bind(this)` for methods passed as values) instead of a bare mangled identifier — which at runtime would resolve to `undefined` and silently break reactive setters or click handlers.
-//
-// Returns `("", false, false)` when no enclosing type is in scope, when the suppress-this flag is set (we are emitting outside the class body, e.g. inside a static factory wrapper), or when `sym` is not a member of the current type. The boolean is the "is method" flag (false → field, true → method).
 func (e *CodeEmitter) classMemberLookup(ctx *codegen.EmitContext, sym ir.SymID) (string, bool, bool) {
 	if e.currentTypeDecl == nil || e.suppressThisKeyword || sym == 0 {
 		return "", false, false
 	}
+
 	for _, field := range e.currentTypeDecl.Fields {
 		if field.Name.Sym == sym {
 			return field.Name.Name, false, true
 		}
 	}
+
 	for _, m := range e.currentTypeDecl.Methods {
 		if m.Func != nil && m.Func.Name.Sym == sym {
 			return symName(ctx, m.Func.Name.Sym), true, true
 		}
 	}
+
 	return "", false, false
 }
 
-// escapeJSTemplateText escapes a literal segment for safe embedding inside a JavaScript backtick template literal.
 func escapeJSTemplateText(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
@@ -43,20 +42,20 @@ func escapeJSTemplateText(s string) string {
 				i++
 				continue
 			}
+
 			b.WriteByte('$')
 		default:
 			b.WriteByte(s[i])
 		}
 	}
+
 	return b.String()
 }
 
-// buildExpr builds an expression and returns a jsgen Statement
 func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, expr ir.Expr) *jsgen.Statement {
 	switch x := expr.(type) {
 	case *ir.WhenExpr:
-		// When expression is like a ternary chain or switch
-		// For now, we'll convert to nested ternaries
+
 		return e.buildWhenExpr(ctx, pkg, f, x)
 
 	case *ir.UnaryExpr:
@@ -80,6 +79,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				}
 			}
 		}
+
 		if x.Op == ir.OpAdd {
 			if leftTy, ok := ctx.Types.GetByID(x.Left.GetType()); ok && leftTy.Kind == ir.TK_Slice {
 				if rightTy, rok := ctx.Types.GetByID(x.Right.GetType()); rok && rightTy.Kind == ir.TK_Slice {
@@ -89,12 +89,13 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				}
 			}
 		}
+
 		left := e.buildExpr(ctx, pkg, f, x.Left)
 		right := e.buildExpr(ctx, pkg, f, x.Right)
 		return left.Op(string(x.Op)).Add(right)
 
 	case *ir.CoalesceExpr:
-		// Generate: (opt !== null ? opt : default)
+
 		leftExprCond := e.buildExpr(ctx, pkg, f, x.Left)
 		leftExprThen := e.buildExpr(ctx, pkg, f, x.Left)
 		defaultExpr := e.buildExpr(ctx, pkg, f, x.Default)
@@ -128,6 +129,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		} else {
 			left = jsgen.Id(symNameWithUnused(ctx, pkg, x.Left.Sym))
 		}
+
 		right := e.buildExpr(ctx, pkg, f, x.Right)
 		return left.Op(string(x.Op)).Add(right)
 
@@ -139,14 +141,17 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 	case *ir.SliceRangeExpr:
 		base := e.buildExpr(ctx, pkg, f, x.Expr)
 		args := []*jsgen.Statement{}
+
 		if x.Low != nil {
 			args = append(args, e.buildExpr(ctx, pkg, f, x.Low))
 		} else {
 			args = append(args, jsgen.Id("0"))
 		}
+
 		if x.High != nil {
 			args = append(args, e.buildExpr(ctx, pkg, f, x.High))
 		}
+
 		return base.Dot("slice").Call(args...)
 
 	case *ir.FieldAccessExpr:
@@ -158,17 +163,20 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 			if len(x.Fields) <= 1 {
 				return base
 			}
+
 			fields = x.Fields[1:]
 			for _, group := range [][]*ir.PackageContext{ctx.Pkgs, ctx.TransPkgs} {
 				for _, p := range group {
 					if p == nil {
 						continue
 					}
+
 					if sym, ok := p.Syms.GetByID(x.ResolvedSym); ok {
 						curType = sym.Typ
 						break
 					}
 				}
+
 				if curType != 0 {
 					break
 				}
@@ -178,48 +186,51 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 			fields = x.Fields
 			curType = x.Expr.GetType()
 		}
+
 		isThisReceiver := false
 		if vr, ok := x.Expr.(*ir.VarRef); ok {
 			if orig, ok := ctx.Names.GetOriginalName(vr.Ref.Sym); ok && orig == "this" {
 				isThisReceiver = true
 			}
 		}
+
 		lastWasMethod := false
 		for _, field := range fields {
 			ty, ok := ctx.Types.GetByID(curType)
 			lastWasMethod = false
 			if ok && ty.Kind == ir.TK_Enum {
-				// Check if this is a case access (e.g., Color.Red)
+
 				isCaseAccess := false
 				for _, c := range ty.EnumCases {
 					if c.Name == field.Name {
 						isCaseAccess = true
 						enumName := symName(ctx, getEnumSymbol(ctx, pkg, ty.EnumName))
 						if ty.IsNumeric {
-							// Numeric enum: use dot notation (enumName.CaseName)
+
 							base = jsgen.Id(enumName).Dot(field.Name)
 						} else {
-							// Payload enum: use concatenated constant name (enumNameCaseName)
+
 							base = jsgen.Id(enumName + field.Name)
 						}
+
 						break
 					}
 				}
 
-				// If not a case, use dot notation for fields and methods
 				if !isCaseAccess {
-					// For methods, use the mangled method name
+
 					foundMethod := false
 					for _, m := range ty.EnumMethods {
 						if m.Name == field.Name {
 							foundMethod = true
-							// Look up the mangled method name
+
 							methodSym := getMethodSymbol(ctx, pkg, ty.EnumName, field.Name)
 							if methodSym != 0 {
 								base = base.Dot(symName(ctx, methodSym))
 							} else {
 								base = base.Dot(field.Name)
 							}
+
 							curType = m.Type
 							lastWasMethod = true
 							break
@@ -228,7 +239,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 
 					if !foundMethod {
 						base = base.Dot(field.Name)
-						// Update curType to the field type
+
 						for _, fld := range ty.EnumFields {
 							if fld.Name == field.Name {
 								curType = fld.Type
@@ -247,6 +258,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 						break
 					}
 				}
+
 				if !found {
 					methodSym := ir.SymID(0)
 					methodFuncTyp := ir.TypID(0)
@@ -259,6 +271,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 							}
 						}
 					}
+
 					if methodSym == 0 {
 						for _, m := range ty.StructMethods {
 							if m.Name == field.Name {
@@ -268,6 +281,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 							}
 						}
 					}
+
 					if methodSym != 0 {
 						base = base.Dot(symName(ctx, methodSym))
 						curType = methodFuncTyp
@@ -275,6 +289,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 						lastWasMethod = true
 					}
 				}
+
 				if !found {
 					base = base.Dot(field.Name)
 				}
@@ -282,6 +297,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				base = base.Dot(field.Name)
 			}
 		}
+
 		if isThisReceiver && lastWasMethod && len(x.Fields) == 1 {
 			if e.suppressThisKeyword {
 				base = base.Dot("bind").Call(e.buildExpr(ctx, pkg, f, x.Expr))
@@ -289,22 +305,27 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				base = base.Dot("bind").Call(jsgen.Id("this"))
 			}
 		}
+
 		return base
 
 	case *ir.VarRef:
 		if orig, ok := ctx.Names.GetOriginalName(x.Ref.Sym); ok && orig == "this" && !e.suppressThisKeyword {
 			return jsgen.Id("this")
 		}
+
 		if name, isMethod, ok := e.classMemberLookup(ctx, x.Ref.Sym); ok {
 			ref := jsgen.Raw("this.").Add(jsgen.Id(name))
 			if isMethod {
 				return ref.Dot("bind").Call(jsgen.Id("this"))
 			}
+
 			return ref
 		}
+
 		if reactiveWireVarOriginalNameJS(ctx, x.Ref.Sym) != "" {
 			return jsgen.Id(symName(ctx, x.Ref.Sym)).Dot("value")
 		}
+
 		return jsgen.Id(symNameWithUnused(ctx, pkg, x.Ref.Sym))
 
 	case *ir.RangeExpr:
@@ -321,6 +342,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				} else {
 					arg = jsgen.Raw("undefined")
 				}
+
 				e.usesChanRuntime = true
 				return jsgen.Raw("(await ").Add(recv).Add(jsgen.Raw(".send(")).Add(arg).Add(jsgen.Raw("))"))
 			case "recv":
@@ -331,15 +353,18 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				return recv.Dot("close").Call()
 			}
 		}
+
 		if intrinsic := lookupBuiltinIntrinsicJS(ctx, x.Callee); intrinsic != "" {
 			argCodes := make([]*jsgen.Statement, len(x.Args))
 			for i, arg := range x.Args {
 				argCodes[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
 			}
+
 			if code := emitBuiltinIntrinsicCallJS(intrinsic, argCodes); code != nil {
 				return code
 			}
 		}
+
 		callee := e.buildExpr(ctx, pkg, f, x.Callee)
 
 		var args []*jsgen.Statement
@@ -351,6 +376,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		if x.IsAsync {
 			return jsgen.Raw("await ").Add(call)
 		}
+
 		return call
 
 	case *ir.FuncLitExpr:
@@ -368,9 +394,9 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		if x.IsAsync {
 			ab = ab.Async()
 		}
+
 		return ab.Block(body...)
 
-	// Literals
 	case *ir.LitInt:
 		return jsgen.Lit(x.Value)
 
@@ -394,6 +420,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		for _, elem := range x.Elems {
 			elements = append(elements, e.buildExpr(ctx, pkg, f, elem))
 		}
+
 		return jsgen.Array(elements...)
 
 	case *ir.MapLiteral:
@@ -413,6 +440,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 
 			pairs = append(pairs, jsgen.Kv(keyStr, e.buildExpr(ctx, pkg, f, entry.Value)))
 		}
+
 		return jsgen.Object(pairs...)
 
 	case *ir.TupleLiteral:
@@ -420,6 +448,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		for _, elem := range x.Elems {
 			elements = append(elements, e.buildExpr(ctx, pkg, f, elem))
 		}
+
 		return jsgen.Array(elements...)
 
 	case *ir.StringTemplateExpr:
@@ -449,6 +478,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 			if ctorSym != nil {
 				ctorFunc, _ = ctx.Types.GetByID(ctorSym.Typ)
 			}
+
 			args := make([]*jsgen.Statement, len(x.Args))
 			for i, arg := range x.Args {
 				if arg.Expr != nil {
@@ -459,6 +489,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 					args[i] = jsgen.Null()
 				}
 			}
+
 			ctorCall = jsgen.Id(ctorName).Call(args...)
 		} else if calleeSym != 0 {
 			typeName := symName(ctx, calleeSym)
@@ -466,6 +497,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		} else {
 			ctorCall = jsgen.Null()
 		}
+
 		var sb strings.Builder
 		sb.WriteString("((() => { const __c = ")
 		sb.WriteString(ctorCall.String())
@@ -474,25 +506,30 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 			if child.Expr == nil {
 				continue
 			}
+
 			childCode := e.buildExpr(ctx, pkg, f, child.Expr)
 			sb.WriteString("__c.children.push(")
 			sb.WriteString(childCode.String())
 			sb.WriteString("); ")
 		}
+
 		e.composableDepth++
 		for _, child := range x.Children {
 			if child.Stmt == nil {
 				continue
 			}
+
 			stmtCode := e.buildStmtAsCode(ctx, pkg, f, child.Stmt)
 			if stmtCode == nil {
 				continue
 			}
+
 			if stmtStmt, ok := stmtCode.(*jsgen.Statement); ok {
 				sb.WriteString(stmtStmt.String())
 				sb.WriteString("; ")
 			}
 		}
+
 		e.composableDepth--
 		sb.WriteString("return __c; })())")
 		return jsgen.Raw(sb.String())
@@ -504,6 +541,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		} else {
 			capCode = jsgen.Raw("0")
 		}
+
 		return jsgen.Raw("new __SovaChan(").Add(capCode).Add(jsgen.Raw(")"))
 	case *ir.NewExpr:
 		typeName := symName(ctx, x.TypeName.Sym)
@@ -515,11 +553,13 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 					ctorPkg = found
 				}
 			}
+
 			ctorSym, _ := ctorPkg.Syms.GetByID(x.CtorSym)
 			var ctorFunc *ir.Type
 			if ctorSym != nil {
 				ctorFunc, _ = ctx.Types.GetByID(ctorSym.Typ)
 			}
+
 			args := make([]*jsgen.Statement, len(x.Args))
 			for i, arg := range x.Args {
 				if arg.Expr != nil {
@@ -530,8 +570,10 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 					args[i] = jsgen.Null()
 				}
 			}
+
 			return jsgen.Id(ctorName).Call(args...)
 		}
+
 		return jsgen.Raw(fmt.Sprintf("new %s()", typeName))
 
 	default:
@@ -570,70 +612,70 @@ func (e *CodeEmitter) buildWhenExpr(ctx *codegen.EmitContext, pkg *ir.PackageCon
 	return result
 }
 
-// buildAsExpr lowers a Sova `value as T` / `value as? T` cast to a JS runtime
-// check. JS lacks static type assertions, so the panicking form throws on a
-// mismatch and the safe form returns `undefined` (matching the Sova `option`
-// representation in the JS runtime, which uses undefined/null for `none`).
-// The predicate is derived from the target type's IR kind - primitive types
-// use `typeof`, arrays use `Array.isArray`, structs/enums use `instanceof`
-// against their mangled class name, and `any` short-circuits to the value.
 func (e *CodeEmitter) buildAsExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.AsExpr) *jsgen.Statement {
 	src := e.buildExpr(ctx, pkg, f, x.Expr)
 	if x.Target == nil || x.Target.Typ == 0 {
 		return src
 	}
+
 	if wrapName, jsCtor, ok := jsHandleWrapperTarget(ctx, x.Target.Typ); ok {
 		if x.Safe {
 			body := fmt.Sprintf("(__v => (__v != null && __v.handle != null && typeof globalThis[%q] === 'function' && __v.handle instanceof globalThis[%q]) ? new %s(__v.handle) : null)", jsCtor, jsCtor, wrapName)
 			return jsgen.Raw(body).Call(src)
 		}
+
 		body := fmt.Sprintf("(__v => (__v == null) ? new %s(null) : new %s(__v.handle))", wrapName, wrapName)
 		return jsgen.Raw(body).Call(src)
 	}
+
 	if x.Safe {
 		if conv := jsSafePrimitiveConversion(ctx, x.Expr.GetType(), x.Target.Typ, "__v"); conv != "" {
 			body := fmt.Sprintf("(__v => %s)", conv)
 			return jsgen.Raw(body).Call(src)
 		}
+
 		check := jsAsExprPredicate(ctx, x.Target.Typ, "__v")
 		if check == "" {
 			return src
 		}
+
 		body := fmt.Sprintf("(__v => (%s) ? __v : null)", check)
 		return jsgen.Raw(body).Call(src)
 	}
+
 	if conv := jsPrimitiveConversion(ctx, x.Expr.GetType(), x.Target.Typ, "__v"); conv != "" {
 		body := fmt.Sprintf("(__v => %s)", conv)
 		return jsgen.Raw(body).Call(src)
 	}
+
 	return src
 }
 
-// buildInstanceofExpr emits `expr instanceof T` for both handle-wrapper struct targets (checks the underlying JS handle's class) and primitive targets (uses typeof). Always evaluates to a bool; null/undefined receivers return false.
 func (e *CodeEmitter) buildInstanceofExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.InstanceofExpr) *jsgen.Statement {
 	src := e.buildExpr(ctx, pkg, f, x.Expr)
 	if x.Target == nil || x.Target.Typ == 0 {
 		return jsgen.Raw("false")
 	}
+
 	if _, jsCtor, ok := jsHandleWrapperTarget(ctx, x.Target.Typ); ok {
 		body := fmt.Sprintf("(__v => __v != null && __v.handle != null && typeof globalThis[%q] === 'function' && __v.handle instanceof globalThis[%q])", jsCtor, jsCtor)
 		return jsgen.Raw(body).Call(src)
 	}
+
 	if check := jsAsExprPredicate(ctx, x.Target.Typ, "__v"); check != "" {
 		body := fmt.Sprintf("(__v => __v != null && (%s))", check)
 		return jsgen.Raw(body).Call(src)
 	}
+
 	return jsgen.Raw("false")
 }
 
-// jsHandleWrapperTarget reports whether `typID` is a struct with a `handle: any` field —
-// the convention browserx-generated WebIDL wrappers follow. Returns the mangled Sova class
-// name and the JS-side constructor name to instanceof-check against.
 func jsHandleWrapperTarget(ctx *codegen.EmitContext, typID ir.TypID) (mangled, jsCtor string, ok bool) {
 	ty, found := ctx.Types.GetByID(typID)
 	if !found || ty.Kind != ir.TK_Struct {
 		return "", "", false
 	}
+
 	hasHandle := false
 	for _, sf := range ty.StructFields {
 		if sf.Name == "handle" && sf.Type == ctx.Types.PrimAny() {
@@ -641,28 +683,32 @@ func jsHandleWrapperTarget(ctx *codegen.EmitContext, typID ir.TypID) (mangled, j
 			break
 		}
 	}
+
 	if !hasHandle {
 		return "", "", false
 	}
+
 	for _, group := range [][]*ir.PackageContext{ctx.Pkgs, ctx.TransPkgs} {
 		for _, p := range group {
 			if p == nil {
 				continue
 			}
+
 			for sym, s := range p.Syms.ByID() {
 				if s == nil || s.Typ != typID || s.Name != ty.StructName {
 					continue
 				}
+
 				if name, found := ctx.Names.GetMangledName(sym); found {
 					return name, ty.StructName, true
 				}
 			}
 		}
 	}
+
 	return "", "", false
 }
 
-// jsSafePrimitiveConversion mirrors `jsPrimitiveConversion` but produces option-typed results: lossless conversions return the converted value directly (treated as a non-null option), parse-style conversions explicitly check for failure and return `null` (the option's `none`) when the input does not parse. Returns "" when the pair is not a primitive conversion the caller falls back to the structural predicate check.
 func jsSafePrimitiveConversion(ctx *codegen.EmitContext, srcTyp, dstTyp ir.TypID, varName string) string {
 	str := ctx.Types.PrimString()
 	in := ctx.Types.PrimInt()
@@ -672,12 +718,15 @@ func jsSafePrimitiveConversion(ctx *codegen.EmitContext, srcTyp, dstTyp ir.TypID
 	if srcTyp == 0 || dstTyp == 0 || srcTyp == dstTyp {
 		return ""
 	}
+
 	if dstTyp == str {
 		if srcTyp == in || srcTyp == fl || srcTyp == bl || srcTyp == ch {
 			return fmt.Sprintf("String(%s)", varName)
 		}
+
 		return ""
 	}
+
 	if srcTyp == str {
 		switch dstTyp {
 		case in:
@@ -687,24 +736,29 @@ func jsSafePrimitiveConversion(ctx *codegen.EmitContext, srcTyp, dstTyp ir.TypID
 		case bl:
 			return fmt.Sprintf("((() => { if (%s === 'true') return true; if (%s === 'false') return false; return null; })())", varName, varName)
 		}
+
 		return ""
 	}
+
 	if srcTyp == in && dstTyp == fl {
 		return fmt.Sprintf("Number(%s)", varName)
 	}
+
 	if srcTyp == fl && dstTyp == in {
 		return fmt.Sprintf("(%s | 0)", varName)
 	}
+
 	if srcTyp == in && dstTyp == ch {
 		return fmt.Sprintf("String.fromCharCode(%s)", varName)
 	}
+
 	if srcTyp == ch && dstTyp == in {
 		return fmt.Sprintf("(%s).charCodeAt(0)", varName)
 	}
+
 	return ""
 }
 
-// jsPrimitiveConversion returns a JS expression that converts `varName` from the Sova primitive `srcTyp` into the Sova primitive `dstTyp`, or "" when the cast isn't a known primitive conversion (in which case buildAsExpr falls back to the typecheck-throw path). The mappings: any primitive `as string` becomes `String(...)`; `string as int|float` parses; numeric widening uses `Number(...)`; int↔char round-trips through `String.fromCharCode` / `.charCodeAt(0)` so chars are interchangeable with their code-point ints.
 func jsPrimitiveConversion(ctx *codegen.EmitContext, srcTyp, dstTyp ir.TypID, varName string) string {
 	str := ctx.Types.PrimString()
 	in := ctx.Types.PrimInt()
@@ -714,50 +768,60 @@ func jsPrimitiveConversion(ctx *codegen.EmitContext, srcTyp, dstTyp ir.TypID, va
 	if srcTyp == 0 || dstTyp == 0 || srcTyp == dstTyp {
 		return ""
 	}
+
 	if dstTyp == str {
 		if srcTyp == in || srcTyp == fl || srcTyp == bl {
 			return fmt.Sprintf("String(%s)", varName)
 		}
+
 		if srcTyp == ch {
 			return fmt.Sprintf("String(%s)", varName)
 		}
+
 		return ""
 	}
+
 	if srcTyp == str {
 		if dstTyp == in {
 			return fmt.Sprintf("(parseInt(%s, 10) | 0)", varName)
 		}
+
 		if dstTyp == fl {
 			return fmt.Sprintf("Number(%s)", varName)
 		}
+
 		if dstTyp == bl {
 			return fmt.Sprintf("(%s === 'true')", varName)
 		}
+
 		return ""
 	}
+
 	if srcTyp == in && dstTyp == fl {
 		return fmt.Sprintf("Number(%s)", varName)
 	}
+
 	if srcTyp == fl && dstTyp == in {
 		return fmt.Sprintf("(%s | 0)", varName)
 	}
+
 	if srcTyp == in && dstTyp == ch {
 		return fmt.Sprintf("String.fromCharCode(%s)", varName)
 	}
+
 	if srcTyp == ch && dstTyp == in {
 		return fmt.Sprintf("(%s).charCodeAt(0)", varName)
 	}
+
 	return ""
 }
 
-// jsAsExprPredicate returns a JS expression that evaluates to true iff the
-// local `varName` matches Sova type `typID`. Returns "" for `any`/unknown
-// targets (the caller should skip the runtime check in that case).
 func jsAsExprPredicate(ctx *codegen.EmitContext, typID ir.TypID, varName string) string {
 	ty, ok := ctx.Types.GetByID(typID)
 	if !ok {
 		return ""
 	}
+
 	switch ty.Kind {
 	case ir.TK_PrimitiveAny:
 		return ""
@@ -776,16 +840,16 @@ func jsAsExprPredicate(ctx *codegen.EmitContext, typID ir.TypID, varName string)
 	case ir.TK_Struct, ir.TK_Enum:
 		return fmt.Sprintf("%s !== null && typeof %s === 'object'", varName, varName)
 	}
+
 	return ""
 }
 
-// jsTypeLabel returns a short human-readable name for a Sova type, used in
-// runtime error messages emitted by failing `as` casts.
 func jsTypeLabel(ctx *codegen.EmitContext, typID ir.TypID) string {
 	ty, ok := ctx.Types.GetByID(typID)
 	if !ok {
 		return "<unknown>"
 	}
+
 	switch ty.Kind {
 	case ir.TK_PrimitiveString:
 		return "string"
@@ -806,6 +870,7 @@ func jsTypeLabel(ctx *codegen.EmitContext, typID ir.TypID) string {
 	case ir.TK_Enum:
 		return ty.EnumName
 	}
+
 	return string(ty.Key)
 }
 
@@ -833,11 +898,11 @@ func (e *CodeEmitter) buildRangeExpr(ctx *codegen.EmitContext, pkg *ir.PackageCo
 	return rangeFunc.Parens().Call()
 }
 
-// jsOpOverloadName returns the method name for a user-overloadable operator, or ok=false for operators that cannot be overloaded.
 func jsOpOverloadName(op ir.Op) (string, bool) {
 	switch op {
 	case ir.OpAdd, ir.OpSub, ir.OpMul, ir.OpDiv, ir.OpMod, ir.OpEq:
 		return "op" + string(op), true
 	}
+
 	return "", false
 }

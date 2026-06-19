@@ -1,6 +1,5 @@
 package javascript
 
-// sovaWSClientRuntime is the JavaScript that boots the frontend WebSocket connection to /__sova/ws, registers the per-frontend-wire handler map, and dispatches incoming `op:"call"` envelopes from the backend. It is injected at the top of the emitted bundle when the build needs the session manager (frontend wires, mutable wire vars, or lifecycle hooks present). Same-origin URL derivation works without configuration; reconnects use exponential backoff capped at 30 seconds.
 const sovaWSClientRuntime = `
 var __sova_ws = null;
 var __sova_ws_wires = {};

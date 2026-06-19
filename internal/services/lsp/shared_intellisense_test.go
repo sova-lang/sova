@@ -13,7 +13,6 @@ import (
 	"go.lsp.dev/uri"
 )
 
-// TestSharedMemberIntellisense verifies that the LSP filters cross-side member completion + hover to the shared subset. A frontend file accessing a backend-declared `User` with mixed shared / backend-only members should see only the shared fields and methods in IntelliSense — the same surface the JS bundle actually has after the compiler emits the cross-side class. Without filtering, completion would expose `passwordHash` and `internalSave()` even though those are unreachable from frontend code at runtime, which is misleading.
 func TestSharedMemberIntellisense(t *testing.T) {
 	restore := withTerminate(func(int) {})
 	defer restore()
@@ -70,6 +69,7 @@ func main() {
 	if _, err := cc.Call(ctx, protocol.MethodInitialize, &protocol.InitializeParams{RootURI: rootURI}, &initResult); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodInitialized, &protocol.InitializedParams{})
 
 	if err := cc.Notify(ctx, protocol.MethodTextDocumentDidOpen, &protocol.DidOpenTextDocumentParams{
@@ -77,6 +77,7 @@ func main() {
 	}); err != nil {
 		t.Fatalf("didOpen backend: %v", err)
 	}
+
 	if err := cc.Notify(ctx, protocol.MethodTextDocumentDidOpen, &protocol.DidOpenTextDocumentParams{
 		TextDocument: protocol.TextDocumentItem{URI: frontendURI, LanguageID: "sova", Version: 1, Text: frontend},
 	}); err != nil {
@@ -87,24 +88,30 @@ func main() {
 		TextDocument: protocol.TextDocumentIdentifier{URI: frontendURI},
 		Position:     protocol.Position{Line: 6, Character: 14},
 	}}
+
 	var compList protocol.CompletionList
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentCompletion, compParams, &compList); err != nil {
 		t.Fatalf("completion: %v", err)
 	}
+
 	labels := completionLabels(compList.Items)
 
 	if !containsString(labels, "id") {
 		t.Errorf("expected shared field `id` in completion, got: %v", labels)
 	}
+
 	if !containsString(labels, "name") {
 		t.Errorf("expected shared field `name` in completion, got: %v", labels)
 	}
+
 	if !containsString(labels, "display") {
 		t.Errorf("expected shared method `display` in completion, got: %v", labels)
 	}
+
 	if containsString(labels, "passwordHash") {
 		t.Errorf("backend-only field `passwordHash` leaked into frontend completion: %v", labels)
 	}
+
 	if containsString(labels, "internalSave") {
 		t.Errorf("backend-only method `internalSave` leaked into frontend completion: %v", labels)
 	}
@@ -112,11 +119,11 @@ func main() {
 	if _, err := cc.Call(ctx, protocol.MethodShutdown, nil, nil); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodExit, nil)
 	cancel()
 }
 
-// TestAnnotationCompletion verifies that typing `@` in a Sova source position offers both built-in annotations (`reactive`, `structTag`) in the completion list. The annotation list is small but must stay in sync with the compiler-recognised set; this test guards against regressions where a new annotation lands in the codegen path without a parallel LSP entry.
 func TestAnnotationCompletion(t *testing.T) {
 	restore := withTerminate(func(int) {})
 	defer restore()
@@ -148,6 +155,7 @@ type T {
 	if _, err := cc.Call(ctx, protocol.MethodInitialize, &protocol.InitializeParams{RootURI: rootURI}, &initResult); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodInitialized, &protocol.InitializedParams{})
 
 	if err := cc.Notify(ctx, protocol.MethodTextDocumentDidOpen, &protocol.DidOpenTextDocumentParams{
@@ -160,18 +168,22 @@ type T {
 		TextDocument: protocol.TextDocumentIdentifier{URI: docURI},
 		Position:     protocol.Position{Line: 3, Character: 5},
 	}}
+
 	var compList protocol.CompletionList
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentCompletion, compParams, &compList); err != nil {
 		t.Fatalf("completion: %v", err)
 	}
+
 	labels := completionLabels(compList.Items)
 
 	if !containsString(labels, "reactive") {
 		t.Errorf("annotation completion missing `reactive`, got: %v", labels)
 	}
+
 	if !containsString(labels, "structTag") {
 		t.Errorf("annotation completion missing `structTag`, got: %v", labels)
 	}
+
 	for _, l := range labels {
 		if strings.HasPrefix(l, "@") {
 			t.Errorf("annotation labels should be bare names (no leading @), got %q", l)
@@ -181,6 +193,7 @@ type T {
 	if _, err := cc.Call(ctx, protocol.MethodShutdown, nil, nil); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodExit, nil)
 	cancel()
 }

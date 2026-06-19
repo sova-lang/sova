@@ -6,12 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"sova/internal/services/compiler"
+	"strconv"
 	"time"
 )
 
-// maybeStartBackend, when `enabled` is true, compiles the current project in *regular* (non-test) mode into a tmp output dir, builds the resulting Go program with `go build`, spawns it on a free port with `SOVA_DEV=1` + `WIRE_PORT=<port>`, polls TCP until the port accepts a connection, and returns the resolved WS URL plus a stop func the caller defers. When `enabled` is false the function returns ("", no-op, nil) so callers can defer unconditionally. This lets `--with-backend` tests run the test bundle in the browser against a real backend without changing the main `sova test` codepath.
 func maybeStartBackend(cfg BuildConfig, enabled bool) (string, func(), error) {
 	if !enabled {
 		return "", func() {}, nil
@@ -21,6 +20,7 @@ func maybeStartBackend(cfg BuildConfig, enabled bool) (string, func(), error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("backend tmp dir: %w", err)
 	}
+
 	cleanupTmp := func() { _ = os.RemoveAll(tmpDir) }
 
 	backendCfg := cfg
@@ -36,14 +36,17 @@ func maybeStartBackend(cfg BuildConfig, enabled bool) (string, func(), error) {
 		cleanupTmp()
 		return "", nil, fmt.Errorf("backend collect sources: %w", err)
 	}
+
 	for _, src := range files {
 		c.AddSource(src.RelPath, src.Content)
 	}
+
 	if err := c.Compile(); err != nil {
 		c.Diag.Print()
 		cleanupTmp()
 		return "", nil, fmt.Errorf("backend compile: %w", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		cleanupTmp()
@@ -94,6 +97,7 @@ func maybeStartBackend(cfg BuildConfig, enabled bool) (string, func(), error) {
 				<-done
 			}
 		}
+
 		cleanupTmp()
 	}
 
@@ -106,8 +110,10 @@ func maybeStartBackend(cfg BuildConfig, enabled bool) (string, func(), error) {
 			fmt.Fprintf(os.Stderr, "[test] backend ready on %s\n", addr)
 			return "ws://" + addr + "/__sova/ws", stop, nil
 		}
+
 		time.Sleep(100 * time.Millisecond)
 	}
+
 	stop()
 	return "", nil, fmt.Errorf("backend did not become ready on %s within 10s", addr)
 }

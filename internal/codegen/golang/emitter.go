@@ -1,4 +1,4 @@
-﻿package golang
+package golang
 
 import (
 	_ "embed"
@@ -22,7 +22,6 @@ var devHelpersTemplate string
 //go:embed prod_helpers.go.tpl
 var prodHelpersTemplate string
 
-// CodeEmitter implements the codegen.Emitter interface.
 type CodeEmitter struct {
 	hk              *codegen.HoistKit[jen.Code]
 	jf              *jen.File
@@ -44,7 +43,9 @@ func (e *CodeEmitter) Init(ctx *codegen.EmitContext) error {
 	e.jf = jen.NewFile("main")
 	e.loopLabels = make([]string, 0)
 	e.typeDecls = map[ir.TypID]*ir.TypeDeclStmt{}
+
 	e.externImports = map[string]string{}
+
 	for _, pkg := range ctx.Pkgs {
 		for _, file := range pkg.Files {
 			for _, st := range file.Hir.Statements {
@@ -56,6 +57,7 @@ func (e *CodeEmitter) Init(ctx *codegen.EmitContext) error {
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -85,27 +87,30 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 				if file.Hir.Side.Kind == ir.SideSynth {
 					continue
 				}
+
 				for _, st := range file.Hir.Statements {
 					e.emitStmt(ctx, pkg, file.Hir, block, st, true)
 				}
 			}
 		}
 
-		// Cross-side TypeDecl emission: when a type lives in a frontend file but carries `shared` members (Stage 3 of the GORM-friendly Sova design), Go needs a struct with the shared subset so the wire layer can JSON-marshal/unmarshal it as a typed value. We only emit the struct shape with its `@structTag` annotations; methods live on the JS side and don't get a Go body.
 		for _, pkg := range ctx.TransPkgs {
 			for _, file := range pkg.Files {
 				if file.Hir.Side.Kind == ir.SideSynth {
 					continue
 				}
+
 				for _, st := range file.Hir.Statements {
 					td, ok := st.(*ir.TypeDeclStmt)
 					if !ok || td.IsExtern || hasBuiltinAnnotation(td.Annotations) {
 						continue
 					}
+
 					filtered := sharedSubsetTypeDeclGo(ctx, pkg, td)
 					if filtered == nil {
 						continue
 					}
+
 					e.emitStmt(ctx, pkg, file.Hir, block, filtered, true)
 				}
 			}
@@ -134,9 +139,11 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 				emitTestDriverMain(ctx, g)
 				return
 			}
+
 			if e.mangledMainName != "" {
 				g.Id(e.mangledMainName).Call()
 			}
+
 			if len(e.wiredFuncs) > 0 || len(e.wiredVars) > 0 {
 				e.emitWireServerBoot(ctx, g)
 			} else {
@@ -159,6 +166,7 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 	if fixErr == nil {
 		rendered = fixed
 	}
+
 	if err := os.WriteFile(ctx.OutPath, rendered, 0o644); err != nil {
 		return err
 	}
@@ -183,17 +191,20 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 	if err := os.WriteFile(modPath, []byte(modContent), 0o644); err != nil {
 		return err
 	}
+
 	sumAnchor := goSumAnchorPath(ctx)
 	if sumAnchor != "" {
 		if data, err := os.ReadFile(sumAnchor); err == nil {
 			_ = os.WriteFile(filepath.Join(outDir, "go.sum"), data, 0o644)
 		}
 	}
+
 	if needsGoModTidy(ctx) {
 		if err := goModTidy(outDir); err != nil {
 			return fmt.Errorf("go mod tidy in %s: %w", outDir, err)
 		}
 	}
+
 	if sumAnchor != "" {
 		if data, err := os.ReadFile(filepath.Join(outDir, "go.sum")); err == nil {
 			if mkErr := os.MkdirAll(filepath.Dir(sumAnchor), 0o755); mkErr == nil {
@@ -201,10 +212,10 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 			}
 		}
 	}
+
 	return nil
 }
 
-// goModTidy runs `go mod tidy` in the given directory so that every dependency in the generated `go.mod` (the WebSocket module when the build needs the session manager, plus every extern-pinned Go module) resolves into the module cache and into a populated `go.sum`. Hidden by default behind a feature gate (see `needsGoModTidy`) so legacy stdlib-only builds keep their fast no-network path.
 func goModTidy(dir string) error {
 	cmd := exec.Command("go", "mod", "tidy")
 	cmd.Dir = dir
@@ -217,6 +228,7 @@ func needsSessionManagerFromCache(ctx *codegen.EmitContext) bool {
 	if ctx.Cache == nil {
 		return false
 	}
+
 	v, ok := ctx.Cache["needs_session_manager"].(bool)
 	return ok && v
 }
@@ -229,18 +241,22 @@ func emitDotenvInit(ctx *codegen.EmitContext, block *jen.Group) {
 	if ctx == nil || ctx.Cache == nil {
 		return
 	}
+
 	cfg, ok := ctx.Cache["build_config"].(dotenvLoadedEnvGetter)
 	if !ok {
 		return
 	}
+
 	loaded := cfg.LoadedEnvValue()
 	if len(loaded) == 0 {
 		return
 	}
+
 	keys := make([]string, 0, len(loaded))
 	for k := range loaded {
 		keys = append(keys, k)
 	}
+
 	sort.Strings(keys)
 	block.Add(jen.Func().Id("init").Params().BlockFunc(func(g *jen.Group) {
 		for _, k := range keys {
@@ -254,31 +270,32 @@ func emitDotenvInit(ctx *codegen.EmitContext, block *jen.Group) {
 	}))
 }
 
-// needsGoModTidy reports whether the generated module has any non-stdlib `require` entries that would benefit from a `go mod tidy` invocation. True when the session manager is active OR when any extern declaration pinned a Go module via `extern "path@version"` / `backend("path@version")`. The two-state gate keeps the existing fast path for builds that don't reach for the network.
 func needsGoModTidy(ctx *codegen.EmitContext) bool {
 	if needsSessionManagerFromCache(ctx) {
 		return true
 	}
+
 	return len(externGoModulesFromCache(ctx)) > 0
 }
 
-// externGoModulesFromCache returns the `(modulePath -> version)` map produced by PassAggregateExternModules. Returns an empty map (never nil) when the cache entry is missing so callers can range over it unconditionally.
 func externGoModulesFromCache(ctx *codegen.EmitContext) map[string]string {
 	if ctx.Cache == nil {
 		return map[string]string{}
 	}
+
 	raw, ok := ctx.Cache["extern_go_modules"]
 	if !ok || raw == nil {
 		return map[string]string{}
 	}
+
 	m, ok := raw.(map[string]string)
 	if !ok {
 		return map[string]string{}
 	}
+
 	return m
 }
 
-// emittedGoMod returns the contents of the synthetic `go.mod` for the output module. The base module declaration is always emitted; the `gorilla/websocket` require line is appended when the build needs the session manager; and any extern-pinned Go modules (declared via `extern "path@version"` / `backend("path@version")` and aggregated by `PassAggregateExternModules`) are appended after, sorted alphabetically for a stable file content across builds.
 func emittedGoMod(ctx *codegen.EmitContext) string {
 	needsManager := false
 	if ctx.Cache != nil {
@@ -286,43 +303,50 @@ func emittedGoMod(ctx *codegen.EmitContext) string {
 			needsManager = v
 		}
 	}
+
 	var b strings.Builder
 	b.WriteString("module sovaapp\n\ngo 1.23\n")
 	if needsManager {
 		b.WriteString("\nrequire github.com/gorilla/websocket v1.5.3\n")
 	}
+
 	pins := externGoModulesFromCache(ctx)
 	if len(pins) > 0 {
 		paths := make([]string, 0, len(pins))
 		for p := range pins {
 			paths = append(paths, p)
 		}
+
 		sort.Strings(paths)
 		b.WriteString("\n")
 		for _, p := range paths {
 			fmt.Fprintf(&b, "require %s %s\n", p, pins[p])
 		}
 	}
+
 	return b.String()
 }
 
-// goSumAnchorPath returns the persistent location of the `go.sum` file Sova keeps across builds (`<source-root>/.sova/go.sum`). The output directory itself is treated as a wipeable build artefact, so we round-trip the sum file through the workspace's `.sova/` directory (which the package manager already owns) to keep reproducibility intact between clean rebuilds. Returns the empty string when no source-root information is available, in which case the round-trip is skipped and `go mod tidy` regenerates the sum from scratch.
 func goSumAnchorPath(ctx *codegen.EmitContext) string {
 	if ctx.Cache == nil {
 		return ""
 	}
+
 	raw, ok := ctx.Cache["build_config"]
 	if !ok {
 		return ""
 	}
+
 	src, ok := raw.(interface{ SourceDirectory() string })
 	if !ok {
 		return ""
 	}
+
 	root := strings.TrimSpace(src.SourceDirectory())
 	if root == "" {
 		return ""
 	}
+
 	return filepath.Join(root, ".sova", "go.sum")
 }
 
@@ -330,13 +354,16 @@ func prodModeFromCache(ctx *codegen.EmitContext) bool {
 	if ctx.Cache == nil {
 		return false
 	}
+
 	raw, ok := ctx.Cache["build_config"]
 	if !ok {
 		return false
 	}
+
 	if cfg, ok := raw.(interface{ ProdModeValue() bool }); ok {
 		return cfg.ProdModeValue()
 	}
+
 	return false
 }
 
@@ -355,7 +382,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 	case *ir.WireRulesetStmt:
 		return
 	case *ir.TestDeclStmt, *ir.GroupDeclStmt, *ir.SetupStmt, *ir.TeardownStmt:
-		// The test driver consumes these declarations via the TestRegistry view; the regular statement emitter ignores them so an `on test` file does not produce stray top-level code.
+
 		return
 	case *ir.AssertStmt:
 		e.emitAssertStmt(ctx, pkg, f, block, s)
@@ -383,12 +410,14 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			e.emitEmbeddedVar(ctx, pkg, block, s)
 			return
 		}
+
 		if s.IsWired && topLevel {
 			e.wiredVars = append(e.wiredVars, s)
 			e.emitWiredVarGetter(ctx, pkg, f, block, s)
 			e.emitWiredVarHandler(ctx, pkg, f, block, s)
 			return
 		}
+
 		if len(s.Targets) == 1 {
 			target := &s.Targets[0]
 			if topLevel {
@@ -402,6 +431,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 						if orig != "" {
 							jv.Commentf("Original name: %s", orig)
 						}
+
 						return jv
 					})
 
@@ -427,31 +457,30 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 						asConst = true
 					}
 
-					// Handle implicit lifting: T -> *T (option<T>)
 					targetType := typeOfSym(pkg, target.Name.Sym)
 					initType := s.Init.GetType()
 					if targetType != 0 && initType != 0 {
 						targetTy, _ := ctx.Types.GetByID(targetType)
 						initTy, _ := ctx.Types.GetByID(initType)
-						// If target is option and init is not option/none, we need to lift
+
 						if targetTy != nil && targetTy.Kind == ir.TK_Option &&
 							initTy != nil && initTy.Kind != ir.TK_Option && initTy.Kind != ir.TK_PrimitiveNone {
-							// Wrap in a helper function that returns a pointer
+
 							tempVar := e.hk.NewTemp()
 							rhs = jen.Func().Params().Op("*").Add(typeToGoWithContext(ctx, pkg, ctx.Types, targetTy.ElemType)).Block(
 								jen.Id(tempVar).Op(":=").Add(rhs),
 								jen.Return(jen.Op("&").Id(tempVar)),
 							).Call()
-							asConst = false // Can't use const with pointer creation
+							asConst = false
 						}
-						// Numeric primitive coercion (byte ↔ int, etc.) via explicit Go conversion.
+
 						if rhs != nil {
 							if conv := goNumericConversionWrapper(targetType, initType, ctx.Types, rhs); conv != nil {
 								rhs = conv
 								asConst = false
 							}
 						}
-						// When boxing a typed primitive into `any`, wrap the literal in the target Go type so the interface stores e.g. `int64` rather than Go's default `int`. Without this, a subsequent `v.(int64)` type assertion on the boxed value would miss.
+
 						if rhs != nil && targetTy != nil && targetTy.Kind == ir.TK_PrimitiveAny {
 							if conv := goAnyBoxWrapper(initType, ctx.Types, rhs); conv != nil {
 								rhs = conv
@@ -524,10 +553,12 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				})
 			}
 		}
+
 	case *ir.FuncDeclStmt:
 		if hasBuiltinAnnotation(s.Annotations) {
 			return
 		}
+
 		if !s.IsWired {
 			side := ir.SideShared
 			if s.Side != nil {
@@ -535,13 +566,16 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			} else if f != nil {
 				side = f.Side.Kind
 			}
+
 			if side == ir.SideFrontend {
 				return
 			}
 		}
+
 		if s.IsWired {
 			e.wiredFuncs = append(e.wiredFuncs, s)
 		}
+
 		e.withStmt(block, func() jen.Code {
 			funcName := symName(ctx, s.Name.Sym)
 			orig := symOrigName(ctx, s.Name.Sym)
@@ -554,6 +588,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			if s.IsWired && (!isRawWire(s) || rawWireUsesSession(s)) {
 				params = append(params, jen.Id("__session").Op("*").Id("fn____Session"))
 			}
+
 			for _, param := range s.Params {
 				paramName := symNameWithUnused(ctx, pkg, param.Name.Sym)
 				paramType := typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ)
@@ -580,6 +615,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			if orig != "" {
 				f.Commentf("Original name: %s", orig)
 			}
+
 			return f
 		})
 		if s.IsWired {
@@ -588,6 +624,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				e.emitWiredWSAdapter(ctx, pkg, f, block, s)
 			}
 		}
+
 	case *ir.ExternDeclStmt:
 		targetSide := ir.SideBackend
 		if f.Side.Kind == ir.SideFrontend {
@@ -605,12 +642,14 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 					NativeFunc: *fn.Mapping.Simple,
 					Module:     nil,
 				}
+
 				externModule = s.Module
 			} else if fn.Mapping.Shared != nil {
 				mapping, exists := fn.Mapping.Shared[targetSide]
 				if !exists {
 					continue
 				}
+
 				sideMapping = mapping
 				externModule = s.Module
 			} else {
@@ -659,15 +698,18 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				if origNameForMock == "" {
 					origNameForMock = fn.Name.Name
 				}
+
 				mockableName := origNameForMock
 				if pkg != nil && pkg.Path.String() == "std/testing" {
 					mockableName = ""
 				}
+
 				testMode := isTestMode(ctx)
 
 				result := funcDecl.BlockFunc(func(g *jen.Group) {
 					if testMode && mockableName != "" {
 						mockArgs := []jen.Code{jen.Lit(mockableName)}
+
 						mockArgs = append(mockArgs, paramNames...)
 						if hasReturn {
 							g.If(jen.List(jen.Id("__mockV"), jen.Id("__mockHas"), jen.Id("__mockReg")).Op(":=").Id("__sovaMockHook").Call(mockArgs...), jen.Id("__mockReg")).Block(
@@ -683,6 +725,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 							)
 						}
 					}
+
 					callExpr := e.buildNativeCallWithModule(nativeCall, modulePath, paramNames)
 					if hasReturn {
 						g.Return(callExpr)
@@ -694,6 +737,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				if orig != "" {
 					result.Commentf("Original name: %s", orig)
 				}
+
 				return result
 			})
 		}
@@ -707,12 +751,14 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 					NativeFunc: *v.Mapping.Simple,
 					Module:     nil,
 				}
+
 				externModule = s.Module
 			} else if v.Mapping.Shared != nil {
 				mapping, exists := v.Mapping.Shared[targetSide]
 				if !exists {
 					continue
 				}
+
 				sideMapping = mapping
 				externModule = s.Module
 			} else {
@@ -752,9 +798,11 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				if orig != "" {
 					result.Commentf("Original name: %s", orig)
 				}
+
 				return result
 			})
 		}
+
 	case *ir.MixinDeclStmt:
 		_ = s
 	case *ir.ImportStmt:
@@ -763,6 +811,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 		if s.IsExtern {
 			return
 		}
+
 		ifaceName := symName(ctx, s.Name.Sym)
 		ifaceSym := s.Name.Sym
 		_ = ifaceSym
@@ -773,12 +822,15 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			for i, param := range sig.Params {
 				params[i] = typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ)
 			}
+
 			method := jen.Id(methodName).Params(params...)
 			if sig.ReturnType != nil && sig.ReturnType.Typ != 0 && sig.ReturnType.Typ != ctx.Types.TypNone() {
 				method = method.Add(typeToGoWithContext(ctx, pkg, ctx.Types, sig.ReturnType.Typ))
 			}
+
 			methods = append(methods, method)
 		}
+
 		e.withStmt(block, func() jen.Code {
 			return jen.Type().Id(ifaceName).Interface(methods...)
 		})
@@ -786,35 +838,43 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 		if s.IsExtern {
 			return
 		}
+
 		if hasBuiltinAnnotation(s.Annotations) {
 			return
 		}
+
 		typeName := symName(ctx, s.Name.Sym)
 		structFields := []jen.Code{}
+
 		for _, ref := range s.MixedIn {
 			if ref.Sym == 0 {
 				continue
 			}
+
 			symPkg := pkg
 			if ref.Qualifier != "" {
 				if found := lookupImportedPackage(ctx, pkg, ref.Qualifier); found != nil {
 					symPkg = found
 				}
 			}
+
 			embedSym, ok := symPkg.Syms.GetByID(ref.Sym)
 			if !ok || embedSym.Typ == 0 {
 				continue
 			}
+
 			embedTy, ok := ctx.Types.GetByID(embedSym.Typ)
 			if !ok || embedTy.Kind != ir.TK_Struct {
 				continue
 			}
+
 			if embedTy.IsExtern {
 				structFields = append(structFields, jen.Qual(embedTy.ExternModule, embedTy.StructName))
 			} else {
 				structFields = append(structFields, jen.Id(symName(ctx, ref.Sym)))
 			}
 		}
+
 		for _, field := range s.Fields {
 			fieldType := typeToGoWithContext(ctx, pkg, ctx.Types, field.Type.Typ)
 			fieldDecl := jen.Id(goExportedName(field.Name.Name)).Add(fieldType)
@@ -822,12 +882,15 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			if tag == nil {
 				tag = map[string]string{}
 			}
+
 			if _, ok := tag["json"]; !ok && !strings.HasPrefix(field.Name.Name, "__") {
 				tag["json"] = field.Name.Name
 			}
+
 			if len(tag) > 0 {
 				fieldDecl = fieldDecl.Tag(tag)
 			}
+
 			structFields = append(structFields, fieldDecl)
 			if fieldHasReactiveAnnotation(field.Annotations) {
 				obsType := jen.Index().Func().Params(
@@ -838,6 +901,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				structFields = append(structFields, obsField)
 			}
 		}
+
 		e.withStmt(block, func() jen.Code {
 			return jen.Type().Id(typeName).Struct(structFields...)
 		})
@@ -845,6 +909,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			if !fieldHasReactiveAnnotation(field.Annotations) {
 				continue
 			}
+
 			fldRef := field
 			e.withStmt(block, func() jen.Code {
 				fieldType := typeToGoWithContext(ctx, pkg, ctx.Types, fldRef.Type.Typ)
@@ -882,6 +947,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				})
 			})
 		}
+
 		for _, method := range s.Methods {
 			methodRef := method
 			declRef := s
@@ -893,12 +959,14 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 					paramName := symNameWithUnused(ctx, pkg, param.Name.Sym)
 					params[i] = jen.Id(paramName).Add(typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ))
 				}
+
 				receiver := jen.Id("this").Op("*").Id(typeName)
 				funcDecl := jen.Func().Params(receiver).Id(methodName).Params(params...)
 				hasReturn := fn.ReturnType != nil && fn.ReturnType.Typ != 0 && fn.ReturnType.Typ != ctx.Types.TypNone()
 				if hasReturn {
 					funcDecl = funcDecl.Add(typeToGoWithContext(ctx, pkg, ctx.Types, fn.ReturnType.Typ))
 				}
+
 				return funcDecl.BlockFunc(func(g *jen.Group) {
 					prevFunc := e.currentFunc
 					prevType := e.currentTypeDecl
@@ -914,16 +982,19 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				})
 			})
 		}
+
 		hasUserToString := false
 		hasUserHashCode := false
 		for _, m := range s.Methods {
 			if m.Func.Name.Name == "toString" {
 				hasUserToString = true
 			}
+
 			if m.Func.Name.Name == "hashCode" {
 				hasUserHashCode = true
 			}
 		}
+
 		if !hasUserToString {
 			decl := s
 			e.withStmt(block, func() jen.Code {
@@ -936,17 +1007,21 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 						if i > 0 {
 							format.WriteString(", ")
 						}
+
 						format.WriteString(field.Name.Name)
 						format.WriteString(": %v")
 						args = append(args, jen.Id("this").Dot(goExportedName(field.Name.Name)))
 					}
+
 					format.WriteString("}")
 					call := []jen.Code{jen.Lit(format.String())}
+
 					call = append(call, args...)
 					g.Return(jen.Qual("fmt", "Sprintf").Call(call...))
 				})
 			})
 		}
+
 		if !hasUserHashCode {
 			decl := s
 			e.withStmt(block, func() jen.Code {
@@ -959,7 +1034,9 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 						format.WriteString("|%v")
 						args = append(args, jen.Id("this").Dot(goExportedName(field.Name.Name)))
 					}
+
 					call := []jen.Code{jen.Lit(format.String())}
+
 					call = append(call, args...)
 					g.Id("repr").Op(":=").Qual("fmt", "Sprintf").Call(call...)
 					g.For(jen.List(jen.Id("_"), jen.Id("c")).Op(":=").Range().Id("repr")).Block(
@@ -969,6 +1046,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				})
 			})
 		}
+
 		for _, ctor := range s.Ctors {
 			ctorRef := ctor
 			decl := s
@@ -979,6 +1057,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 					paramName := symNameWithUnused(ctx, pkg, param.Name.Sym)
 					params[i] = jen.Id(paramName).Add(typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ))
 				}
+
 				returnType := jen.Op("*").Id(typeName)
 				return jen.Func().Id(ctorName).Params(params...).Add(returnType).BlockFunc(func(g *jen.Group) {
 					var inits []jen.Code
@@ -987,14 +1066,17 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 							inits = append(inits, jen.Id(goExportedName(field.Name.Name)).Op(":").Add(e.buildExpr(ctx, pkg, f, field.Default)))
 						}
 					}
+
 					g.Id("this").Op(":=").Op("&").Id(typeName).Values(inits...)
 					for _, st := range ctorRef.Body.Stmts {
 						e.emitStmt(ctx, pkg, f, g, st, false)
 					}
+
 					g.Return(jen.Id("this"))
 				})
 			})
 		}
+
 		for _, cast := range s.Casts {
 			castRef := cast
 			e.withStmt(block, func() jen.Code {
@@ -1007,6 +1089,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				} else {
 					returnTyp = typeOfSym(pkg, s.Name.Sym)
 				}
+
 				returnType := typeToGoWithContext(ctx, pkg, ctx.Types, returnTyp)
 				return jen.Func().Id(castName).Params(jen.Id(paramName).Add(paramType)).Add(returnType).BlockFunc(func(g *jen.Group) {
 					for _, st := range castRef.Body.Stmts {
@@ -1021,7 +1104,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 		enumTyp, _ := ctx.Types.GetByID(typeOfSym(pkg, s.Name.Sym))
 
 		if enumTyp != nil && enumTyp.IsNumeric {
-			// Numeric enum: type alias + constants
+
 			e.withStmt(block, func() jen.Code {
 				return jen.Type().Id(enumName).Int64()
 			})
@@ -1034,32 +1117,34 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				})
 			})
 		} else if enumTyp != nil {
-			// Payload enum: struct type + instances + methods
+
 			e.withStmt(block, func() jen.Code {
 				fields := []jen.Code{
 					jen.Id("__ordinal").Int64(),
 					jen.Id("__name").String(),
 				}
+
 				for _, fld := range enumTyp.EnumFields {
 					fields = append(fields,
 						jen.Id(fld.Name).Add(typeToGoWithContext(ctx, pkg, ctx.Types, fld.Type)))
 				}
+
 				return jen.Type().Id(enumName).Struct(fields...)
 			})
 
-			// Generate case instances
 			for i, c := range s.Cases {
 				caseIndex := i
 				caseDef := c
 				e.withStmt(block, func() jen.Code {
 					args := []jen.Code{
-						jen.Lit(int64(caseIndex)),  // ordinal
-						jen.Lit(caseDef.Name.Name), // name
+						jen.Lit(int64(caseIndex)),
+						jen.Lit(caseDef.Name.Name),
 					}
+
 					for _, arg := range caseDef.Args {
 						args = append(args, e.buildExpr(ctx, pkg, f, arg))
 					}
-					// Fill defaults for missing args
+
 					for j := len(caseDef.Args); j < len(s.Fields); j++ {
 						if s.Fields[j].Default != nil {
 							args = append(args, e.buildExpr(ctx, pkg, f, s.Fields[j].Default))
@@ -1071,17 +1156,16 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				})
 			}
 
-			// Generate Values slice for iteration
 			e.withStmt(block, func() jen.Code {
 				var vals []jen.Code
 				for _, c := range s.Cases {
 					vals = append(vals, jen.Id(enumName+c.Name.Name))
 				}
+
 				return jen.Var().Id(enumName + "Values").Op("=").
 					Index().Op("*").Id(enumName).Values(vals...)
 			})
 
-			// Generate String method (toString)
 			e.withStmt(block, func() jen.Code {
 				return jen.Func().Params(jen.Id("e").Op("*").Id(enumName)).
 					Id("String").Params().String().Block(
@@ -1089,7 +1173,6 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				)
 			})
 
-			// Generate HashCode method
 			e.withStmt(block, func() jen.Code {
 				return jen.Func().Params(jen.Id("e").Op("*").Id(enumName)).
 					Id("HashCode").Params().Int64().Block(
@@ -1097,7 +1180,6 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				)
 			})
 
-			// Emit user-defined methods with receiver
 			for _, method := range s.Methods {
 				methodDef := method
 				e.withStmt(block, func() jen.Code {
@@ -1124,8 +1206,9 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				})
 			}
 		}
+
 	case *ir.ExprStmt:
-		if topLevel { // Top-level expressions are not allowed in Go
+		if topLevel {
 			return
 		}
 
@@ -1146,6 +1229,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 		if topLevel {
 			return
 		}
+
 		e.withStmt(block, func() jen.Code {
 			var recvName string
 			if s.Receiver.Name == "this" {
@@ -1153,6 +1237,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			} else {
 				recvName = symName(ctx, s.Receiver.Sym)
 			}
+
 			if s.Op == ir.OpAssign && len(s.Fields) == 1 {
 				fld := s.Fields[0]
 				if reactive := isReactiveFieldOf(ctx, pkg, s.Receiver.Sym, fld.Name); reactive {
@@ -1160,10 +1245,12 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 					return jen.Id(recvName).Dot(setterName).Call(e.buildExpr(ctx, pkg, f, s.Value))
 				}
 			}
+
 			target := jen.Id(recvName)
 			for _, fld := range s.Fields {
 				target = target.Dot(goExportedName(fld.Name))
 			}
+
 			rhs := e.buildExpr(ctx, pkg, f, s.Value)
 			if s.Op == ir.OpAssign && s.Value != nil {
 				targetTyp := fieldAssignmentTargetType(ctx, pkg, s)
@@ -1180,12 +1267,14 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 					}
 				}
 			}
+
 			return target.Op(string(s.Op)).Add(rhs)
 		})
 	case *ir.IndexAssignmentStmt:
 		if topLevel {
 			return
 		}
+
 		e.withStmt(block, func() jen.Code {
 			recv := e.buildExpr(ctx, pkg, f, s.Receiver)
 			idx := e.buildExpr(ctx, pkg, f, s.Index)
@@ -1217,6 +1306,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			if target.Name == nil {
 				return
 			}
+
 			var lhsBuild func() *jen.Statement
 			if name, isMethod, ok := e.classMemberLookup(ctx, target.Name.Sym); ok && !isMethod {
 				lhsBuild = func() *jen.Statement { return jen.Id("this").Dot(name) }
@@ -1224,6 +1314,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				lhsName := symNameWithUnused(ctx, pkg, target.Name.Sym)
 				lhsBuild = func() *jen.Statement { return jen.Id(lhsName) }
 			}
+
 			e.withStmt(block, func() jen.Code {
 				return lhsBuild().Op("=").Add(e.buildExpr(ctx, pkg, f, s.Value))
 			})
@@ -1232,6 +1323,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 					return jen.Id("__sovaPushWireVar").Call(jen.Lit(origName), lhsBuild())
 				})
 			}
+
 			return
 		}
 
@@ -1268,7 +1360,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			return jen.List(names...).Op("=").List(values...)
 		})
 	case *ir.IfStmt:
-		if topLevel { // Top-level expressions are not allowed in Go
+		if topLevel {
 			return
 		}
 
@@ -1316,7 +1408,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			})
 		})
 	case *ir.ReturnStmt:
-		if topLevel { // Top-level expressions are not allowed in Go
+		if topLevel {
 			return
 		}
 
@@ -1326,17 +1418,16 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			} else if len(s.Results) == 1 {
 				expr := e.buildExpr(ctx, pkg, f, s.Results[0])
 
-				// Handle implicit lifting for return values
 				if e.currentFunc != nil && e.currentFunc.ReturnType != nil {
 					returnType := e.currentFunc.ReturnType.Typ
 					resultType := s.Results[0].GetType()
 					if returnType != 0 && resultType != 0 {
 						returnTy, _ := ctx.Types.GetByID(returnType)
 						resultTy, _ := ctx.Types.GetByID(resultType)
-						// If return type is option and result is not option/none, we need to lift
+
 						if returnTy != nil && returnTy.Kind == ir.TK_Option &&
 							resultTy != nil && resultTy.Kind != ir.TK_Option && resultTy.Kind != ir.TK_PrimitiveNone {
-							// Wrap in a helper function that returns a pointer
+
 							tempVar := e.hk.NewTemp()
 							expr = jen.Func().Params().Op("*").Add(typeToGoWithContext(ctx, pkg, ctx.Types, returnTy.ElemType)).Block(
 								jen.Id(tempVar).Op(":=").Add(expr),
@@ -1366,7 +1457,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			}
 		})
 	case *ir.GuardStmt:
-		if topLevel { // Top-level expressions are not allowed in Go
+		if topLevel {
 			return
 		}
 
@@ -1375,7 +1466,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			isVarOption := false
 			if s.Cond.GetType() == ctx.Types.PrimBool() {
 				cond = jen.Op("!").Add(cond)
-			} else if _, ok := s.Cond.(*ir.VarRef); ok { // Assume option type
+			} else if _, ok := s.Cond.(*ir.VarRef); ok {
 				cond = jen.Id("(").Add(cond).Op("==").Nil().Id(")")
 				isVarOption = true
 			}
@@ -1390,6 +1481,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 					for _, ret := range s.Returns {
 						exprs = append(exprs, e.buildExpr(ctx, pkg, f, ret))
 					}
+
 					g.Return(jen.List(exprs...))
 				}
 			})
@@ -1415,7 +1507,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			return ifCode
 		})
 	case *ir.BreakStmt:
-		if topLevel { // Top-level expressions are not allowed in Go
+		if topLevel {
 			return
 		}
 
@@ -1430,7 +1522,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			return jen.Break()
 		})
 	case *ir.ContinueStmt:
-		if topLevel { // Top-level expressions are not allowed in Go
+		if topLevel {
 			return
 		}
 
@@ -1468,6 +1560,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			if needsLabel {
 				return jen.Id(label).Op(":").Add(forLoop)
 			}
+
 			return forLoop
 		})
 	case *ir.ForStmt:
@@ -1494,6 +1587,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				if elemTy == 0 {
 					elemTy = ctx.Types.PrimInt()
 				}
+
 				sliceTy := ctx.Types.SliceOf(elemTy)
 				prepend = jen.Id(rangeCollectionVar).Op(":=").Add(e.buildRangeExpr(ctx, pkg, f, sliceTy, s.CondRange.RangeStart, s.CondRange.RangeEnd, nil))
 
@@ -1505,6 +1599,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 						if rangeIterOrig != "" {
 							g.Commentf("Original name: %s", rangeIterOrig)
 						}
+
 						e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
 					})
 				} else {
@@ -1512,6 +1607,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 						if rangeIterOrig != "" {
 							g.Commentf("Original name: %s", rangeIterOrig)
 						}
+
 						e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
 					})
 				}
@@ -1526,6 +1622,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 					inSecondVar = symNameWithUnused(ctx, pkg, s.CondIn.InSecondVar.Sym)
 					inSecondOrig = symOrigName(ctx, s.CondIn.InSecondVar.Sym)
 				}
+
 				if s.CondIn.InThirdVar != nil {
 					inThirdVar = symNameWithUnused(ctx, pkg, s.CondIn.InThirdVar.Sym)
 					inThirdOrig = symOrigName(ctx, s.CondIn.InThirdVar.Sym)
@@ -1576,12 +1673,15 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 							g.Id("_").Op("=").Id(inFirstVar)
 						}
 					}
+
 					if inFirstOrig != "" {
 						g.Commentf("Original name: %s for var %s", inFirstOrig, inFirstVar)
 					}
+
 					if inSecondOrig != "" {
 						g.Commentf("Original name: %s for var %s", inSecondOrig, inSecondVar)
 					}
+
 					if inThirdOrig != "" {
 						g.Commentf("Original name: %s for var %s", inThirdOrig, inThirdVar)
 					}
@@ -1608,6 +1708,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 					if initVarOrig != "" {
 						g.Commentf("Original name: %s", initVarOrig)
 					}
+
 					e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
 				})
 			} else {
@@ -1625,7 +1726,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			return forLoop
 		})
 	case *ir.TypeAliasStmt:
-		// Aliases are erased at the type-resolution stage; no Go declaration needed.
+
 	default:
 		panic(fmt.Sprintf("go codegen: unhandled statement type %T", st))
 	}
@@ -1701,6 +1802,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				}
 			}
 		}
+
 		if x.GetType() == ctx.Types.PrimString() && (x.Op == ir.OpAdd) {
 			left := e.buildExpr(ctx, pkg, f, x.Left)
 			leftFmtKey := fmtSprintfKey(x.Left.GetType(), ctx.Types)
@@ -1713,6 +1815,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				right,
 			)
 		}
+
 		if x.Op == ir.OpAdd {
 			if leftTy, ok := ctx.Types.GetByID(x.Left.GetType()); ok && leftTy.Kind == ir.TK_Slice {
 				if rightTy, rok := ctx.Types.GetByID(x.Right.GetType()); rok && rightTy.Kind == ir.TK_Slice {
@@ -1762,14 +1865,17 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				storage = sym.Typ
 			}
 		}
+
 		for {
 			ty, ok := ctx.Types.GetByID(storage)
 			if !ok || ty.Kind != ir.TK_Option {
 				break
 			}
+
 			cur = jen.Parens(jen.Op("*").Add(jen.Parens(cur)))
 			storage = ty.ElemType
 		}
+
 		return cur
 	case *ir.InstanceofExpr:
 		return jen.False()
@@ -1777,14 +1883,17 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		if x.Target == nil || x.Target.Typ == 0 {
 			return e.buildExpr(ctx, pkg, f, x.Expr)
 		}
+
 		srcTy := x.Expr.GetType()
 		if !x.Safe && srcTy != 0 && srcTy == x.Target.Typ {
 			return e.buildExpr(ctx, pkg, f, x.Expr)
 		}
+
 		if x.Safe {
 			if conv := goSafePrimitiveConversion(ctx, pkg, f, e, x); conv != nil {
 				return conv
 			}
+
 			return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType())).Block(
 				jen.List(jen.Id("__v"), jen.Id("__ok")).Op(":=").Add(e.buildExpr(ctx, pkg, f, x.Expr)).Assert(typeToGoWithContext(ctx, pkg, ctx.Types, x.Target.Typ)),
 				jen.If(jen.Id("__ok")).Block(
@@ -1793,9 +1902,11 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				jen.Return(jen.Nil()),
 			).Call()
 		}
+
 		if conv := goPrimitiveConversion(ctx, pkg, f, e, x); conv != nil {
 			return conv
 		}
+
 		return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.Target.Typ)).Block(
 			jen.List(jen.Id("__v"), jen.Id("_")).Op(":=").Add(e.buildExpr(ctx, pkg, f, x.Expr)).Assert(typeToGoWithContext(ctx, pkg, ctx.Types, x.Target.Typ)),
 			jen.Return(jen.Id("__v")),
@@ -1813,7 +1924,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 			if x.Op == ir.OpAssign {
 				group.Add(lhs.Clone()).Op("=").Add(right)
 			} else {
-				op := string(x.Op[:len(x.Op)-1]) // Trim the '=' from the operator
+				op := string(x.Op[:len(x.Op)-1])
 				temp := e.hk.NewTemp()
 				group.Id(temp).Op(":=").Add(lhs.Clone()).Op(op).Add(right)
 				group.Add(lhs.Clone()).Op("=").Id(temp)
@@ -1830,15 +1941,18 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		if baseTy, ok := ctx.Types.GetByID(baseTyp); ok && baseTy.Kind == ir.TK_PrimitiveAny {
 			return jen.Id("__sovaAnyIndex").Call(e.buildExpr(ctx, pkg, f, x.Expr), e.buildExpr(ctx, pkg, f, x.Index))
 		}
+
 		return jen.Parens(e.buildExpr(ctx, pkg, f, x.Expr)).Index(e.buildExpr(ctx, pkg, f, x.Index))
 	case *ir.SliceRangeExpr:
 		var lowCode, highCode jen.Code = jen.Empty(), jen.Empty()
 		if x.Low != nil {
 			lowCode = e.buildExpr(ctx, pkg, f, x.Low)
 		}
+
 		if x.High != nil {
 			highCode = e.buildExpr(ctx, pkg, f, x.High)
 		}
+
 		return jen.Parens(e.buildExpr(ctx, pkg, f, x.Expr)).Index(lowCode, highCode)
 	case *ir.FieldAccessExpr:
 		var base *jen.Statement
@@ -1850,6 +1964,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 			if len(x.Fields) <= 1 {
 				return base
 			}
+
 			cur = base
 			fields = x.Fields[1:]
 			for _, group := range [][]*ir.PackageContext{ctx.Pkgs, ctx.TransPkgs} {
@@ -1857,11 +1972,13 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 					if p == nil {
 						continue
 					}
+
 					if sym, ok := p.Syms.GetByID(x.ResolvedSym); ok {
 						curType = sym.Typ
 						break
 					}
 				}
+
 				if curType != 0 {
 					break
 				}
@@ -1872,7 +1989,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 			curType = x.Expr.GetType()
 			fields = x.Fields
 		}
-		// Option-unwrap flow narrowing: the expr's cached type was overwritten to the unwrapped element type inside an `if x != none` branch, but the underlying Go storage is still the wider `option<T>` (one extra pointer). Detect by comparing against the receiver symbol's declared type and insert one deref per option layer the narrowing peeled off.
+
 		if vr, ok := x.Expr.(*ir.VarRef); ok && vr.Ref.Sym != 0 {
 			if sym, ok := pkg.Syms.GetByID(vr.Ref.Sym); ok {
 				symType := sym.Typ
@@ -1881,20 +1998,23 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 					if !ok || ty.Kind != ir.TK_Option {
 						break
 					}
+
 					cur = jen.Parens(jen.Op("*").Add(cur))
 					symType = ty.ElemType
 				}
 			}
 		}
-		// Also strip any option layers that survive on the inferred type itself (e.g. accessing through an `option<T>` value directly without narrowing).
+
 		for {
 			ty, ok := ctx.Types.GetByID(curType)
 			if !ok || ty.Kind != ir.TK_Option {
 				break
 			}
+
 			cur = jen.Parens(jen.Op("*").Add(cur))
 			curType = ty.ElemType
 		}
+
 		for _, fld := range fields {
 			ty, ok := ctx.Types.GetByID(curType)
 			if ok && ty.Kind == ir.TK_Struct {
@@ -1912,12 +2032,14 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 						default:
 							fieldName = goExportedName(fld.Name)
 						}
+
 						cur = jen.Add(cur).Dot(fieldName)
 						curType = sf.Type
 						found = true
 						break
 					}
 				}
+
 				if !found {
 					var chosen *ir.StructMethodInfo
 					if x.MethodSym != 0 {
@@ -1928,6 +2050,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 							}
 						}
 					}
+
 					if chosen == nil {
 						for i := range ty.StructMethods {
 							if ty.StructMethods[i].Name == fld.Name {
@@ -1936,6 +2059,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 							}
 						}
 					}
+
 					if chosen != nil {
 						m := chosen
 						switch {
@@ -1948,15 +2072,19 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 						default:
 							cur = jen.Add(cur).Dot(m.Name)
 						}
+
 						curType = m.FuncTyp
 						found = true
 					}
 				}
+
 				if !found {
 					cur = jen.Add(cur).Dot(fld.Name)
 				}
+
 				continue
 			}
+
 			if ok && ty.Kind == ir.TK_Interface {
 				for _, m := range ty.InterfaceMethods {
 					if m.Name == fld.Name {
@@ -1964,44 +2092,46 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 						break
 					}
 				}
+
 				cur = jen.Add(cur).Dot(fld.Name)
 				continue
 			}
+
 			if ok && ty.Kind == ir.TK_Enum {
-				// Check if this is a case access (e.g., Color.Red)
+
 				isCaseAccess := false
 				for _, c := range ty.EnumCases {
 					if c.Name == fld.Name {
 						isCaseAccess = true
-						// Generate enum constant name: EnumNameCaseName
+
 						enumName := symName(ctx, getEnumSymbol(ctx, pkg, ty.EnumName))
 						cur = jen.Id(enumName + fld.Name)
 						break
 					}
 				}
 
-				// If not a case, use dot notation for fields and methods
 				if !isCaseAccess {
-					// Check if this is a method and use the mangled name
+
 					isMethod := false
 					for _, method := range ty.EnumMethods {
 						if method.Name == fld.Name {
 							isMethod = true
 							curType = method.Type
-							// Look up the mangled method name
+
 							methodSym := getMethodSymbol(ctx, pkg, ty.EnumName, fld.Name)
 							if methodSym != 0 {
 								cur = jen.Add(cur).Dot(symName(ctx, methodSym))
 							} else {
 								cur = jen.Add(cur).Dot(fld.Name)
 							}
+
 							break
 						}
 					}
-					// If not a method, it's a field - use the original field name
+
 					if !isMethod {
 						cur = jen.Add(cur).Dot(fld.Name)
-						// Update curType to the field type
+
 						for _, field := range ty.EnumFields {
 							if field.Name == fld.Name {
 								curType = field.Type
@@ -2014,6 +2144,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				cur = jen.Add(cur).Index(jen.Lit(fld.Name))
 			}
 		}
+
 		return cur
 	case *ir.RangeExpr:
 		return e.buildRangeExpr(ctx, pkg, f, x.GetType(), x.Start, x.End, x.Inc)
@@ -2025,6 +2156,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				if len(x.Args) == 1 {
 					return jen.Func().Params().Block(recvCode.Clone().Op("<-").Add(e.buildExpr(ctx, pkg, f, x.Args[0].Expr))).Call()
 				}
+
 			case "recv":
 				return jen.Func().Params().Index().Any().Block(
 					jen.List(jen.Id("__v"), jen.Id("__ok")).Op(":=").Op("<-").Add(recvCode),
@@ -2034,21 +2166,25 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				return jen.Func().Params().Block(jen.Id("close").Call(recvCode)).Call()
 			}
 		}
+
 		if intrinsic := lookupBuiltinIntrinsic(ctx, x.Callee); intrinsic != "" {
 			argCodes := make([]jen.Code, len(x.Args))
 			for i, arg := range x.Args {
 				argCodes[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
 			}
+
 			argTypes := make([]ir.TypID, len(x.Args))
 			for i, arg := range x.Args {
 				if arg.Expr != nil {
 					argTypes[i] = arg.Expr.GetType()
 				}
 			}
+
 			if code := emitBuiltinIntrinsicCall(ctx, intrinsic, argCodes, argTypes); code != nil {
 				return code
 			}
 		}
+
 		callee := e.buildExpr(ctx, pkg, f, x.Callee)
 
 		calleeType := x.Callee.GetType()
@@ -2070,6 +2206,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 						if funcTypeDef.ParamTypes[i] != nil && funcTypeDef.ParamTypes[i].Type != nil && typeContainsTypeParam(ctx.Types, funcTypeDef.ParamTypes[i].Type.Typ) {
 							emitted = wrapPrimitiveForAny(ctx, x.Args[i].Expr, emitted)
 						}
+
 						args[i] = emitted
 					}
 				} else if funcTypeDef.ParamTypes[i].Default != nil {
@@ -2098,6 +2235,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		if x.ReturnType != nil && x.ReturnType.Typ != 0 && x.ReturnType.Typ != ctx.Types.TypNone() {
 			funcStmt = funcStmt.Add(typeToGoWithContext(ctx, pkg, ctx.Types, x.ReturnType.Typ))
 		}
+
 		return funcStmt.BlockFunc(func(g *jen.Group) {
 			e.emitBlock(ctx, pkg, f, g, x.Body.Stmts)
 		})
@@ -2118,13 +2256,15 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 	case *ir.LitNone:
 		return jen.Nil()
 	case *ir.VarRef:
-		// Special handling for "this" in enum methods
+
 		if orig, ok := ctx.Names.GetOriginalName(x.Ref.Sym); ok && orig == "this" {
 			return jen.Id("this")
 		}
+
 		if name, _, ok := e.classMemberLookup(ctx, x.Ref.Sym); ok {
 			return jen.Id("this").Dot(name)
 		}
+
 		return jen.Id(symName(ctx, x.Ref.Sym))
 	case *ir.ArrayLiteral:
 		elements := make([]jen.Code, len(x.Elems))
@@ -2132,6 +2272,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		if litTy, ok := ctx.Types.GetByID(x.GetType()); ok && (litTy.Kind == ir.TK_Slice || litTy.Kind == ir.TK_Array) && litTy.ElemType == ctx.Types.PrimAny() {
 			liftToAny = true
 		}
+
 		for i, elem := range x.Elems {
 			elements[i] = e.buildExpr(ctx, pkg, f, elem)
 			if liftToAny {
@@ -2142,6 +2283,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		return typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType()).(*jen.Statement).Values(elements...)
 	case *ir.MapLiteral:
 		dict := jen.Dict{}
+
 		for _, entry := range x.Entries {
 			key := e.buildExpr(ctx, pkg, f, entry.Key)
 			value := e.buildExpr(ctx, pkg, f, entry.Value)
@@ -2172,7 +2314,9 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				format.WriteString(strings.ReplaceAll(part.Lit, "%", "%%"))
 			}
 		}
+
 		call := []jen.Code{jen.Lit(format.String())}
+
 		call = append(call, args...)
 		return jen.Qual("fmt", "Sprintf").Call(call...)
 
@@ -2185,6 +2329,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 		if x.Capacity != nil {
 			return jen.Make(jen.Chan().Add(elem), e.buildExpr(ctx, pkg, f, x.Capacity))
 		}
+
 		return jen.Make(jen.Chan().Add(elem))
 	case *ir.NewExpr:
 		typeName := symName(ctx, x.TypeName.Sym)
@@ -2196,11 +2341,13 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 					ctorPkg = found
 				}
 			}
+
 			ctorSym, _ := ctorPkg.Syms.GetByID(x.CtorSym)
 			var ctorFunc *ir.Type
 			if ctorSym != nil {
 				ctorFunc, _ = ctx.Types.GetByID(ctorSym.Typ)
 			}
+
 			args := make([]jen.Code, len(x.Args))
 			for i, arg := range x.Args {
 				if arg.Expr != nil {
@@ -2208,6 +2355,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 					if ctorFunc != nil && i < len(ctorFunc.ParamTypes) {
 						paramFp = ctorFunc.ParamTypes[i]
 					}
+
 					if wrapped := tryWrapErasedLambdaArg(ctx, pkg, f, e, paramFp, arg.Expr); wrapped != nil {
 						args[i] = wrapped
 					} else if wrapped := tryWrapErasedSliceArg(ctx, pkg, f, e, paramFp, arg.Expr); wrapped != nil {
@@ -2217,6 +2365,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 						if paramFp != nil && paramFp.Type != nil && typeContainsTypeParam(ctx.Types, paramFp.Type.Typ) {
 							emitted = wrapPrimitiveForAny(ctx, arg.Expr, emitted)
 						}
+
 						args[i] = emitted
 					}
 				} else if ctorFunc != nil && i < len(ctorFunc.ParamTypes) && ctorFunc.ParamTypes[i].Default != nil {
@@ -2225,8 +2374,10 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 					args[i] = jen.Nil()
 				}
 			}
+
 			return jen.Id(ctorName).Call(args...)
 		}
+
 		var inits []jen.Code
 		if decl, ok := e.typeDecls[x.GetType()]; ok {
 			for _, field := range decl.Fields {
@@ -2235,16 +2386,16 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 				}
 			}
 		}
+
 		return jen.Op("&").Id(typeName).Values(inits...)
 
 	default:
 		break
 	}
 
-	return jen.Nil() // Fallback to nil for unsupported expressions
+	return jen.Nil()
 }
 
-// buildComposableCall emits a composable expression as an immediately-invoked function: it constructs the target via the matched ctor, appends each child to `Children`, and returns the instance. Returning an IIFE keeps the result usable in expression position (assignment, argument, nested composable, etc.) while still allowing the statement-level appends.
 func (e *CodeEmitter) buildComposableCall(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.ComposableCallExpr) *jen.Statement {
 	resultType := typeToGoWithContext(ctx, pkg, ctx.Types, x.TargetTyp)
 
@@ -2257,6 +2408,7 @@ func (e *CodeEmitter) buildComposableCall(ctx *codegen.EmitContext, pkg *ir.Pack
 		if ctorSym != nil {
 			ctorFunc, _ = ctx.Types.GetByID(ctorSym.Typ)
 		}
+
 		args := make([]jen.Code, len(x.Args))
 		for i, arg := range x.Args {
 			if arg.Expr != nil {
@@ -2267,6 +2419,7 @@ func (e *CodeEmitter) buildComposableCall(ctx *codegen.EmitContext, pkg *ir.Pack
 				args[i] = jen.Nil()
 			}
 		}
+
 		ctorCall = jen.Id(ctorName).Call(args...)
 	} else if calleeSym != 0 {
 		typeName := symName(ctx, calleeSym)
@@ -2278,6 +2431,7 @@ func (e *CodeEmitter) buildComposableCall(ctx *codegen.EmitContext, pkg *ir.Pack
 	return jen.Func().Params().Add(resultType).BlockFunc(func(g *jen.Group) {
 		g.Id("__c").Op(":=").Add(ctorCall)
 		appendArgs := []jen.Code{jen.Id("__c").Dot("Children")}
+
 		hasAppends := false
 		for _, child := range x.Children {
 			if child.Expr != nil {
@@ -2285,22 +2439,25 @@ func (e *CodeEmitter) buildComposableCall(ctx *codegen.EmitContext, pkg *ir.Pack
 				hasAppends = true
 			}
 		}
+
 		if hasAppends {
 			g.Id("__c").Dot("Children").Op("=").Qual("", "append").Call(appendArgs...)
 		}
+
 		e.composableDepth++
 		for _, child := range x.Children {
 			if child.Stmt == nil {
 				continue
 			}
+
 			e.emitStmt(ctx, pkg, f, g, child.Stmt, false)
 		}
+
 		e.composableDepth--
 		g.Return(jen.Id("__c"))
 	}).Call()
 }
 
-// composableCalleeSymGo extracts the resolved type symbol from a composable call's callee, mirroring the inference-time helper.
 func composableCalleeSymGo(callee ir.Expr) ir.SymID {
 	switch c := callee.(type) {
 	case *ir.VarRef:
@@ -2310,6 +2467,7 @@ func composableCalleeSymGo(callee ir.Expr) ir.SymID {
 			return c.ResolvedSym
 		}
 	}
+
 	return 0
 }
 
@@ -2339,6 +2497,7 @@ func (e *CodeEmitter) buildRangeExpr(ctx *codegen.EmitContext, pkg *ir.PackageCo
 	if rowTy, ok := ctx.Types.GetByID(ty); ok && (rowTy.Kind == ir.TK_Slice || rowTy.Kind == ir.TK_Array) {
 		elemTy = rowTy.ElemType
 	}
+
 	return jen.Func().Params().Add(typeToGoWithContext(ctx, pkg, ctx.Types, ty)).BlockFunc(func(g *jen.Group) {
 		resArr := e.hk.NewTemp()
 		g.Id(resArr).Op(":=").Make(typeToGoWithContext(ctx, pkg, ctx.Types, ty), jen.Lit(0))
@@ -2364,15 +2523,12 @@ func (e *CodeEmitter) buildRangeExpr(ctx *codegen.EmitContext, pkg *ir.PackageCo
 	}).Call()
 }
 
-// ---- Helpers ---- \\
-
 func (e *CodeEmitter) withScope(body func()) {
 	e.hk.PushScope()
 	defer e.hk.PopScope()
 	body()
 }
 
-// pushLoop pushes a new loop label onto the stack and returns the label name.
 func (e *CodeEmitter) pushLoop() string {
 	label := fmt.Sprintf("loop%d", e.loopDepth)
 	e.loopLabels = append(e.loopLabels, label)
@@ -2380,7 +2536,6 @@ func (e *CodeEmitter) pushLoop() string {
 	return label
 }
 
-// popLoop pops the current loop label from the stack.
 func (e *CodeEmitter) popLoop() {
 	if e.loopDepth > 0 {
 		e.loopDepth--
@@ -2388,23 +2543,19 @@ func (e *CodeEmitter) popLoop() {
 	}
 }
 
-// getLoopLabel returns the label for a loop at the specified depth (1 = innermost).
 func (e *CodeEmitter) getLoopLabel(depth int) string {
 	if depth < 1 || depth > len(e.loopLabels) {
-		return "" // Invalid depth
+		return ""
 	}
+
 	idx := len(e.loopLabels) - depth
 	return e.loopLabels[idx]
 }
 
-// loopNeedsLabel checks if a loop at loopLevel needs a label.
-// A loop needs a label if any break/continue from a nested position targets it with depth > 1.
 func (e *CodeEmitter) loopNeedsLabel(stmts []ir.Stmt, loopLevel int) bool {
 	return e.scanForTargetedBreaks(stmts, loopLevel, loopLevel)
 }
 
-// scanForTargetedBreaks scans statements for break/continue that target loopLevel.
-// currentLevel is the nesting level of the statements being scanned.
 func (e *CodeEmitter) scanForTargetedBreaks(stmts []ir.Stmt, loopLevel int, currentLevel int) bool {
 	for _, st := range stmts {
 		switch s := st.(type) {
@@ -2413,84 +2564,96 @@ func (e *CodeEmitter) scanForTargetedBreaks(stmts []ir.Stmt, loopLevel int, curr
 			if targetLevel == loopLevel && s.Depth > 1 {
 				return true
 			}
+
 		case *ir.ContinueStmt:
 			targetLevel := currentLevel - s.Depth + 1
 			if targetLevel == loopLevel && s.Depth > 1 {
 				return true
 			}
+
 		case *ir.BlockStmt:
 			if e.scanForTargetedBreaks(s.Stmts, loopLevel, currentLevel) {
 				return true
 			}
+
 		case *ir.IfStmt:
 			if e.scanForTargetedBreaks(s.Then.Stmts, loopLevel, currentLevel) {
 				return true
 			}
+
 			for _, elif := range s.ElseIfs {
 				if e.scanForTargetedBreaks(elif.Then.Stmts, loopLevel, currentLevel) {
 					return true
 				}
 			}
+
 			if s.Else != nil && e.scanForTargetedBreaks(s.Else.Stmts, loopLevel, currentLevel) {
 				return true
 			}
+
 		case *ir.SwitchStmt:
 			for _, c := range s.Cases {
 				if e.scanForTargetedBreaks(c.Stmts, loopLevel, currentLevel) {
 					return true
 				}
 			}
+
 			if s.Default != nil && e.scanForTargetedBreaks(s.Default, loopLevel, currentLevel) {
 				return true
 			}
+
 		case *ir.WhileStmt:
 			if e.scanForTargetedBreaks(s.Body.Stmts, loopLevel, currentLevel+1) {
 				return true
 			}
+
 		case *ir.ForStmt:
 			if e.scanForTargetedBreaks(s.Body.Stmts, loopLevel, currentLevel+1) {
 				return true
 			}
 		}
 	}
+
 	return false
 }
 
-// fieldHasReactiveAnnotation reports whether the given annotation list carries an `@reactive` marker. Reactive fields get an extra observer slice plus auto-generated Set/Observe methods.
 func fieldHasReactiveAnnotation(annos []ir.Annotation) bool {
 	for _, a := range annos {
 		if a.Name.Name == "reactive" {
 			return true
 		}
 	}
+
 	return false
 }
 
-// hasBuiltinAnnotation reports whether the declaration carries an `@builtin` marker - used on the placeholder declarations in `std/__globals__.sova` so codegen skips emitting Go/JS for them (the compiler emits the host-language implementation at the call site instead).
 func hasBuiltinAnnotation(annos []ir.Annotation) bool {
 	for _, a := range annos {
 		if a.Name.Name == "builtin" {
 			return true
 		}
 	}
+
 	return false
 }
 
-// fieldAssignmentTargetType walks the receiver+field chain of a `this.a.b.c = expr` style statement and returns the TypID of the final field. Returns 0 when any link can't be resolved (anonymous receiver, missing struct field, etc.) so the caller can fall back to emitting the assignment without option-lifting.
 func fieldAssignmentTargetType(ctx *codegen.EmitContext, pkg *ir.PackageContext, s *ir.FieldAssignmentStmt) ir.TypID {
 	if s.Receiver.Sym == 0 || len(s.Fields) == 0 {
 		return 0
 	}
+
 	recvSym, ok := pkg.Syms.GetByID(s.Receiver.Sym)
 	if !ok {
 		return 0
 	}
+
 	cur := recvSym.Typ
 	for _, fld := range s.Fields {
 		ty, ok := ctx.Types.GetByID(cur)
 		if !ok || ty.Kind != ir.TK_Struct {
 			return 0
 		}
+
 		found := false
 		for _, sf := range ty.StructFields {
 			if sf.Name == fld.Name {
@@ -2499,76 +2662,89 @@ func fieldAssignmentTargetType(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 				break
 			}
 		}
+
 		if !found {
 			return 0
 		}
 	}
+
 	return cur
 }
 
-// isReactiveFieldOf returns true when receiverSym refers to a value whose type has a field named fieldName carrying the `@reactive` annotation. Used at codegen to rewrite `recv.field = value` into `recv.setField(value)` so observers fire on direct writes.
 func isReactiveFieldOf(ctx *codegen.EmitContext, pkg *ir.PackageContext, receiverSym ir.SymID, fieldName string) bool {
 	if receiverSym == 0 {
 		return false
 	}
+
 	sym, ok := pkg.Syms.GetByID(receiverSym)
 	if !ok || sym.Typ == 0 {
 		return false
 	}
+
 	ty, ok := ctx.Types.GetByID(sym.Typ)
 	if !ok || ty.Kind != ir.TK_Struct {
 		return false
 	}
+
 	for _, f := range ty.StructFields {
 		if f.Name == fieldName {
 			return f.IsReactive
 		}
 	}
+
 	return false
 }
 
-// goExportedName uppercases the first rune of a Sova-side identifier so the resulting Go-side struct field/method name is exported. Empty input or already-uppercase input is returned unchanged.
 func goExportedName(s string) string {
 	if s == "" {
 		return s
 	}
+
 	r := []rune(s)
 	if r[0] >= 'A' && r[0] <= 'Z' {
 		return s
 	}
+
 	if r[0] >= 'a' && r[0] <= 'z' {
 		r[0] = r[0] - 'a' + 'A'
 	}
+
 	return string(r)
 }
 
-// buildStructTag collects every `@structTag("<key>", "<value>")` annotation on a struct field into a Go-side tag map suitable for `jen.Statement.Tag`. Other annotations (`@reactive`, `@value`, future markers) are ignored — they convey compile-time semantics, not Go-struct metadata. Multiple `@structTag` entries with the same key concatenate their values with a single space, matching the convention `gorm` and `validate` use for multi-rule strings (`gorm:"primaryKey;autoIncrement"`-style users supply already-joined values themselves; the comma/semicolon convention is library-specific). The shape (exactly two string args) is enforced by `validateTagShape` in `pass_fold_annotations`; malformed entries that slipped through validation (e.g. when the pass already errored elsewhere) are skipped so the rendered Go does not carry partial data.
 func buildStructTag(annos []ir.Annotation) map[string]string {
 	if len(annos) == 0 {
 		return nil
 	}
+
 	out := map[string]string{}
+
 	for _, a := range annos {
 		if a.Name.Name != "structTag" || len(a.ResolvedArgs) != 2 {
 			continue
 		}
+
 		if a.ResolvedArgs[0].Kind != ir.AnnotationValueString || a.ResolvedArgs[1].Kind != ir.AnnotationValueString {
 			continue
 		}
+
 		key := a.ResolvedArgs[0].Str
 		val := a.ResolvedArgs[1].Str
 		if key == "" {
 			continue
 		}
+
 		if existing, ok := out[key]; ok && existing != "" {
 			out[key] = existing + " " + val
 		} else {
 			out[key] = val
 		}
 	}
+
 	if len(out) == 0 {
 		return nil
 	}
+
 	return out
 }
 
@@ -2577,18 +2753,22 @@ func lookupImportedPackage(ctx *codegen.EmitContext, currentPkg *ir.PackageConte
 		if pkg == currentPkg || len(pkg.Path) == 0 {
 			continue
 		}
+
 		if pkg.Path[len(pkg.Path)-1] == alias {
 			return pkg
 		}
 	}
+
 	for _, pkg := range ctx.TransPkgs {
 		if len(pkg.Path) == 0 {
 			continue
 		}
+
 		if pkg.Path[len(pkg.Path)-1] == alias {
 			return pkg
 		}
 	}
+
 	return nil
 }
 
@@ -2596,6 +2776,7 @@ func symName(ctx *codegen.EmitContext, sym ir.SymID) string {
 	if name, ok := ctx.Names.GetMangledName(sym); ok {
 		return name
 	}
+
 	panic("unresolved symbol: " + fmt.Sprint(sym))
 }
 
@@ -2605,6 +2786,7 @@ func symNameWithUnused(ctx *codegen.EmitContext, pkg *ir.PackageContext, sym ir.
 			return "_"
 		}
 	}
+
 	return symName(ctx, sym)
 }
 
@@ -2612,52 +2794,60 @@ func symOrigName(ctx *codegen.EmitContext, sym ir.SymID) string {
 	if name, ok := ctx.Names.GetOriginalName(sym); ok {
 		return name
 	}
+
 	return ""
 }
 
-// getEnumSymbol looks up the symbol ID for an enum type by its name.
-// findTypeSymbolAcrossPkgs locates the SymID that declares a struct/interface/enum with `name` in the package whose path matches `pkgPath`. Used by Go codegen so that `*Item` references in package A's emitted code that refer to package B's `type Item` resolve to B's mangled name (not A's). Empty `pkgPath` falls back to the legacy any-package search to keep compiler-internal globals (error/Session/Broadcast/WireState) discoverable.
 func findTypeSymbolAcrossPkgs(ctx *codegen.EmitContext, currentPkg *ir.PackageContext, pkgPath, name string) ir.SymID {
 	if pkgPath != "" {
 		var pools []*ir.PackageContext
 		if currentPkg != nil && currentPkg.Path.String() == pkgPath {
 			pools = append(pools, currentPkg)
 		}
+
 		for _, other := range ctx.Pkgs {
 			if other.Path.String() == pkgPath {
 				pools = append(pools, other)
 			}
 		}
+
 		for _, other := range ctx.TransPkgs {
 			if other.Path.String() == pkgPath {
 				pools = append(pools, other)
 			}
 		}
+
 		for _, p := range pools {
 			if sym := findSymInPkg(ctx, p, name); sym != 0 {
 				return sym
 			}
 		}
+
 		return 0
 	}
+
 	if currentPkg != nil {
 		if sym := findSymInPkg(ctx, currentPkg, name); sym != 0 {
 			return sym
 		}
 	}
+
 	for _, other := range ctx.Pkgs {
 		if other == currentPkg {
 			continue
 		}
+
 		if sym := findSymInPkg(ctx, other, name); sym != 0 {
 			return sym
 		}
 	}
+
 	for _, other := range ctx.TransPkgs {
 		if sym := findSymInPkg(ctx, other, name); sym != 0 {
 			return sym
 		}
 	}
+
 	return 0
 }
 
@@ -2665,14 +2855,17 @@ func getEnumSymbol(ctx *codegen.EmitContext, pkg *ir.PackageContext, enumName st
 	if sym := findSymInPkg(ctx, pkg, enumName); sym != 0 {
 		return sym
 	}
+
 	for _, other := range ctx.Pkgs {
 		if other == pkg {
 			continue
 		}
+
 		if sym := findSymInPkg(ctx, other, enumName); sym != 0 {
 			return sym
 		}
 	}
+
 	return 0
 }
 
@@ -2681,29 +2874,31 @@ func findSymInPkg(ctx *codegen.EmitContext, pkg *ir.PackageContext, enumName str
 		if s.Kind != ir.SK_Function {
 			continue
 		}
+
 		if orig, ok := ctx.Names.GetOriginalName(sym); ok && orig == enumName {
 			return sym
 		}
 	}
+
 	return 0
 }
 
-// getMethodSymbol looks up the symbol ID for an enum method by enum name and method name.
 func getMethodSymbol(ctx *codegen.EmitContext, pkg *ir.PackageContext, enumName string, methodName string) ir.SymID {
-	// Search through all symbols to find the method
+
 	for sym := ir.SymID(1); ; sym++ {
 		s, ok := pkg.Syms.GetByID(sym)
 		if !ok {
 			break
 		}
+
 		if s.Kind == ir.SK_Function {
 			if orig, ok := ctx.Names.GetOriginalName(sym); ok && orig == methodName {
-				// Check if this method belongs to the enum
-				// The method's scope should be the enum's scope
+
 				return sym
 			}
 		}
 	}
+
 	return 0
 }
 
@@ -2711,11 +2906,13 @@ func typeOfVar(pkg *ir.PackageContext, v *ir.VarDeclStmt) ir.TypID {
 	if len(v.Targets) == 1 && v.Targets[0].TypeAnn != nil && v.Targets[0].TypeAnn.Typ != 0 {
 		return v.Targets[0].TypeAnn.Typ
 	}
+
 	if len(v.Targets) == 1 && v.Targets[0].Name != nil {
 		if s, ok := pkg.Syms.GetByID(v.Targets[0].Name.Sym); ok {
 			return s.Typ
 		}
 	}
+
 	return 0
 }
 
@@ -2723,6 +2920,7 @@ func typeOfSym(pkg *ir.PackageContext, sym ir.SymID) ir.TypID {
 	if s, ok := pkg.Syms.GetByID(sym); ok {
 		return s.Typ
 	}
+
 	return 0
 }
 
@@ -2730,28 +2928,30 @@ func typeToGo(tt *ir.TypeTable, id ir.TypID) jen.Code {
 	return typeToGoWithContext(nil, nil, tt, id)
 }
 
-// goNumericConversionWrapper returns expr wrapped with an explicit Go conversion when dstTyp/srcTyp are different numeric primitives that need coercion (e.g. int ↔ byte). Returns nil when no wrap is needed - either because the types already match or because they're not both numeric primitives.
 func goNumericConversionWrapper(dstTyp, srcTyp ir.TypID, tt *ir.TypeTable, expr jen.Code) jen.Code {
 	if dstTyp == 0 || srcTyp == 0 || dstTyp == srcTyp {
 		return nil
 	}
+
 	dstName := goNumericPrimitiveName(dstTyp, tt)
 	srcName := goNumericPrimitiveName(srcTyp, tt)
 	if dstName == "" || srcName == "" || dstName == srcName {
 		return nil
 	}
+
 	return jen.Id(dstName).Call(expr)
 }
 
-// goAnyBoxWrapper wraps `expr` in an explicit Go conversion when a value of `srcTyp` is being assigned into an `any` slot, so the resulting interface stores the precise Sova primitive type (e.g. `int64` rather than Go's default untyped-int promotion to `int`). Returns nil for non-primitive source types so the caller leaves the expression alone.
 func goAnyBoxWrapper(srcTyp ir.TypID, tt *ir.TypeTable, expr jen.Code) jen.Code {
 	if srcTyp == 0 {
 		return nil
 	}
+
 	name := goNumericPrimitiveName(srcTyp, tt)
 	if name == "" {
 		return nil
 	}
+
 	return jen.Id(name).Call(expr)
 }
 
@@ -2764,10 +2964,10 @@ func goNumericPrimitiveName(id ir.TypID, tt *ir.TypeTable) string {
 	case tt.PrimByte():
 		return "byte"
 	}
+
 	return ""
 }
 
-// goSafePrimitiveConversion lowers a Sova `value as? T` between primitive types into an explicit Go conversion that yields `option<T>` (i.e. `*T`). Lossless conversions (e.g. `int -> float`) wrap the result in a non-nil pointer. Parse-style conversions (`string -> int`, `string -> float`) return `nil` when the parse fails so the caller can pattern-match on `none`. Returns nil for non-primitive pairs so the caller falls back to the runtime type-assertion path.
 func goSafePrimitiveConversion(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, e *CodeEmitter, x *ir.AsExpr) *jen.Statement {
 	tt := ctx.Types
 	str := tt.PrimString()
@@ -2781,12 +2981,15 @@ func goSafePrimitiveConversion(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 	if srcTy == 0 || dstTy == 0 || srcTy == dstTy {
 		return nil
 	}
+
 	isPrim := func(t ir.TypID) bool {
 		return t == str || t == in || t == fl || t == bl || t == ch || t == bt
 	}
+
 	if !isPrim(srcTy) || !isPrim(dstTy) {
 		return nil
 	}
+
 	src := e.buildExpr(ctx, pkg, f, x.Expr)
 	dstGo := typeToGoWithContext(ctx, pkg, tt, dstTy)
 	wrapInfallible := func(value jen.Code) *jen.Statement {
@@ -2795,6 +2998,7 @@ func goSafePrimitiveConversion(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			jen.Return(jen.Op("&").Id("__v")),
 		).Call()
 	}
+
 	switch {
 	case dstTy == str && srcTy == in:
 		return wrapInfallible(jen.Qual("strconv", "FormatInt").Call(src, jen.Lit(10)))
@@ -2835,14 +3039,15 @@ func goSafePrimitiveConversion(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 	case srcTy == bt && dstTy == in:
 		return wrapInfallible(jen.Id("int64").Call(src))
 	}
+
 	return nil
 }
 
-// goPrimitiveConversion lowers a Sova `value as T` between primitive types into the explicit Go conversion (mirrors the JS side). Returns nil for any non-primitive or unsupported pair so the caller falls back to the standard type-assertion path. None of the emitted forms panic: `strconv.Parse*` errors are silently swallowed and the zero value is returned, matching the no-throw policy.
 func goPrimitiveConversion(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, e *CodeEmitter, x *ir.AsExpr) *jen.Statement {
 	if x.Safe {
 		return nil
 	}
+
 	tt := ctx.Types
 	str := tt.PrimString()
 	in := tt.PrimInt()
@@ -2854,10 +3059,13 @@ func goPrimitiveConversion(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *
 	if srcTy == 0 || dstTy == 0 || srcTy == dstTy {
 		return nil
 	}
+
 	isPrim := func(t ir.TypID) bool { return t == str || t == in || t == fl || t == bl || t == ch }
+
 	if !isPrim(srcTy) || !isPrim(dstTy) {
 		return nil
 	}
+
 	src := e.buildExpr(ctx, pkg, f, x.Expr)
 	switch {
 	case dstTy == str && srcTy == in:
@@ -2892,6 +3100,7 @@ func goPrimitiveConversion(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *
 	case srcTy == ch && dstTy == in:
 		return jen.Id("int64").Call(src)
 	}
+
 	return nil
 }
 
@@ -2899,6 +3108,7 @@ func typeToGoWithContext(ctx *codegen.EmitContext, pkg *ir.PackageContext, tt *i
 	if id == 0 {
 		return jen.Id("any")
 	}
+
 	if ty, ok := tt.GetByID(id); ok {
 		switch ty.Kind {
 		case ir.TK_PrimitiveInt:
@@ -2928,13 +3138,15 @@ func typeToGoWithContext(ctx *codegen.EmitContext, pkg *ir.PackageContext, tt *i
 			for i, param := range ty.ParamTypes {
 				params[i] = typeToGoWithContext(ctx, pkg, tt, param.Type.Typ)
 			}
+
 			if ty.ReturnType == 0 || ty.ReturnType == tt.TypNone() {
 				return jen.Func().Params(params...)
 			}
+
 			returnType := typeToGoWithContext(ctx, pkg, tt, ty.ReturnType)
 			return jen.Func().Params(params...).Add(returnType)
 		case ir.TK_Enum:
-			// Try to get the mangled enum name using context
+
 			enumName := ty.EnumName
 			if ctx != nil && pkg != nil {
 				enumSym := getEnumSymbol(ctx, pkg, ty.EnumName)
@@ -2942,9 +3154,11 @@ func typeToGoWithContext(ctx *codegen.EmitContext, pkg *ir.PackageContext, tt *i
 					enumName = symName(ctx, enumSym)
 				}
 			}
+
 			if ty.IsNumeric {
 				return jen.Id(enumName)
 			}
+
 			return jen.Op("*").Id(enumName)
 		case ir.TK_TypeParam:
 			return jen.Id("any")
@@ -2955,41 +3169,50 @@ func typeToGoWithContext(ctx *codegen.EmitContext, pkg *ir.PackageContext, tt *i
 				if ty.ExternValue {
 					return jen.Qual(ty.ExternModule, ty.StructName)
 				}
+
 				return jen.Op("*").Qual(ty.ExternModule, ty.StructName)
 			}
+
 			if ctx != nil && ctx.Cache != nil {
 				if sessTyp, ok := ctx.Cache["sessions_session_typ"].(ir.TypID); ok && sessTyp == id {
 					return jen.Op("*").Id("fn____Session")
 				}
+
 				if bcTyp, ok := ctx.Cache["sessions_broadcast_typ"].(ir.TypID); ok && bcTyp == id {
 					return jen.Op("*").Id("fn____Broadcast")
 				}
+
 				if errTyp, ok := ctx.Cache["builtin_error_typ"].(ir.TypID); ok && errTyp == id {
 					return jen.Op("*").Id("sovaError")
 				}
 			}
+
 			structName := ty.StructName
 			if ctx != nil {
 				if sym := findTypeSymbolAcrossPkgs(ctx, pkg, ty.PackagePath, ty.StructName); sym != 0 {
 					structName = symName(ctx, sym)
 				}
 			}
+
 			return jen.Op("*").Id(structName)
 		case ir.TK_Interface:
 			if ty.IsExtern {
 				return jen.Qual(ty.ExternModule, ty.InterfaceName)
 			}
+
 			ifaceName := ty.InterfaceName
 			if ctx != nil {
 				if sym := findTypeSymbolAcrossPkgs(ctx, pkg, ty.PackagePath, ty.InterfaceName); sym != 0 {
 					ifaceName = symName(ctx, sym)
 				}
 			}
+
 			return jen.Id(ifaceName)
 		default:
 			break
 		}
 	}
+
 	return jen.Id("any")
 }
 
@@ -3006,6 +3229,7 @@ func fmtSprintfKey(ty ir.TypID, tt *ir.TypeTable) string {
 	if ty == 0 {
 		return "%v"
 	}
+
 	if t, ok := tt.GetByID(ty); ok {
 		switch t.Kind {
 		case ir.TK_PrimitiveInt:
@@ -3026,6 +3250,7 @@ func fmtSprintfKey(ty ir.TypID, tt *ir.TypeTable) string {
 			break
 		}
 	}
+
 	return "%v"
 }
 
@@ -3041,6 +3266,7 @@ func (e *CodeEmitter) replaceModPlaceholder(nativeCall string, module string) st
 			i++
 		}
 	}
+
 	return result
 }
 
@@ -3048,22 +3274,25 @@ func (e *CodeEmitter) buildNativeCall(nativeCall string, params []jen.Code) jen.
 	return e.buildNativeCallWithModule(nativeCall, "", params)
 }
 
-// buildNativeCallWithModule emits a Go call expression for a native function reference. When `modulePath` is non-empty and `nativeCall` is a dotted identifier whose first segment matches the module's last path segment (e.g. `uuid.NewString` for module `github.com/google/uuid`), the package selector is rewritten to use the full module import path. This is what makes third-party extern bindings produce a correctly-resolved `jen.Qual("github.com/google/uuid", "NewString")` rather than the broken `jen.Qual("uuid", "NewString")` (which goimports would then attempt to resolve against a non-existent `"uuid"` import path). When `modulePath` is empty (stdlib externs and the inline-expression escape hatch), behaviour is identical to the original two-arg form.
 func (e *CodeEmitter) buildNativeCallWithModule(nativeCall string, modulePath string, params []jen.Code) jen.Code {
 	if !isDottedIdentGo(nativeCall) {
 		return jen.Parens(jen.Op(nativeCall)).Call(params...)
 	}
+
 	parts := splitDottedIdent(nativeCall)
 	if modulePath != "" && len(parts) >= 2 && parts[0] == lastPathSegment(modulePath) {
 		parts[0] = modulePath
 	}
+
 	if len(parts) == 1 {
 		return jen.Id(parts[0]).Call(params...)
 	}
+
 	base := jen.Qual(parts[0], parts[1])
 	for i := 2; i < len(parts); i++ {
 		base = base.Dot(parts[i])
 	}
+
 	return base.Call(params...)
 }
 
@@ -3071,28 +3300,31 @@ func (e *CodeEmitter) buildNativeRef(nativeRef string) jen.Code {
 	return e.buildNativeRefWithModule(nativeRef, "")
 }
 
-// buildNativeRefWithModule mirrors buildNativeCallWithModule for the value-reference path: it rewrites the leading package alias of a dotted identifier to the full module import path when one is known, so `jen.Qual` registers the correct import. See buildNativeCallWithModule for the rationale.
 func (e *CodeEmitter) buildNativeRefWithModule(nativeRef string, modulePath string) jen.Code {
 	if !isDottedIdentGo(nativeRef) {
 		return jen.Parens(jen.Op(nativeRef))
 	}
+
 	parts := splitDottedIdent(nativeRef)
 	if modulePath != "" && len(parts) >= 2 && parts[0] == lastPathSegment(modulePath) {
 		parts[0] = modulePath
 	}
+
 	if len(parts) == 1 {
 		return jen.Id(parts[0])
 	}
+
 	base := jen.Qual(parts[0], parts[1])
 	for i := 2; i < len(parts); i++ {
 		base = base.Dot(parts[i])
 	}
+
 	return base
 }
 
-// splitDottedIdent splits a dotted Go identifier chain (`pkg.Type.Field`) into its segments. Caller must already have verified the input is a dotted identifier via `isDottedIdentGo`; the function does no validation of its own.
 func splitDottedIdent(s string) []string {
 	parts := []string{}
+
 	current := ""
 	for _, ch := range s {
 		if ch == '.' {
@@ -3104,17 +3336,19 @@ func splitDottedIdent(s string) []string {
 			current += string(ch)
 		}
 	}
+
 	if current != "" {
 		parts = append(parts, current)
 	}
+
 	return parts
 }
 
-// registerExternImport hooks an extern's native body up to the Go output's import block. `modulePath` is the Go import path; `nativeCall` is the raw native expression (either a dotted identifier like `pkg.Func` or an inline `func(...) {...}` literal). The function does two things: it registers the conventional package-name alias with jen via `ImportName`, and — because jen only materialises an import when it sees a `Qual` reference in the AST — it also scans `nativeCall` for `<alias>.<Symbol>` occurrences and emits a synthetic `var _ = pkg.Symbol` at file scope. Without that synthetic reference, inline `func(...) {...}` bodies (which jen renders as opaque text) would never trigger an import for third-party paths like `github.com/redis/go-redis/v9`, and the resulting Go output would fail to compile with `undefined: redis`.
 func (e *CodeEmitter) registerExternImport(modulePath string, nativeCall string) {
 	if modulePath == "" {
 		return
 	}
+
 	bodyAlias := aliasFromBody(nativeCall, modulePath)
 	existing, seen := e.externImports[modulePath]
 	switch {
@@ -3129,30 +3363,36 @@ func (e *CodeEmitter) registerExternImport(modulePath string, nativeCall string)
 		e.jf.ImportName(modulePath, fallback)
 		e.externImports[modulePath] = ""
 	}
+
 	aliasForRefs := bodyAlias
 	if aliasForRefs == "" {
 		aliasForRefs = e.externImports[modulePath]
 	}
+
 	if aliasForRefs == "" {
 		aliasForRefs = lastPathSegment(modulePath)
 	}
+
 	for _, sym := range firstExportedRefs(nativeCall, aliasForRefs) {
 		e.jf.Add(jen.Var().Id("_").Op("=").Qual(modulePath, sym))
 	}
 }
 
-// aliasFromBody scans an inline native body for `<ident>.<Symbol>` package selectors (both call form and type/value form) and picks the most frequent `<ident>` that is a plausible alias for `modulePath`. Plausibility is judged by `aliasPlausibleForModule`: the candidate must appear as a segment of the module path (after stripping the conventional `/vN` major-version suffix and any `go-` prefix that Go libraries often carry). This rejects unrelated stdlib qualifiers like `context.Background(...)` or `time.Duration(...)` that frequently show up in extern bodies and would otherwise be mistaken for the alias of the wrapped module. Returns the empty string when no plausible candidate is found, in which case the caller falls back to a path-based default.
 func aliasFromBody(body string, modulePath string) string {
 	if body == "" {
 		return ""
 	}
+
 	counts := map[string]int{}
+
 	for _, ref := range allPackageRefs(body) {
 		if !aliasPlausibleForModule(ref.alias, modulePath) {
 			continue
 		}
+
 		counts[ref.alias]++
 	}
+
 	var best string
 	bestN := 0
 	for k, v := range counts {
@@ -3161,71 +3401,86 @@ func aliasFromBody(body string, modulePath string) string {
 			bestN = v
 		}
 	}
+
 	return best
 }
 
-// allPackageRefs returns every `<ident>.<UpperSymbol>` occurrence in `body`, whether followed by `(` (call), `)` (type assertion), or anything else (field/method-value reference). Used by alias detection to consider every plausible package selector, not only call-form.
 func allPackageRefs(body string) []packageCallRef {
 	out := []packageCallRef{}
+
 	if body == "" {
 		return out
 	}
+
 	i := 0
 	for i < len(body) {
 		if !isLetterOrUnderscoreByte(body[i]) {
 			i++
 			continue
 		}
+
 		start := i
 		for i < len(body) && isIdentRuneByte(body[i]) {
 			i++
 		}
+
 		if i >= len(body) || body[i] != '.' {
 			continue
 		}
+
 		j := i + 1
 		if j >= len(body) {
 			continue
 		}
+
 		if !(body[j] >= 'A' && body[j] <= 'Z') {
 			continue
 		}
+
 		k := j + 1
 		for k < len(body) && isIdentRuneByte(body[k]) {
 			k++
 		}
+
 		if start > 0 && body[start-1] == '.' {
 			continue
 		}
+
 		alias := body[start:i]
 		if isGoReservedOrCommonVar(alias) {
 			continue
 		}
+
 		identStart := body[start]
 		if !(identStart >= 'a' && identStart <= 'z') && identStart != '_' {
 			continue
 		}
+
 		out = append(out, packageCallRef{alias: alias, sym: body[j:k]})
 	}
+
 	return out
 }
 
-// aliasPlausibleForModule reports whether `alias` could reasonably be the Go-side package name of `modulePath`. A name is plausible if it appears verbatim as a `/`-segment of the path, OR if it matches a segment with a conventional `go-` prefix stripped (`go-redis` → `redis`), OR if it matches the second-to-last segment when the last is a Go major-version tag (`v2`/`v9`/etc). The check is liberal on purpose: false positives would mean we pick a slightly wrong alias hint, which jen handles gracefully; false negatives would mean we fall back to a path-derived alias that may itself be wrong.
 func aliasPlausibleForModule(alias string, modulePath string) bool {
 	if alias == "" || modulePath == "" {
 		return false
 	}
+
 	for _, seg := range strings.Split(modulePath, "/") {
 		if seg == alias {
 			return true
 		}
+
 		if strings.HasPrefix(seg, "go-") && seg[3:] == alias {
 			return true
 		}
+
 		if strings.HasSuffix(seg, "-go") && seg[:len(seg)-3] == alias {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -3234,52 +3489,64 @@ type packageCallRef struct {
 	sym   string
 }
 
-// allPackageCallRefs walks `body` and returns every `<alias>.<UpperSymbol>(` occurrence, in source order. The `(` is the discriminator: it guarantees the symbol after the dot is a function (and therefore a value), which makes it safe to reference as `var _ = alias.Symbol` to force-import the underlying package without picking up types or constants. Common-variable and Go-keyword aliases (`c`, `tx`, `if`, ...) are filtered out so method calls on locally-bound values do not get mistaken for package-qualified calls.
 func allPackageCallRefs(body string) []packageCallRef {
 	out := []packageCallRef{}
+
 	if body == "" {
 		return out
 	}
+
 	i := 0
 	for i < len(body) {
 		if !isLetterOrUnderscoreByte(body[i]) {
 			i++
 			continue
 		}
+
 		start := i
 		for i < len(body) && isIdentRuneByte(body[i]) {
 			i++
 		}
+
 		if i >= len(body) || body[i] != '.' {
 			continue
 		}
+
 		j := i + 1
 		if j >= len(body) {
 			continue
 		}
+
 		if !(body[j] >= 'A' && body[j] <= 'Z') {
 			continue
 		}
+
 		k := j + 1
 		for k < len(body) && isIdentRuneByte(body[k]) {
 			k++
 		}
+
 		if k >= len(body) || body[k] != '(' {
 			continue
 		}
+
 		if start > 0 && body[start-1] == '.' {
 			continue
 		}
+
 		alias := body[start:i]
 		if isGoReservedOrCommonVar(alias) {
 			continue
 		}
+
 		identStart := body[start]
 		if !(identStart >= 'a' && identStart <= 'z') && identStart != '_' {
 			continue
 		}
+
 		out = append(out, packageCallRef{alias: alias, sym: body[j:k]})
 	}
+
 	return out
 }
 
@@ -3291,7 +3558,6 @@ func isIdentRuneByte(b byte) bool {
 	return isLetterOrUnderscoreByte(b) || (b >= '0' && b <= '9')
 }
 
-// isGoReservedOrCommonVar filters out identifiers that show up as `<ident>.X` in inline bodies but are obviously not package names — Go keywords, common single-letter receivers (`c`, `e`, `v`, `r`, `o`, `m`, `n`, ...), and the placeholder receiver names used throughout this codebase's externs (`db`, `tx`, `cfg`, etc.). Keeps the alias-detection precise without requiring a full Go parser.
 func isGoReservedOrCommonVar(s string) bool {
 	switch s {
 	case "if", "else", "for", "range", "return", "var", "func", "switch", "case", "default", "break", "continue", "go", "defer", "select", "chan", "map", "interface", "struct", "type", "const", "true", "false", "nil", "package", "import":
@@ -3299,43 +3565,49 @@ func isGoReservedOrCommonVar(s string) bool {
 	case "c", "e", "v", "r", "o", "m", "n", "h", "d", "i", "j", "k", "p", "s", "t", "u", "x", "y", "z", "f", "g", "fn", "tx", "db", "cfg", "ok", "err", "ms", "ks", "chs", "pats", "ps", "msg", "out", "tmp", "ctx", "opts", "result", "strs", "head", "args", "id", "ch", "raw", "fb", "hit", "loc", "params", "ws":
 		return true
 	}
+
 	return false
 }
 
-// firstExportedRefs returns the first exported function-call symbol invoked through `alias` in `body` — e.g. `firstExportedRefs("redis.ParseURL(u); redis.NewClient(o)", "redis")` returns `["ParseURL"]`. Only call-form `<alias>.<Sym>(` matches; types and constants (which are not valid in `var _ = pkg.X`) are filtered out. We deliberately return only the FIRST symbol per body — one synthetic reference per extern is enough to force the import, and emitting more would clutter the output.
 func firstExportedRefs(body string, alias string) []string {
 	if alias == "" || body == "" {
 		return nil
 	}
+
 	for _, ref := range allPackageCallRefs(body) {
 		if ref.alias == alias {
 			return []string{ref.sym}
 		}
 	}
+
 	return nil
 }
 
-// sharedSubsetTypeDeclGo mirrors the JS-side helper of the same shape (Stage 3 of the GORM-friendly Sova design): looks up the precomputed shared-member summary for `td` in the `shared_type_members` cache and returns a shallow-copied `*ir.TypeDeclStmt` whose Fields/Methods/Ctors/Casts contain only the shared subset. The Go variant deliberately drops methods, ctors, and casts entirely — they live on the declaring side (frontend in the symmetric case) and don't need a Go body; the struct shape with its `@structTag` annotations is all the backend needs so the wire layer can JSON-marshal/unmarshal typed values. Returns nil when the type has no shared members, so Go emits nothing for cross-side types without an opt-in.
 func sharedSubsetTypeDeclGo(ctx *codegen.EmitContext, pkg *ir.PackageContext, td *ir.TypeDeclStmt) *ir.TypeDeclStmt {
 	if ctx == nil || ctx.Cache == nil || td == nil || td.Name.Sym == 0 {
 		return nil
 	}
+
 	raw, ok := ctx.Cache["shared_type_members"]
 	if !ok {
 		return nil
 	}
+
 	store, ok := raw.(map[ir.TypID]*ir.SharedTypeMembers)
 	if !ok {
 		return nil
 	}
+
 	sym, ok := pkg.Syms.GetByID(td.Name.Sym)
 	if !ok || sym.Typ == 0 {
 		return nil
 	}
+
 	summary, ok := store[sym.Typ]
 	if !ok || summary == nil || len(summary.Fields) == 0 {
 		return nil
 	}
+
 	tdCopy := *td
 	tdCopy.Fields = summary.Fields
 	tdCopy.Methods = nil
@@ -3344,25 +3616,26 @@ func sharedSubsetTypeDeclGo(ctx *codegen.EmitContext, pkg *ir.PackageContext, td
 	return &tdCopy
 }
 
-// classMemberLookup mirrors the JS-side helper: when emitting a method body of a Sova `type`, an unqualified `count` or `increment` reference should be rewritten to `this.<member>` rather than the mangled global the symbol would otherwise resolve to. Returns ("", false, false) when no enclosing type context is active or when `sym` isn't a member of it; otherwise returns the receiver-relative name and an `isMethod` flag (false → field, true → method). Fields go through `goExportedName` so the returned name matches the Go-side struct field exactly (Sova `name` → Go `Name`, Sova `id` → Go `Id`); methods use the mangled symbol name (already a valid Go identifier).
 func (e *CodeEmitter) classMemberLookup(ctx *codegen.EmitContext, sym ir.SymID) (string, bool, bool) {
 	if e.currentTypeDecl == nil || sym == 0 {
 		return "", false, false
 	}
+
 	for _, field := range e.currentTypeDecl.Fields {
 		if field.Name.Sym == sym {
 			return goExportedName(field.Name.Name), false, true
 		}
 	}
+
 	for _, m := range e.currentTypeDecl.Methods {
 		if m.Func != nil && m.Func.Name.Sym == sym {
 			return symName(ctx, m.Func.Name.Sym), true, true
 		}
 	}
+
 	return "", false, false
 }
 
-// lastPathSegment returns the conventional Go package name implied by an import path. For most paths this is the final `/`-delimited segment ("github.com/foo/bar" → "bar"); Go's semantic-import-versioning convention (`/v2`, `/v3`, ... — see https://go.dev/ref/mod#major-version-suffixes) is detected and the version segment is skipped, so "github.com/redis/go-redis/v9" → "redis" rather than the literal "v9", matching the actual package name the module exports.
 func lastPathSegment(p string) string {
 	last := p
 	for i := len(p) - 1; i >= 0; i-- {
@@ -3371,6 +3644,7 @@ func lastPathSegment(p string) string {
 			break
 		}
 	}
+
 	if isGoMajorVersionTag(last) {
 		head := p[:len(p)-len(last)-1]
 		for i := len(head) - 1; i >= 0; i-- {
@@ -3378,35 +3652,39 @@ func lastPathSegment(p string) string {
 				return head[i+1:]
 			}
 		}
+
 		return head
 	}
+
 	return last
 }
 
-// isGoMajorVersionTag reports whether s matches Go's major-version-suffix shape (`v` followed by digits), e.g. "v2", "v15".
 func isGoMajorVersionTag(s string) bool {
 	if len(s) < 2 || s[0] != 'v' {
 		return false
 	}
+
 	for i := 1; i < len(s); i++ {
 		if s[i] < '0' || s[i] > '9' {
 			return false
 		}
 	}
+
 	return true
 }
 
-// isDottedIdentGo reports whether s is a chain of identifiers separated by dots (e.g. `strings.Contains`). Anything else is treated as a raw Go expression by the extern emitter, so stdlib mappings can use inline `func(...) { ... }` literals without compiler runtime helpers.
 func isDottedIdentGo(s string) bool {
 	if s == "" {
 		return false
 	}
+
 	for i, r := range s {
 		switch {
 		case r == '.':
 			if i == 0 {
 				return false
 			}
+
 		case r == '_':
 		case r >= 'a' && r <= 'z':
 		case r >= 'A' && r <= 'Z':
@@ -3415,19 +3693,19 @@ func isDottedIdentGo(s string) bool {
 			return false
 		}
 	}
+
 	return true
 }
 
-// opOverloadName returns the method name corresponding to a binary operator (e.g. + -> op+), with ok=false for operators that cannot be overloaded.
 func opOverloadName(op ir.Op) (string, bool) {
 	switch op {
 	case ir.OpAdd, ir.OpSub, ir.OpMul, ir.OpDiv, ir.OpMod, ir.OpEq:
 		return "op" + string(op), true
 	}
+
 	return "", false
 }
 
-// emitWireStateDecl writes the WireState enum, the Session struct and its methods, and the cookie-based load/save helpers consumed by every wired handler. When the build's NeedsSessionManager flag is true the cookie format flips to `<uuid>.<hmac>` and an in-memory registry holds the full session record server-side; otherwise the legacy base64-JSON cookie continues to carry the full payload.
 func (e *CodeEmitter) emitWireStateDecl(ctx *codegen.EmitContext, block *jen.Group) {
 	block.Add(jen.Type().Id("WireState").Int64())
 	block.Add(jen.Const().DefsFunc(func(g *jen.Group) {
@@ -3438,11 +3716,6 @@ func (e *CodeEmitter) emitWireStateDecl(ctx *codegen.EmitContext, block *jen.Gro
 		g.Id("WireStateError").Id("WireState").Op("=").Lit(4)
 	}))
 
-	// Centralised 400 responder shared by every HTTP wire handler. Keeps the
-	// shape consistent so the JS-side stub can map status → state without
-	// special-casing per handler. The body still carries the `{value, state}`
-	// envelope the frontend already understands; `error` is added as a
-	// human-readable hint that the runtime / a custom UI can surface.
 	block.Add(jen.Func().Id("__sovaRespondBadRequest").Params(
 		jen.Id("w").Qual("net/http", "ResponseWriter"),
 		jen.Id("msg").String(),
@@ -3477,7 +3750,6 @@ func (e *CodeEmitter) emitWireStateDecl(ctx *codegen.EmitContext, block *jen.Gro
 	}
 }
 
-// emitBroadcastStruct emits the `fn____Broadcast` Go struct whose value is returned by sessions.broadcast(). It carries a chain of filter predicates that narrow which connected sessions receive a fan-out call; .to(room) appends a room-membership predicate, .filter(pred) takes a user predicate. Each frontend wire func declared in the build receives a matching method on Broadcast that iterates `__sovaSessionAll()`, applies the narrowing filters, and forwards through `__sovaWSSendTo` to every matching session.
 func emitBroadcastStruct(ctx *codegen.EmitContext, block *jen.Group) {
 	rawWires, _ := ctx.Cache["frontend_wire_funcs"]
 	wires, _ := rawWires.([]*ir.FuncDeclStmt)
@@ -3509,15 +3781,12 @@ func emitBroadcastStruct(ctx *codegen.EmitContext, block *jen.Group) {
 	for _, fn := range wires {
 		fnRef := fn
 		wireName := fnRef.Name.Name
-		// Method name has to match what Sova call sites lower to - the
-		// mangled symbol name, since attachFrontendWireMethods now records
-		// the wire-func Sym on StructMethodInfo. `wireName` stays the raw
-		// name because it's the WS protocol field the frontend dispatches
-		// on, not a Go identifier.
+
 		methodGoName := wireName
 		if fnRef.Name.Sym != 0 {
 			methodGoName = symName(ctx, fnRef.Name.Sym)
 		}
+
 		paramDecls := make([]jen.Code, 0, len(fnRef.Params))
 		paramNames := make([]jen.Code, 0, len(fnRef.Params))
 		for i, prm := range fnRef.Params {
@@ -3525,6 +3794,7 @@ func emitBroadcastStruct(ctx *codegen.EmitContext, block *jen.Group) {
 			paramDecls = append(paramDecls, jen.Id(paramName).Add(typeToGoWithContext(ctx, nil, ctx.Types, prm.Type.Typ)))
 			paramNames = append(paramNames, jen.Id(paramName))
 		}
+
 		block.Add(jen.Func().Params(jen.Id("b").Op("*").Id("fn____Broadcast")).Id(methodGoName).Params(paramDecls...).Block(
 			jen.List(jen.Id("__args"), jen.Id("_")).Op(":=").Qual("encoding/json", "Marshal").Call(jen.Index().Any().Values(paramNames...)),
 			jen.For(jen.Id("_").Op(",").Id("s").Op(":=").Range().Id("__sovaSessionAll").Call()).Block(
@@ -3543,19 +3813,20 @@ func emitBroadcastStruct(ctx *codegen.EmitContext, block *jen.Group) {
 	}
 }
 
-// emitSessionsFreeFuncs emits Go function bodies for every sessions package free function (all, byId, firstByUser, allByUser, current, broadcast, onConnect, onDisconnect) under the exact mangled name each symbol received from the mangle pass. The bodies forward to the runtime registry helpers (__sovaSessionAll / __sovaSessionGet / __sovaBroadcast / etc.) emitted by emitSessionManagerHelpers. `current()` reads the per-request `__session` via context - Phase 5B keeps the simple "lookup or zero session" form; a cleaner per-goroutine context is in TODO.md.
 func emitSessionsFreeFuncs(ctx *codegen.EmitContext, block *jen.Group) {
 	rawPkg, _ := ctx.Cache["sessions_package"]
 	pkg, _ := rawPkg.(*ir.PackageContext)
 	if pkg == nil {
 		return
 	}
+
 	lookupName := func(name string) string {
 		if symID, ok := pkg.Scopes.LookupOnlyCurrent(pkg.Root, name); ok {
 			if mangled, ok := ctx.Names.GetMangledName(symID); ok {
 				return mangled
 			}
 		}
+
 		return ""
 	}
 
@@ -3564,6 +3835,7 @@ func emitSessionsFreeFuncs(ctx *codegen.EmitContext, block *jen.Group) {
 			jen.Return(jen.Id("__sovaSessionAll").Call()),
 		))
 	}
+
 	if name := lookupName("byId"); name != "" {
 		block.Add(jen.Func().Id(name).Params(jen.Id("id").String()).Op("**").Id("fn____Session").Block(
 			jen.Id("s").Op(":=").Id("__sovaSessionGet").Call(jen.Id("id")),
@@ -3571,6 +3843,7 @@ func emitSessionsFreeFuncs(ctx *codegen.EmitContext, block *jen.Group) {
 			jen.Return(jen.Op("&").Id("s")),
 		))
 	}
+
 	if name := lookupName("firstByUser"); name != "" {
 		block.Add(jen.Func().Id(name).Params(jen.Id("user").Any()).Op("**").Id("fn____Session").Block(
 			jen.For(jen.Id("_").Op(",").Id("s").Op(":=").Range().Id("__sovaSessionAll").Call()).Block(
@@ -3581,6 +3854,7 @@ func emitSessionsFreeFuncs(ctx *codegen.EmitContext, block *jen.Group) {
 			jen.Return(jen.Nil()),
 		))
 	}
+
 	if name := lookupName("allByUser"); name != "" {
 		block.Add(jen.Func().Id(name).Params(jen.Id("user").Any()).Index().Op("*").Id("fn____Session").Block(
 			jen.Id("out").Op(":=").Index().Op("*").Id("fn____Session").Values(),
@@ -3592,6 +3866,7 @@ func emitSessionsFreeFuncs(ctx *codegen.EmitContext, block *jen.Group) {
 			jen.Return(jen.Id("out")),
 		))
 	}
+
 	if name := lookupName("current"); name != "" {
 		block.Add(jen.Func().Id(name).Params().Op("*").Id("fn____Session").Block(
 			jen.If(jen.Id("s").Op(":=").Id("__sovaCurrentSession").Call(), jen.Id("s").Op("!=").Nil()).Block(
@@ -3600,26 +3875,31 @@ func emitSessionsFreeFuncs(ctx *codegen.EmitContext, block *jen.Group) {
 			jen.Return(jen.Op("&").Id("fn____Session").Values()),
 		))
 	}
+
 	if name := lookupName("broadcast"); name != "" {
 		block.Add(jen.Func().Id(name).Params().Op("*").Id("fn____Broadcast").Block(
 			jen.Return(jen.Op("&").Id("fn____Broadcast").Values()),
 		))
 	}
+
 	if name := lookupName("onConnect"); name != "" {
 		block.Add(jen.Func().Id(name).Params(jen.Id("handler").Func().Params(jen.Op("*").Id("fn____Session"))).Block(
 			jen.Id("__sovaOnConnectHandlers").Op("=").Append(jen.Id("__sovaOnConnectHandlers"), jen.Id("handler")),
 		))
 	}
+
 	if name := lookupName("onDisconnect"); name != "" {
 		block.Add(jen.Func().Id(name).Params(jen.Id("handler").Func().Params(jen.Op("*").Id("fn____Session"))).Block(
 			jen.Id("__sovaOnDisconnectHandlers").Op("=").Append(jen.Id("__sovaOnDisconnectHandlers"), jen.Id("handler")),
 		))
 	}
+
 	if name := lookupName("onRoomJoin"); name != "" {
 		block.Add(jen.Func().Id(name).Params(jen.Id("handler").Func().Params(jen.Op("*").Id("fn____Session"), jen.String())).Block(
 			jen.Id("__sovaOnRoomJoinHandlers").Op("=").Append(jen.Id("__sovaOnRoomJoinHandlers"), jen.Id("handler")),
 		))
 	}
+
 	if name := lookupName("onRoomLeave"); name != "" {
 		block.Add(jen.Func().Id(name).Params(jen.Id("handler").Func().Params(jen.Op("*").Id("fn____Session"), jen.String())).Block(
 			jen.Id("__sovaOnRoomLeaveHandlers").Op("=").Append(jen.Id("__sovaOnRoomLeaveHandlers"), jen.Id("handler")),
@@ -3695,27 +3975,23 @@ func emitSessionsFreeFuncs(ctx *codegen.EmitContext, block *jen.Group) {
 	))
 }
 
-// emitFrontendWireMethods walks every `wire func` declared on the frontend and emits a matching Go method on `*fn____Session` whose body marshals the args, builds a WS envelope, and delivers it to the session through the outbox. For wire funcs with non-none return types the method also registers a per-call reply channel via __sovaWSRegisterReply, awaits the reply, and decodes the JSON value into the Go return type. Phase 7 adds the Broadcast fan-out path that reuses the same envelope shape.
 func emitFrontendWireMethods(ctx *codegen.EmitContext, block *jen.Group) {
 	rawWires, _ := ctx.Cache["frontend_wire_funcs"]
 	wires, _ := rawWires.([]*ir.FuncDeclStmt)
 	if len(wires) == 0 {
 		return
 	}
+
 	noneTyp := ctx.Types.TypNone()
 	for _, fn := range wires {
 		fnRef := fn
 		wireName := fnRef.Name.Name
-		// The Go method emitted on `*fn____Session` has to be reachable
-		// from Sova call sites. After analyze_wire began propagating the
-		// wire-func's symbol onto StructMethodInfo.Sym (so hover/sig-help
-		// see the docstring), `@.printConsole(...)` in Sova now lowers to
-		// `__session.<mangled>(...)` instead of `__session.printConsole(...)`.
-		// Use the mangled name here so the dispatch lines up.
+
 		methodGoName := wireName
 		if fnRef.Name.Sym != 0 {
 			methodGoName = symName(ctx, fnRef.Name.Sym)
 		}
+
 		hasReturn := fnRef.ReturnType != nil && fnRef.ReturnType.Typ != 0 && fnRef.ReturnType.Typ != noneTyp
 
 		paramDecls := make([]jen.Code, 0, len(fnRef.Params))
@@ -3734,6 +4010,7 @@ func emitFrontendWireMethods(ctx *codegen.EmitContext, block *jen.Group) {
 		}
 
 		bodyStmts := []jen.Code{}
+
 		argsLit := jen.Index().Any().Values(paramNames...)
 		bodyStmts = append(bodyStmts,
 			jen.List(jen.Id("__args"), jen.Id("_")).Op(":=").Qual("encoding/json", "Marshal").Call(argsLit),
@@ -3800,6 +4077,7 @@ func lookupHttpStructName(ctx *codegen.EmitContext, name string) string {
 	if sym == 0 {
 		return fallback
 	}
+
 	return symName(ctx, sym)
 }
 
@@ -3854,7 +4132,6 @@ func emitCustomWireHandlerRegistry(ctx *codegen.EmitContext, block *jen.Group) {
 	))
 }
 
-// emitSessionStructAndMethods writes the fn____Session struct mirroring the Sova-side sessions.Session shape plus the methods bound to it (authenticate, logout, role helpers, rooms helpers, isAuthenticated). These are emitted unconditionally because the Sova-side type surface is the same regardless of whether the session manager is active.
 func emitSessionStructAndMethods(block *jen.Group) {
 	block.Add(jen.Type().Id("fn____Session").Struct(
 		jen.Id("Id").String().Tag(map[string]string{"json": "id,omitempty"}),
@@ -3946,7 +4223,6 @@ func emitSessionStructAndMethods(block *jen.Group) {
 	))
 }
 
-// emitLegacyCookieHelpers writes the cookie-only load/save path used by builds that do not need the server-side session manager (no frontend wires, no mutable wire vars). The whole session marshals to base64-JSON in the cookie, no HMAC, no registry.
 func emitLegacyCookieHelpers(block *jen.Group) {
 	block.Add(jen.Func().Id("__sovaTestBypassAuth").Params().Bool().Block(jen.Return(jen.False())))
 	block.Add(jen.Func().Id("__sovaFireOnRoomJoin").Params(jen.Id("s").Op("*").Id("fn____Session"), jen.Id("room").String()).Block())
@@ -3976,7 +4252,6 @@ func emitLegacyCookieHelpers(block *jen.Group) {
 	))
 }
 
-// emitSessionManagerHelpers writes the WebSocket-era cookie + registry path: the cookie holds only `<sessionId>.<hmac>`, the actual session record lives in a process-local registry guarded by a sync.RWMutex, and ids are signed with HMAC-SHA256 using a secret resolved from WIRE_SESSION_SECRET env > manifest > stable dev fallback. Reconnects within the grace window re-attach to the same record; expired records are purged by a grace timer (Phase 10 wires the timer itself; Phase 3 lays the storage and signing primitives).
 func emitSessionManagerHelpers(ctx *codegen.EmitContext, block *jen.Group) {
 	manifestSecret := manifestSessionSecret(ctx)
 
@@ -4143,7 +4418,6 @@ func emitSessionManagerHelpers(ctx *codegen.EmitContext, block *jen.Group) {
 	emitWSTransport(ctx, block)
 }
 
-// emitWSTransport emits the WebSocket transport piece used when the build needs the session manager: a per-connection wrapper around gorilla/websocket.Conn, an outbox channel for server-pushed messages, read and write loops, and the `/__sova/ws` HTTP handler that upgrades incoming HTTP requests after validating the HMAC-signed session cookie. The frontend client (Phase 6) opens this endpoint after the page boots; backend-pushed RPC messages (Phase 5) are written through the per-connection outbox.
 func emitWSTransport(ctx *codegen.EmitContext, block *jen.Group) {
 	block.Add(jen.Type().Id("fn____WSConn").Struct(
 		jen.Id("conn").Op("*").Qual("github.com/gorilla/websocket", "Conn"),
@@ -4326,21 +4600,13 @@ func emitWSTransport(ctx *codegen.EmitContext, block *jen.Group) {
 	).Block(
 		jen.Var().Id("sess").Op("*").Id("fn____Session"),
 		jen.Var().Id("sid").String(),
-		// Hoisted out of the bypass / cookie branches so the gorilla
-		// Upgrade call can see whatever Set-Cookie we staged. Stays nil
-		// when no cookie has to be issued (existing session is reused).
+
 		jen.Var().Id("__wsRespHdr").Qual("net/http", "Header"),
 		jen.If(jen.Id("__sovaTestBypassAuth").Call()).Block(
 			jen.Id("sess").Op("=").Id("__sovaTestEnsureBypassSession").Call(),
 			jen.Id("sid").Op("=").Id("sess").Dot("Id"),
 		).Else().Block(
-			// Best-effort: read an existing `sova_session` cookie. We only
-			// trust the cookie when its HMAC verifies; anything else is
-			// treated as "no session yet" and a fresh one is bootstrapped.
-			// This is how a brand-new visitor lands on the page: we can't
-			// reject them with 401 because the browser then surfaces a
-			// useless "WebSocket failed" with no further detail (the
-			// HTTP/101 path eats the body).
+
 			jen.List(jen.Id("cookie"), jen.Id("err")).Op(":=").Id("r").Dot("Cookie").Call(jen.Lit("sova_session")),
 			jen.If(jen.Id("err").Op("==").Nil()).Block(
 				jen.List(jen.Id("verifiedSid"), jen.Id("ok")).Op(":=").Id("__sovaVerifySessionId").Call(jen.Id("cookie").Dot("Value")),
@@ -4349,12 +4615,7 @@ func emitWSTransport(ctx *codegen.EmitContext, block *jen.Group) {
 					jen.Id("sess").Op("=").Id("__sovaSessionGet").Call(jen.Id("sid")),
 				),
 			),
-			// First-time visitor or expired record: synthesise an
-			// anonymous session, register it, and stage a Set-Cookie for
-			// the 101 response. gorilla/websocket's Upgrade builds the
-			// switching-protocols response by hand and ignores anything
-			// already written via `w.Header()`, so we have to thread the
-			// cookie through its `responseHeader` parameter instead.
+
 			jen.If(jen.Id("sess").Op("==").Nil()).Block(
 				jen.Id("sid").Op("=").Id("__sovaNewSessionId").Call(),
 				jen.Id("sess").Op("=").Op("&").Id("fn____Session").Values(jen.Dict{
@@ -4415,6 +4676,7 @@ func emitWSTransport(ctx *codegen.EmitContext, block *jen.Group) {
 	if graceSeconds <= 0 {
 		graceSeconds = 5
 	}
+
 	block.Add(jen.Func().Id("__sovaSessionGraceSeconds").Params().Int().Block(
 		jen.If(jen.Id("v").Op(":=").Qual("os", "Getenv").Call(jen.Lit("WIRE_SESSION_GRACE")), jen.Id("v").Op("!=").Lit("")).Block(
 			jen.If(jen.List(jen.Id("n"), jen.Id("err")).Op(":=").Qual("strconv", "Atoi").Call(jen.Id("v")), jen.Id("err").Op("==").Nil().Op("&&").Id("n").Op(">").Lit(0)).Block(
@@ -4479,85 +4741,96 @@ func emitWSTransport(ctx *codegen.EmitContext, block *jen.Group) {
 	))
 }
 
-// bufferLimitForWire reads `wire(buffer: ...)` off a frontend wire-func declaration. Returns (limit, enabled). `wire(buffer: true)` defaults to 100; `wire(buffer: N)` uses N; unset or `wire(buffer: false)` disables buffering.
 func bufferLimitForWire(fn *ir.FuncDeclStmt) (int, bool) {
 	if fn == nil || fn.Wire == nil || fn.Wire.Options == nil {
 		return 0, false
 	}
+
 	v, ok := fn.Wire.Options["buffer"]
 	if !ok {
 		return 0, false
 	}
+
 	switch v.Kind {
 	case ir.WireOptBool:
 		if v.Bool {
 			return 100, true
 		}
+
 		return 0, false
 	case ir.WireOptInt:
 		if v.Int <= 0 {
 			return 0, false
 		}
+
 		return int(v.Int), true
 	}
+
 	return 0, false
 }
 
-// reactiveWireVarOriginalName returns the original (pre-mangle) name of the reactive wire variable identified by `sym`, or "" if the symbol does not refer to a `@reactive wire let` declaration. Used by assignment codegen to gate the broadcast-on-mutate plumbing on a per-symbol basis.
 func reactiveWireVarOriginalName(ctx *codegen.EmitContext, sym ir.SymID) string {
 	if ctx == nil || ctx.Cache == nil || sym == 0 {
 		return ""
 	}
+
 	raw, ok := ctx.Cache["reactive_wire_vars"]
 	if !ok {
 		return ""
 	}
+
 	vars, ok := raw.([]*ir.VarDeclStmt)
 	if !ok {
 		return ""
 	}
+
 	for _, vd := range vars {
 		if len(vd.Targets) == 0 || vd.Targets[0].Name == nil {
 			continue
 		}
+
 		if vd.Targets[0].Name.Sym == sym {
 			return vd.Targets[0].Name.Name
 		}
 	}
+
 	return ""
 }
 
-// manifestGraceSeconds returns the configured reconnect grace window in seconds (default 5 when unset).
 func manifestGraceSeconds(ctx *codegen.EmitContext) int {
 	if ctx.Cache == nil {
 		return 0
 	}
+
 	raw, ok := ctx.Cache["build_config"]
 	if !ok {
 		return 0
 	}
+
 	if cfg, ok := raw.(interface{ WireSessionGraceSecondsValue() int }); ok {
 		return cfg.WireSessionGraceSecondsValue()
 	}
+
 	return 0
 }
 
-// manifestSessionSecret extracts the manifest-configured HMAC secret out of the BuildConfig cache. Empty when the user has not set [wire].session_secret; codegen then falls back to env or a dev placeholder.
 func manifestSessionSecret(ctx *codegen.EmitContext) string {
 	if ctx.Cache == nil {
 		return ""
 	}
+
 	raw, ok := ctx.Cache["build_config"]
 	if !ok {
 		return ""
 	}
+
 	if cfg, ok := raw.(interface{ WireSessionSecretValue() string }); ok {
 		return cfg.WireSessionSecretValue()
 	}
+
 	return ""
 }
 
-// emitDevOnlyBoot generates a minimal HTTP server boot that only fires when SOVA_DEV=1. Used when the project has no wired endpoints but the developer still wants `sova dev` to serve the frontend with live reload.
 func (e *CodeEmitter) emitDevOnlyBoot(ctx *codegen.EmitContext, g *jen.Group) {
 	g.If(jen.Qual("os", "Getenv").Call(jen.Lit("SOVA_DEV")).Op("!=").Lit("1")).Block(
 		jen.Return(),
@@ -4579,7 +4852,6 @@ func (e *CodeEmitter) emitDevOnlyBoot(ctx *codegen.EmitContext, g *jen.Group) {
 	g.Qual("log", "Fatal").Call(jen.Qual("net/http", "ListenAndServe").Call(jen.Id("__addr"), jen.Id("__mux")))
 }
 
-// emitWireServerBoot generates the HTTP server boot sequence for wired endpoints: handler registration, listen address resolution (env > manifest > default), and ListenAndServe blocking call.
 func (e *CodeEmitter) emitWireServerBoot(ctx *codegen.EmitContext, g *jen.Group) {
 	g.Id("__mux").Op(":=").Qual("net/http", "NewServeMux").Call()
 	g.Id("__sovaApplyCustomWireHandlers").Call(jen.Id("__mux"))
@@ -4592,17 +4864,21 @@ func (e *CodeEmitter) emitWireServerBoot(ctx *codegen.EmitContext, g *jen.Group)
 			g.Id("__sovaWSRegisterBackendHandler").Call(jen.Lit(fnRef.Name.Name), jen.Id(handlerName+"__ws"))
 		}
 	}
+
 	for _, vd := range e.wiredVars {
 		if len(vd.Targets) == 0 || vd.Targets[0].Name == nil {
 			continue
 		}
+
 		handlerName := symName(ctx, vd.Targets[0].Name.Sym) + "__wireHandler"
 		pattern := vd.Wire.Method + " " + pathWithBraces(vd.Wire.Path)
 		g.Id("__mux").Dot("HandleFunc").Call(jen.Lit(pattern), jen.Id(handlerName))
 	}
+
 	if needsSessionManagerFromCache(ctx) {
 		g.Id("__mux").Dot("HandleFunc").Call(jen.Lit("/__sova/ws"), jen.Id("__sovaWSHandler"))
 	}
+
 	defaultPort := wireConfiguredPort(ctx)
 	defaultHost := wireConfiguredHost(ctx)
 	g.Id("__port").Op(":=").Qual("os", "Getenv").Call(jen.Lit("WIRE_PORT"))
@@ -4619,40 +4895,43 @@ func (e *CodeEmitter) emitWireServerBoot(ctx *codegen.EmitContext, g *jen.Group)
 	g.Qual("log", "Fatal").Call(jen.Qual("net/http", "ListenAndServe").Call(jen.Id("__addr"), jen.Id("__mux")))
 }
 
-// wireConfiguredPort fishes the manifest-configured wire port out of the BuildConfig cache, falling back to "8080".
 func wireConfiguredPort(ctx *codegen.EmitContext) string {
 	if ctx.Cache == nil {
 		return "8080"
 	}
+
 	raw, ok := ctx.Cache["build_config"]
 	if !ok {
 		return "8080"
 	}
+
 	if cfg, ok := raw.(interface{ WirePortValue() int }); ok {
 		port := cfg.WirePortValue()
 		if port > 0 {
 			return strconv.Itoa(port)
 		}
 	}
+
 	return "8080"
 }
 
-// wireConfiguredHost returns the manifest-configured wire host, or empty string (listen on all interfaces).
 func wireConfiguredHost(ctx *codegen.EmitContext) string {
 	if ctx.Cache == nil {
 		return ""
 	}
+
 	raw, ok := ctx.Cache["build_config"]
 	if !ok {
 		return ""
 	}
+
 	if cfg, ok := raw.(interface{ WireHostValue() string }); ok {
 		return cfg.WireHostValue()
 	}
+
 	return ""
 }
 
-// sessionFieldNameToGo maps a Sova-side session field name (lowercase) to the matching Go-side struct field name (Pascal-case + JSON-tag-compatible). Unrecognised fields fall back to capitalizing the first letter.
 func sessionFieldNameToGo(name string) string {
 	switch name {
 	case "user":
@@ -4660,15 +4939,17 @@ func sessionFieldNameToGo(name string) string {
 	case "roles":
 		return "Roles"
 	}
+
 	if name == "" {
 		return name
 	}
+
 	return strings.ToUpper(name[:1]) + name[1:]
 }
 
-// pathWithBraces converts Sova-style `:name` path placeholders to Go's net/http 1.22+ `{name}` placeholder syntax.
 func pathWithBraces(p string) string {
 	out := strings.Builder{}
+
 	i := 0
 	for i < len(p) {
 		if p[i] == ':' {
@@ -4677,22 +4958,25 @@ func pathWithBraces(p string) string {
 			for j < len(p) && (p[j] == '_' || (p[j] >= 'a' && p[j] <= 'z') || (p[j] >= 'A' && p[j] <= 'Z') || (p[j] >= '0' && p[j] <= '9')) {
 				j++
 			}
+
 			out.WriteString(p[i+1 : j])
 			out.WriteByte('}')
 			i = j
 			continue
 		}
+
 		out.WriteByte(p[i])
 		i++
 	}
+
 	return out.String()
 }
 
-// emitEmbeddedVar emits a top-level `var <name> <type>` declaration prefixed by a `//go:embed __embeds/<staged>` directive comment. The staged file is copied into place by `build.go` before the Go compiler runs (filename is `<hash>-<basename>`, where `<hash>` is the sha256[:16] computed by `pass_resolve_embeds` and `<basename>` is the embed source's base name). Go's `//go:embed` rules require the variable to be at package scope with no initializer; we emit just `var Name string` (text) or `var Name []byte` (bytes) so the directive populates it.
 func (e *CodeEmitter) emitEmbeddedVar(ctx *codegen.EmitContext, pkg *ir.PackageContext, block *jen.Group, vd *ir.VarDeclStmt) {
 	if vd.Embed == nil || len(vd.Targets) == 0 || vd.Targets[0].Name == nil {
 		return
 	}
+
 	target := vd.Targets[0]
 	name := symNameWithUnused(ctx, pkg, target.Name.Sym)
 	staged := embedStagedRelPath(vd.Embed)
@@ -4705,51 +4989,53 @@ func (e *CodeEmitter) emitEmbeddedVar(ctx *codegen.EmitContext, pkg *ir.PackageC
 	default:
 		return
 	}
+
 	e.ensureEmbedImport()
 	block.Add(jen.Comment("//go:embed " + staged))
 	block.Add(jen.Var().Id(name).Add(goType))
 }
 
-// ensureEmbedImport adds a blank `_ "embed"` import to the file the first time an `@embed`-bound const is emitted. The Go toolchain requires this whenever a `//go:embed` directive appears in the file, even when no `embed.FS` value is referenced; without it the user sees the cryptic `go:embed requires import "embed"` error at `go build` time. Idempotent — calling twice doesn't double-register the import.
 func (e *CodeEmitter) ensureEmbedImport() {
 	if e.jf == nil {
 		return
 	}
+
 	e.jf.Anon("embed")
 }
 
-// embedStagedRelPath is the relative path the `//go:embed` directive uses, anchored at the Go output directory (`<outputDir>/__embeds/<staged>`). The naming combines the content hash and the source's basename so collisions across embeds of files with the same name still produce distinct staged filenames. Mirrored by `build.go`'s staging step — keep the two in lockstep.
 func embedStagedRelPath(info *ir.EmbedInfo) string {
 	base := filepath.Base(info.SourcePath)
 	return "__embeds/" + info.ContentHash + "-" + base
 }
 
-// emitWiredVarGetter writes a synthetic getter `func <name>() T { return <init> }` for a wired top-level var/const. The init expression is embedded inline; the getter is reachable both from the HTTP handler and from internal backend code. For `@reactive wire let` the emitter switches to a real package-level variable instead so backend mutations update the canonical storage and broadcast naturally.
 func (e *CodeEmitter) emitWiredVarGetter(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, block *jen.Group, vd *ir.VarDeclStmt) {
 	if len(vd.Targets) == 0 || vd.Targets[0].Name == nil {
 		return
 	}
+
 	target := vd.Targets[0]
 	name := symName(ctx, target.Name.Sym)
 	innerTyp := ir.TypID(0)
 	if target.TypeAnn != nil {
 		innerTyp = target.TypeAnn.Typ
 	}
+
 	innerType := typeToGoWithContext(ctx, pkg, ctx.Types, innerTyp)
 	if reactiveWireVarOriginalName(ctx, target.Name.Sym) != "" {
 		block.Add(jen.Var().Id(name).Add(innerType).Op("=").Add(e.buildExpr(ctx, pkg, f, vd.Init)))
 		return
 	}
+
 	block.Add(jen.Func().Id(name).Params().Add(innerType).BlockFunc(func(g *jen.Group) {
 		g.Return(e.buildExpr(ctx, pkg, f, vd.Init))
 	}))
 }
 
-// emitWiredVarHandler writes an HTTP handler that returns the current value of a wired top-level var. The handler enforces authn/authz like a wired function, then encodes `{value, state}` JSON.
 func (e *CodeEmitter) emitWiredVarHandler(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, block *jen.Group, vd *ir.VarDeclStmt) {
 	if len(vd.Targets) == 0 || vd.Targets[0].Name == nil {
 		return
 	}
+
 	target := vd.Targets[0]
 	getterName := symName(ctx, target.Name.Sym)
 	handlerName := getterName + "__wireHandler"
@@ -4764,6 +5050,7 @@ func (e *CodeEmitter) emitWiredVarHandler(ctx *codegen.EmitContext, pkg *ir.Pack
 			g.Id("__sovaSetCurrentSession").Call(jen.Id("__session"))
 			g.Defer().Id("__sovaClearCurrentSession").Call()
 		}
+
 		if vd.Wire.RequireAuthN {
 			g.If(jen.Op("!").Id("__session").Dot("Auth").Op("&&").Op("!").Id("__sovaTestBypassAuth").Call()).Block(
 				jen.Id("w").Dot("Header").Call().Dot("Set").Call(jen.Lit("Content-Type"), jen.Lit("application/json")),
@@ -4775,6 +5062,7 @@ func (e *CodeEmitter) emitWiredVarHandler(ctx *codegen.EmitContext, pkg *ir.Pack
 				jen.Return(),
 			)
 		}
+
 		for _, role := range vd.Wire.RequiredRoles {
 			roleLit := role
 			g.If(jen.Op("!").Id("__session").Dot("hasRole").Call(jen.Lit(roleLit))).Block(
@@ -4787,12 +5075,14 @@ func (e *CodeEmitter) emitWiredVarHandler(ctx *codegen.EmitContext, pkg *ir.Pack
 				jen.Return(),
 			)
 		}
+
 		var valueExpr *jen.Statement
 		if reactiveWireVarOriginalName(ctx, target.Name.Sym) != "" {
 			valueExpr = jen.Id(getterName)
 		} else {
 			valueExpr = jen.Id(getterName).Call()
 		}
+
 		g.Id("__val").Op(":=").Add(valueExpr)
 		g.Id("__sovaSaveSession").Call(jen.Id("w"), jen.Id("__session"))
 		g.Id("w").Dot("Header").Call().Dot("Set").Call(jen.Lit("Content-Type"), jen.Lit("application/json"))
@@ -4803,27 +5093,20 @@ func (e *CodeEmitter) emitWiredVarHandler(ctx *codegen.EmitContext, pkg *ir.Pack
 	}))
 }
 
-// resolveWireMaxBody returns the request-body byte cap for a wired function.
-// Reads `wire(maxBody: <bytes>)` when provided; falls back to 1 MiB which
-// keeps the default safe for typical JSON payloads without surprising users
-// who don't think about request-body limits. A literal `0` opts out of the
-// cap entirely - handy for endpoints that accept large uploads where the
-// caller wants to validate size in user code.
 func resolveWireMaxBody(spec *ir.WireSpec) int64 {
 	if spec != nil && spec.Options != nil {
 		if opt, ok := spec.Options["maxBody"]; ok && opt.Kind == ir.WireOptInt {
 			if opt.Int < 0 {
 				return 1 << 20
 			}
+
 			return opt.Int
 		}
 	}
+
 	return 1 << 20
 }
 
-// emitRawWiredHandler writes the thin `func(w http.ResponseWriter, r *http.Request)` wrapper for a `wire(transport: "raw")` function. Auth gating, role checks, body capping, and JSON encoding are all skipped — `wire(authn: true)` on a raw wire has no effect because there's no JSON envelope to slot a `WireStateUnauthorized` response into. Raw wires are expected to handle their own auth (typically by reading a cookie via `std/http.cookie` and rejecting via `std/http.setStatus(res, 401)`); if a project wants the standard auth envelope it should use the regular transport.
-//
-// The user's Sova signature is `func name(req: http.Request, res: http.Response)`, which compiles to `func name(req *http_Request, res *http_Response)` on the Go side. To bridge the typed Sova wrappers and the raw `net/http` values the runtime hands us, the handler constructs `&http_Request{Raw: r}` and `&http_Response{Raw: w}` from the live `*http.Request` and `http.ResponseWriter` and passes those wrapped values to the user function. The wrapped values' `Raw any` slots are what the `std/http` extern helpers cast back into the concrete `net/http` types — so the user only ever sees the typed handles, never the bare `any`.
 func (e *CodeEmitter) emitRawWiredHandler(ctx *codegen.EmitContext, pkg *ir.PackageContext, block *jen.Group, fn *ir.FuncDeclStmt) {
 	handlerName := symName(ctx, fn.Name.Sym) + "__wireHandler"
 	implName := symName(ctx, fn.Name.Sym)
@@ -4840,7 +5123,7 @@ func (e *CodeEmitter) emitRawWiredHandler(ctx *codegen.EmitContext, pkg *ir.Pack
 		g.Id("__req").Op(":=").Op("&").Id(reqStruct).Values(jen.Dict{jen.Id(rawField): jen.Id("r")})
 		g.Id("__res").Op(":=").Op("&").Id(resStruct).Values(jen.Dict{jen.Id(rawField): jen.Id("w")})
 		if wantsSession {
-			// User wrote `@` inside the body — load (or create) the session from the cookie via the same helper the regular wire handlers use, then thread it as the implicit first argument. The user function's Go signature was already widened to accept `*fn____Session` by the dispatcher emit path.
+
 			g.Id("__session").Op(":=").Id("__sovaLoadSession").Call(jen.Id("r"))
 			g.Id(implName).Call(jen.Id("__session"), jen.Id("__req"), jen.Id("__res"))
 		} else {
@@ -4849,45 +5132,44 @@ func (e *CodeEmitter) emitRawWiredHandler(ctx *codegen.EmitContext, pkg *ir.Pack
 	}))
 }
 
-// isRawWire reports whether a wired function uses `wire(transport: "raw")`. Raw wires bypass every part of the regular wire envelope — the JSON wrapper, the auth gating, AND the implicit `__session` first parameter — because the handler signature is fixed at `(req: http.Request, res: http.Response)` by analyze_wire.
 func isRawWire(s *ir.FuncDeclStmt) bool {
 	return s != nil && s.Wire != nil && s.Wire.Transport == "raw"
 }
 
-// rawWireUsesSession reports whether a raw-wire function's body referenced `@`. The flag is set by `pass_analyze_wire.rawWireUsesSession` during analysis; codegen reads it here to decide whether to prepend a `__session` parameter on the user function and wire the cookie-extract path into the raw handler wrapper. See BUGS.md #16 for the motivation — without this, raw wires were cut off from `@`, which blocked any auth-touching upload handler.
 func rawWireUsesSession(s *ir.FuncDeclStmt) bool {
 	return s != nil && s.Wire != nil && s.Wire.UsesSession
 }
 
-// lookupRawHttpStructName resolves the mangled Go struct name for a `std/http` wrapper type (Request or Response) at codegen time. The TypeRef has been bound + type-resolved by earlier passes, so `t.Typ` already points at the concrete struct in the TypeTable; we walk through to its package path + struct name and ask `findTypeSymbolAcrossPkgs` for the SymID so `symName` returns the same mangled identifier the std/http package itself was emitted under. Falls back to the literal `http_<name>` form if the type lookup fails — analyze_wire would already have rejected mismatched types before codegen runs, so a fallback here only fires on internal inconsistency.
 func lookupRawHttpStructName(ctx *codegen.EmitContext, pkg *ir.PackageContext, ref *ir.TypeRef, name string) string {
 	fallback := "http_" + name
 	if ref == nil || ctx == nil || ctx.Types == nil {
 		return fallback
 	}
+
 	ty, ok := ctx.Types.GetByID(ref.Typ)
 	if !ok || ty == nil {
 		return fallback
 	}
+
 	sym := findTypeSymbolAcrossPkgs(ctx, pkg, ty.PackagePath, ty.StructName)
 	if sym == 0 {
 		return fallback
 	}
+
 	return symName(ctx, sym)
 }
 
-// emitWiredHandler writes a Go HTTP handler for a wired function: it decodes path/query/body arguments, calls the implementation, and JSON-encodes the {value, state} response. The implementation function itself is emitted as a regular Go function via the standard FuncDeclStmt path.
-//
-// `wire(transport: "raw")` short-circuits the whole JSON wrapping. The raw-mode handler is a thin `func(w http.ResponseWriter, r *http.Request)` that constructs `&http_Request{Raw: r}` + `&http_Response{Raw: w}` wrapper values and passes them to the user's `func name(req: http.Request, res: http.Response)`. The user's function pulls request data and writes the response through `std/http` helpers; nothing in this emitter inspects its return value (analyze_wire already enforces void).
 func (e *CodeEmitter) emitWiredHandler(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, block *jen.Group, fn *ir.FuncDeclStmt) {
 	if fn.Wire != nil && fn.Wire.Transport == "raw" {
 		e.emitRawWiredHandler(ctx, pkg, block, fn)
 		return
 	}
+
 	handlerName := symName(ctx, fn.Name.Sym) + "__wireHandler"
 	implName := symName(ctx, fn.Name.Sym)
 
 	pathArgSet := map[string]bool{}
+
 	for _, a := range fn.Wire.PathArgs {
 		pathArgSet[a] = true
 	}
@@ -4917,6 +5199,7 @@ func (e *CodeEmitter) emitWiredHandler(ctx *codegen.EmitContext, pkg *ir.Package
 				jen.Return(),
 			)
 		}
+
 		for _, role := range fn.Wire.RequiredRoles {
 			roleLit := role
 			g.If(jen.Op("!").Id("__session").Dot("hasRole").Call(jen.Lit(roleLit))).Block(
@@ -4936,26 +5219,23 @@ func (e *CodeEmitter) emitWiredHandler(ctx *codegen.EmitContext, pkg *ir.Package
 				if param.WireBinding != "" && param.WireBinding != "body" {
 					continue
 				}
+
 				if pathArgSet[param.Name.Name] && param.WireBinding == "" {
 					continue
 				}
+
 				nonPathParams = append(nonPathParams, param)
 			}
+
 			if len(nonPathParams) > 0 {
-				// Cap the body so a giant payload can't OOM the server, and
-				// surface any JSON parse error as a clean 400 instead of
-				// letting the handler run with silently-zeroed params (the
-				// previous behaviour, which made invalid requests
-				// indistinguishable from "user forgot a field"). The limit
-				// is `wire(maxBody: <bytes>)`-configurable so wires that
-				// accept large uploads can raise the ceiling; `0` disables
-				// the cap entirely.
+
 				limit := resolveWireMaxBody(fn.Wire)
 				if limit > 0 {
 					g.If(jen.Id("r").Dot("Body").Op("!=").Nil()).Block(
 						jen.Id("r").Dot("Body").Op("=").Qual("net/http", "MaxBytesReader").Call(jen.Id("w"), jen.Id("r").Dot("Body"), jen.Lit(limit)),
 					)
 				}
+
 				g.Id("__body").Op(":=").Map(jen.String()).Qual("encoding/json", "RawMessage").Values()
 				g.If(jen.Id("r").Dot("Body").Op("!=").Nil()).Block(
 					jen.If(jen.Id("__decErr").Op(":=").Qual("encoding/json", "NewDecoder").Call(jen.Id("r").Dot("Body")).Dot("Decode").Call(jen.Op("&").Id("__body")).Op(";").Id("__decErr").Op("!=").Nil()).Block(
@@ -4973,10 +5253,12 @@ func (e *CodeEmitter) emitWiredHandler(ctx *codegen.EmitContext, pkg *ir.Package
 			if param.Type != nil {
 				paramTypeID = param.Type.Typ
 			}
+
 			bindKey := param.Name.Name
 			if param.WireBindAs != "" {
 				bindKey = param.WireBindAs
 			}
+
 			binding := param.WireBinding
 			if binding == "" {
 				if pathArgSet[param.Name.Name] {
@@ -4987,6 +5269,7 @@ func (e *CodeEmitter) emitWiredHandler(ctx *codegen.EmitContext, pkg *ir.Package
 					binding = "query"
 				}
 			}
+
 			switch binding {
 			case "path":
 				g.Id(paramName).Op(":=").Add(decodeStringToGo(ctx.Types, paramTypeID, jen.Id("r").Dot("PathValue").Call(jen.Lit(bindKey))))
@@ -5011,6 +5294,7 @@ func (e *CodeEmitter) emitWiredHandler(ctx *codegen.EmitContext, pkg *ir.Package
 					),
 				)
 			}
+
 			callArgs = append(callArgs, jen.Id(paramName))
 		}
 
@@ -5021,12 +5305,14 @@ func (e *CodeEmitter) emitWiredHandler(ctx *codegen.EmitContext, pkg *ir.Package
 		} else {
 			g.Id(implName).Call(callWithSession...)
 		}
+
 		g.Id("__sovaSaveSession").Call(jen.Id("w"), jen.Id("__session"))
 
 		typedResp := ""
 		if hasReturn {
 			typedResp = typedResponseKind(ctx, fn)
 		}
+
 		switch typedResp {
 		case "Redirect":
 			emitTypedRespCookies(g)
@@ -5133,21 +5419,24 @@ func typedResponseKind(ctx *codegen.EmitContext, fn *ir.FuncDeclStmt) string {
 	if fn.ReturnType == nil || fn.ReturnType.Typ == 0 {
 		return ""
 	}
+
 	ty, ok := ctx.Types.GetByID(fn.ReturnType.Typ)
 	if !ok || ty == nil || ty.Kind != ir.TK_Struct {
 		return ""
 	}
+
 	if ty.PackagePath != "std/http" {
 		return ""
 	}
+
 	switch ty.StructName {
 	case "Redirect", "Html", "File", "Status":
 		return ty.StructName
 	}
+
 	return ""
 }
 
-// emitWiredWSAdapter emits the WS-call adapter `<handlerName>__ws(*fn____Session, json.RawMessage) (any, WireState)` for a backend wire func with `wire(transport: "ws")`. The adapter mirrors the HTTP handler's authn/authz checks, unpacks the JSON args array, calls the impl, and returns `(value, state)` for the WS dispatcher to wrap into the reply envelope.
 func (e *CodeEmitter) emitWiredWSAdapter(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, block *jen.Group, fn *ir.FuncDeclStmt) {
 	adapterName := symName(ctx, fn.Name.Sym) + "__wireHandler__ws"
 	implName := symName(ctx, fn.Name.Sym)
@@ -5163,6 +5452,7 @@ func (e *CodeEmitter) emitWiredWSAdapter(ctx *codegen.EmitContext, pkg *ir.Packa
 				jen.Return(jen.Nil(), jen.Id("WireStateUnauthorized")),
 			)
 		}
+
 		for _, role := range fn.Wire.RequiredRoles {
 			roleLit := role
 			g.If(jen.Op("!").Id("__session").Dot("hasRole").Call(jen.Lit(roleLit))).Block(
@@ -5172,11 +5462,7 @@ func (e *CodeEmitter) emitWiredWSAdapter(ctx *codegen.EmitContext, pkg *ir.Packa
 
 		g.Var().Id("__args").Index().Qual("encoding/json", "RawMessage")
 		g.If(jen.Qual("", "len").Call(jen.Id("__rawArgs")).Op(">").Lit(0)).Block(
-			// A WS-call envelope with garbage `args` is a bad-request shape;
-			// answer with WireStateError instead of running the wire body
-			// against zero-valued params. The dispatcher relays the state
-			// back to the caller as an inbound `op:"reply"` carrying the
-			// error sentinel.
+
 			jen.If(jen.Id("__argsErr").Op(":=").Qual("encoding/json", "Unmarshal").Call(jen.Id("__rawArgs"), jen.Op("&").Id("__args")).Op(";").Id("__argsErr").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("WireStateError")),
 			),
@@ -5189,6 +5475,7 @@ func (e *CodeEmitter) emitWiredWSAdapter(ctx *codegen.EmitContext, pkg *ir.Packa
 			if param.Type != nil {
 				paramTypeID = param.Type.Typ
 			}
+
 			g.Var().Id(paramName).Add(typeToGoWithContext(ctx, pkg, ctx.Types, paramTypeID))
 			g.If(jen.Qual("", "len").Call(jen.Id("__args")).Op(">").Lit(i)).Block(
 				jen.If(jen.Id("__pErr").Op(":=").Qual("encoding/json", "Unmarshal").Call(jen.Id("__args").Index(jen.Lit(i)), jen.Op("&").Id(paramName)).Op(";").Id("__pErr").Op("!=").Nil()).Block(
@@ -5209,15 +5496,16 @@ func (e *CodeEmitter) emitWiredWSAdapter(ctx *codegen.EmitContext, pkg *ir.Packa
 	}))
 }
 
-// decodeStringToGo parses an HTTP-supplied string (path segment or query parameter) into the Go representation of the given Sova type.
 func decodeStringToGo(tt *ir.TypeTable, typID ir.TypID, expr *jen.Statement) *jen.Statement {
 	if typID == 0 {
 		return expr
 	}
+
 	ty, ok := tt.GetByID(typID)
 	if !ok {
 		return expr
 	}
+
 	switch ty.Kind {
 	case ir.TK_PrimitiveInt:
 		return jen.Func().Params().Int64().BlockFunc(func(g *jen.Group) {
@@ -5235,6 +5523,7 @@ func decodeStringToGo(tt *ir.TypeTable, typID ir.TypID, expr *jen.Statement) *je
 			g.Return(jen.Id("b"))
 		}).Call()
 	}
+
 	return expr
 }
 
@@ -5243,6 +5532,7 @@ func typeContainsTypeParam(tt *ir.TypeTable, typID ir.TypID) bool {
 	if !ok {
 		return false
 	}
+
 	switch ty.Kind {
 	case ir.TK_TypeParam:
 		return true
@@ -5256,17 +5546,21 @@ func typeContainsTypeParam(tt *ir.TypeTable, typID ir.TypID) bool {
 				return true
 			}
 		}
+
 	case ir.TK_Function:
 		for _, p := range ty.ParamTypes {
 			if p == nil || p.Type == nil {
 				continue
 			}
+
 			if typeContainsTypeParam(tt, p.Type.Typ) {
 				return true
 			}
 		}
+
 		return typeContainsTypeParam(tt, ty.ReturnType)
 	}
+
 	return false
 }
 
@@ -5274,20 +5568,25 @@ func tryWrapErasedLambdaArg(ctx *codegen.EmitContext, pkg *ir.PackageContext, f 
 	if paramFp == nil || paramFp.Type == nil {
 		return nil
 	}
+
 	if !typeContainsTypeParam(ctx.Types, paramFp.Type.Typ) {
 		return nil
 	}
+
 	paramTy, ok := ctx.Types.GetByID(paramFp.Type.Typ)
 	if !ok || paramTy.Kind != ir.TK_Function {
 		return nil
 	}
+
 	lit, ok := argExpr.(*ir.FuncLitExpr)
 	if !ok {
 		return nil
 	}
+
 	if len(lit.Params) != len(paramTy.ParamTypes) {
 		return nil
 	}
+
 	wrapperParams := make([]jen.Code, len(lit.Params))
 	innerArgs := make([]jen.Code, len(lit.Params))
 	for i, p := range lit.Params {
@@ -5304,6 +5603,7 @@ func tryWrapErasedLambdaArg(ctx *codegen.EmitContext, pkg *ir.PackageContext, f 
 			innerArgs[i] = jen.Id(tmpName)
 		}
 	}
+
 	inner := e.buildExpr(ctx, pkg, f, lit)
 	wrapper := jen.Func().Params(wrapperParams...)
 	hasReturn := lit.ReturnType != nil && lit.ReturnType.Typ != 0 && lit.ReturnType.Typ != ctx.Types.TypNone()
@@ -5313,6 +5613,7 @@ func tryWrapErasedLambdaArg(ctx *codegen.EmitContext, pkg *ir.PackageContext, f 
 	} else {
 		wrapper = wrapper.Block(jen.Parens(inner).Call(innerArgs...))
 	}
+
 	return wrapper
 }
 
@@ -5320,20 +5621,25 @@ func tryWrapErasedSliceArg(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *
 	if paramFp == nil || paramFp.Type == nil {
 		return nil
 	}
+
 	if !typeContainsTypeParam(ctx.Types, paramFp.Type.Typ) {
 		return nil
 	}
+
 	paramTy, ok := ctx.Types.GetByID(paramFp.Type.Typ)
 	if !ok || paramTy.Kind != ir.TK_Slice {
 		return nil
 	}
+
 	argTy, ok := ctx.Types.GetByID(argExpr.GetType())
 	if !ok || argTy.Kind != ir.TK_Slice {
 		return nil
 	}
+
 	if argTy.ElemType == ctx.Types.PrimAny() {
 		return nil
 	}
+
 	srcCode := e.buildExpr(ctx, pkg, f, argExpr)
 	srcName := e.hk.NewTemp()
 	outName := e.hk.NewTemp()
@@ -5353,13 +5659,16 @@ func wrapPrimitiveForAny(ctx *codegen.EmitContext, expr ir.Expr, emitted jen.Cod
 	if expr == nil {
 		return emitted
 	}
+
 	ty := expr.GetType()
 	if ty == 0 {
 		return emitted
 	}
+
 	if ty == ctx.Types.PrimAny() {
 		return emitted
 	}
+
 	switch ty {
 	case ctx.Types.PrimInt():
 		return jen.Int64().Parens(emitted)
@@ -5368,6 +5677,6 @@ func wrapPrimitiveForAny(ctx *codegen.EmitContext, expr ir.Expr, emitted jen.Cod
 	case ctx.Types.PrimByte():
 		return jen.Byte().Parens(emitted)
 	}
+
 	return emitted
 }
-

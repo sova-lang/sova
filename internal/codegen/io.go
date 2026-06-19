@@ -1,4 +1,4 @@
-﻿package codegen
+package codegen
 
 import (
 	"fmt"
@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 )
 
-// EnsureOutputDir ensures that the directory for the given file exists.
 func EnsureOutputDir(file string) error {
 	if file == "" {
 		return nil

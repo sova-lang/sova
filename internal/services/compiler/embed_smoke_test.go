@@ -16,9 +16,13 @@ type embedTestConfig struct {
 }
 
 func (c embedTestConfig) OutputDirectory() string  { return filepath.Join(c.src, ".output") }
+
 func (c embedTestConfig) OutputBaseName() string   { return "output" }
+
 func (c embedTestConfig) SourceDirectory() string  { return c.src }
+
 func (c embedTestConfig) SCSSCommandValue() string { return c.scssCommand }
+
 func (c embedTestConfig) SCSSDisabledValue() bool  { return c.scssDisabled }
 
 func TestEmbedTextResolvesAndPopulatesInfo(t *testing.T) {
@@ -27,6 +31,7 @@ func TestEmbedTextResolvesAndPopulatesInfo(t *testing.T) {
 	if err := os.WriteFile(cssPath, []byte(".btn { color: red; }"), 0o644); err != nil {
 		t.Fatalf("write css: %v", err)
 	}
+
 	srcPath := filepath.Join(dir, "main.sova")
 	src := `package app on backend
 
@@ -42,6 +47,7 @@ const ButtonCSS: string = ""
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
@@ -51,6 +57,7 @@ const ButtonCSS: string = ""
 	if pkg == nil {
 		t.Fatalf("package app missing")
 	}
+
 	var vd *ir.VarDeclStmt
 	for _, f := range pkg.Files {
 		for _, st := range f.Hir.Statements {
@@ -59,18 +66,23 @@ const ButtonCSS: string = ""
 			}
 		}
 	}
+
 	if vd == nil {
 		t.Fatalf("ButtonCSS decl missing")
 	}
+
 	if vd.Embed == nil {
 		t.Fatalf("Embed info not populated; pass_resolve_embeds did not fire")
 	}
+
 	if vd.Embed.Kind != ir.EmbedKindText {
 		t.Fatalf("expected text kind, got %v", vd.Embed.Kind)
 	}
+
 	if vd.Embed.SizeBytes != int64(len(".btn { color: red; }")) {
 		t.Fatalf("size mismatch: want %d, got %d", len(".btn { color: red; }"), vd.Embed.SizeBytes)
 	}
+
 	if len(vd.Embed.ContentHash) != 16 {
 		t.Fatalf("hash should be 16 hex chars, got %q", vd.Embed.ContentHash)
 	}
@@ -79,6 +91,7 @@ const ButtonCSS: string = ""
 	if len(records) != 1 {
 		t.Fatalf("registry should contain 1 record, got %d", len(records))
 	}
+
 	if records[0].Info != vd.Embed {
 		t.Fatalf("registry record info should reference the same EmbedInfo as the VarDeclStmt")
 	}
@@ -90,6 +103,7 @@ func TestEmbedBytesResolvesWithCorrectKind(t *testing.T) {
 	if err := os.WriteFile(binPath, []byte{0x89, 0x50, 0x4E, 0x47}, 0o644); err != nil {
 		t.Fatalf("write bin: %v", err)
 	}
+
 	src := `package app on backend
 
 @embed("./logo.bin")
@@ -100,10 +114,12 @@ const Logo: []byte = []
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
 	}
+
 	pkg := c.Packages["app"]
 	var vd *ir.VarDeclStmt
 	for _, f := range pkg.Files {
@@ -113,9 +129,11 @@ const Logo: []byte = []
 			}
 		}
 	}
+
 	if vd == nil || vd.Embed == nil {
 		t.Fatalf("Logo decl or embed info missing")
 	}
+
 	if vd.Embed.Kind != ir.EmbedKindBytes {
 		t.Fatalf("expected bytes kind, got %v", vd.Embed.Kind)
 	}
@@ -134,6 +152,7 @@ const Missing: string = ""
 	if !c.Diag.Errored() {
 		t.Fatalf("expected file-not-found diagnostic, got none")
 	}
+
 	found := false
 	for _, d := range c.Diag.Diagnostics() {
 		if strings.Contains(d.Msg, "cannot find file") {
@@ -141,6 +160,7 @@ const Missing: string = ""
 			break
 		}
 	}
+
 	if !found {
 		t.Fatalf("no file-not-found diagnostic: %+v", c.Diag.Diagnostics())
 	}
@@ -152,6 +172,7 @@ func TestEmbedNonConstDiagnoses(t *testing.T) {
 	if err := os.WriteFile(cssPath, []byte(".btn{}"), 0o644); err != nil {
 		t.Fatalf("write css: %v", err)
 	}
+
 	src := `package app on backend
 
 @embed("./Button.css")
@@ -163,6 +184,7 @@ let ButtonCSS: string = ""
 	if !c.Diag.Errored() {
 		t.Fatalf("expected non-const diagnostic, got none")
 	}
+
 	found := false
 	for _, d := range c.Diag.Diagnostics() {
 		if strings.Contains(d.Msg, "requires a `const`") {
@@ -170,6 +192,7 @@ let ButtonCSS: string = ""
 			break
 		}
 	}
+
 	if !found {
 		t.Fatalf("no non-const diagnostic: %+v", c.Diag.Diagnostics())
 	}
@@ -181,6 +204,7 @@ func TestEmbedBadTypeDiagnoses(t *testing.T) {
 	if err := os.WriteFile(cssPath, []byte(".btn{}"), 0o644); err != nil {
 		t.Fatalf("write css: %v", err)
 	}
+
 	src := `package app on backend
 
 @embed("./Button.css")
@@ -192,6 +216,7 @@ const ButtonCSS: int = 0
 	if !c.Diag.Errored() {
 		t.Fatalf("expected bad-type diagnostic, got none")
 	}
+
 	found := false
 	for _, d := range c.Diag.Diagnostics() {
 		if strings.Contains(d.Msg, "requires a declared type") {
@@ -199,12 +224,12 @@ const ButtonCSS: int = 0
 			break
 		}
 	}
+
 	if !found {
 		t.Fatalf("no bad-type diagnostic: %+v", c.Diag.Diagnostics())
 	}
 }
 
-// newEmbedTestContext creates a CompilerContext rooted at dir so the embed resolver sees the on-disk test files. The BuildConfig is wired under the same cache key the passes look up so SourceDirectory() returns the temp dir; we use a local stub rather than `cli.BuildConfig` because the cli package depends on the compiler package and a test import would form a cycle.
 func newEmbedTestContext(t *testing.T, dir string) *CompilerContext {
 	t.Helper()
 	c := New()
@@ -219,6 +244,7 @@ func TestEmbedOnTypeFieldInlinesContent(t *testing.T) {
 	if err := os.WriteFile(cssPath, []byte(cssContent), 0o644); err != nil {
 		t.Fatalf("write css: %v", err)
 	}
+
 	src := `package app on frontend
 
 type Button {
@@ -231,10 +257,12 @@ type Button {
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
 	}
+
 	pkg := c.Packages["app"]
 	var td *ir.TypeDeclStmt
 	for _, f := range pkg.Files {
@@ -244,17 +272,21 @@ type Button {
 			}
 		}
 	}
+
 	if td == nil || len(td.Fields) != 1 {
 		t.Fatalf("Button type missing or field count off")
 	}
+
 	fld := td.Fields[0]
 	if fld.Embed == nil {
 		t.Fatalf("field Embed info not populated")
 	}
+
 	lit, ok := fld.Default.(*ir.LitString)
 	if !ok {
 		t.Fatalf("field Default should be a string literal after resolution, got %T", fld.Default)
 	}
+
 	if lit.Value != cssContent {
 		t.Fatalf("inlined content mismatch:\nwant %q\ngot  %q", cssContent, lit.Value)
 	}
@@ -266,6 +298,7 @@ func TestStyleFileSynthLowersToEmbedAndStyleMethod(t *testing.T) {
 	if err := os.MkdirAll(annoDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
+
 	if err := os.WriteFile(filepath.Join(annoDir, "annotations.sova"), []byte(`package strixAnnos on synth
 
 synth StyleFile(path: string) on frontend type T {
@@ -277,10 +310,12 @@ synth StyleFile(path: string) on frontend type T {
 `), 0o644); err != nil {
 		t.Fatalf("write synth: %v", err)
 	}
+
 	cssContent := ".btn { padding: 8px; }"
 	if err := os.WriteFile(filepath.Join(dir, "Button.css"), []byte(cssContent), 0o644); err != nil {
 		t.Fatalf("write css: %v", err)
 	}
+
 	src := `package app on frontend
 
 import "strixAnnos" using *
@@ -304,10 +339,12 @@ synth StyleFile(path: string) on frontend type T {
 	if err := c.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+
 	if c.Diag.Errored() {
 		c.Diag.Print()
 		t.Fatalf("compile produced errors")
 	}
+
 	pkg := c.Packages["app"]
 	var td *ir.TypeDeclStmt
 	for _, f := range pkg.Files {
@@ -317,31 +354,38 @@ synth StyleFile(path: string) on frontend type T {
 			}
 		}
 	}
+
 	if td == nil {
 		t.Fatalf("Button missing")
 	}
+
 	var styleField *ir.TypeField
 	for _, fld := range td.Fields {
 		if fld.Name.Name == "__strixStyleSource" {
 			styleField = fld
 		}
 	}
+
 	if styleField == nil {
 		t.Fatalf("__strixStyleSource field not injected by @StyleFile; fields=%v", fieldNames(td.Fields))
 	}
+
 	if styleField.Embed == nil {
-		t.Fatalf("injected field's Embed info missing — synth-param substitution into @embed(path) did not chain to resolve_embeds")
+		t.Fatalf("injected field's Embed info missing - synth-param substitution into @embed(path) did not chain to resolve_embeds")
 	}
+
 	lit, ok := styleField.Default.(*ir.LitString)
 	if !ok || lit.Value != cssContent {
 		t.Fatalf("inlined CSS content missing; default=%T value=%v", styleField.Default, styleField.Default)
 	}
+
 	var styleMethod *ir.TypeMethodDecl
 	for _, m := range td.Methods {
 		if m.Func != nil && m.Func.Name.Name == "style" {
 			styleMethod = m
 		}
 	}
+
 	if styleMethod == nil {
 		t.Fatalf("style() method not injected; methods=%v", methodNames(td.Methods))
 	}
@@ -352,6 +396,7 @@ func fieldNames(fields []*ir.TypeField) []string {
 	for _, f := range fields {
 		out = append(out, f.Name.Name)
 	}
+
 	return out
 }
 
@@ -361,6 +406,7 @@ func TestEmbedOnScssWithoutPreprocessorDiagnoses(t *testing.T) {
 	if err := os.WriteFile(scssPath, []byte(`.btn { color: red; }`), 0o644); err != nil {
 		t.Fatalf("write scss: %v", err)
 	}
+
 	src := `package app on backend
 
 @embed("./Button.scss")
@@ -373,6 +419,7 @@ const ButtonCSS: string = ""
 	if !c.Diag.Errored() {
 		t.Fatalf("expected SCSS-unavailable diagnostic, got none")
 	}
+
 	found := false
 	for _, d := range c.Diag.Diagnostics() {
 		if strings.Contains(d.Msg, "no Sass preprocessor is available") {
@@ -380,6 +427,7 @@ const ButtonCSS: string = ""
 			break
 		}
 	}
+
 	if !found {
 		t.Fatalf("no SCSS-unavailable diagnostic: %+v", c.Diag.Diagnostics())
 	}
@@ -392,5 +440,6 @@ func methodNames(methods []*ir.TypeMethodDecl) []string {
 			out = append(out, m.Func.Name.Name)
 		}
 	}
+
 	return out
 }

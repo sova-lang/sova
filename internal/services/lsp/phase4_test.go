@@ -13,7 +13,6 @@ import (
 	"go.lsp.dev/uri"
 )
 
-// TestPhase4 exercises Rename, PrepareRename, Implementation, SignatureHelp, and Completion against a single document that has each feature's input ready: a renameable function, an interface with implementers, a function call with two args, and a known type-on-the-left dot access.
 func TestPhase4(t *testing.T) {
 	restore := withTerminate(func(int) {})
 	defer restore()
@@ -61,6 +60,7 @@ func main() {
 	if _, err := cc.Call(ctx, protocol.MethodInitialize, &protocol.InitializeParams{RootURI: rootURI}, &initResult); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
+
 	assertCapTrue(t, "renameProvider", initResult.Capabilities.RenameProvider)
 	assertCapTrue(t, "implementationProvider", initResult.Capabilities.ImplementationProvider)
 	assertCapTrue(t, "signatureHelpProvider", initResult.Capabilities.SignatureHelpProvider)
@@ -73,20 +73,20 @@ func main() {
 		t.Fatalf("didOpen: %v", err)
 	}
 
-	// PrepareRename on `add` at the call site (line 19).
 	prep := &protocol.PrepareRenameParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 		TextDocument: protocol.TextDocumentIdentifier{URI: docURI},
 		Position:     protocol.Position{Line: 19, Character: 14},
 	}}
+
 	var rng protocol.Range
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentPrepareRename, prep, &rng); err != nil {
 		t.Fatalf("prepareRename: %v", err)
 	}
+
 	if rng.Start.Line == 0 && rng.End.Character == 0 {
 		t.Fatalf("prepareRename returned zero range")
 	}
 
-	// Rename `add` → `sum`.
 	renParams := &protocol.RenameParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 			TextDocument: protocol.TextDocumentIdentifier{URI: docURI},
@@ -94,62 +94,70 @@ func main() {
 		},
 		NewName: "sum",
 	}
+
 	var we protocol.WorkspaceEdit
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentRename, renParams, &we); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
+
 	docEdits := we.Changes[docURI]
 	if len(docEdits) < 2 {
 		t.Fatalf("expected ≥2 rename edits (decl + call), got %d", len(docEdits))
 	}
+
 	for _, e := range docEdits {
 		if e.NewText != "sum" {
 			t.Fatalf("unexpected NewText %q", e.NewText)
 		}
 	}
 
-	// Implementation: cursor on `Speaker` in the `interface Speaker` decl line (line 2).
 	impParams := &protocol.ImplementationParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 		TextDocument: protocol.TextDocumentIdentifier{URI: docURI},
 		Position:     protocol.Position{Line: 2, Character: 13},
 	}}
+
 	var imps []protocol.Location
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentImplementation, impParams, &imps); err != nil {
 		t.Fatalf("implementation: %v", err)
 	}
+
 	if len(imps) == 0 {
 		t.Fatalf("expected Dog as an implementer of Speaker, got 0 locations")
 	}
 
-	// SignatureHelp: cursor inside `add(1, |2)` - after the first arg and the comma.
 	shParams := &protocol.SignatureHelpParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 		TextDocument: protocol.TextDocumentIdentifier{URI: docURI},
 		Position:     protocol.Position{Line: 19, Character: 19},
 	}}
+
 	var sh protocol.SignatureHelp
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentSignatureHelp, shParams, &sh); err != nil {
 		t.Fatalf("signatureHelp: %v", err)
 	}
+
 	if len(sh.Signatures) == 0 {
 		t.Fatalf("expected at least one signature, got 0")
 	}
+
 	if !strings.Contains(sh.Signatures[0].Label, "add(a: int, b: int)") {
 		t.Fatalf("signature label should contain `add(a: int, b: int)`, got %q", sh.Signatures[0].Label)
 	}
 
-	// Completion: top-level identifier completion at the start of line 17 - should include the keyword `let` and the function `add`.
 	compParams := &protocol.CompletionParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 		TextDocument: protocol.TextDocumentIdentifier{URI: docURI},
 		Position:     protocol.Position{Line: 17, Character: 0},
 	}}
+
 	var compList protocol.CompletionList
 	if _, err := cc.Call(ctx, protocol.MethodTextDocumentCompletion, compParams, &compList); err != nil {
 		t.Fatalf("completion: %v", err)
 	}
+
 	labels := completionLabels(compList.Items)
 	if !containsString(labels, "let") {
 		t.Fatalf("identifier completion should include keyword `let`, got: %v", labels)
 	}
+
 	if !containsString(labels, "add") {
 		t.Fatalf("identifier completion should include function `add`, got: %v", labels)
 	}
@@ -157,6 +165,7 @@ func main() {
 	if _, err := cc.Call(ctx, protocol.MethodShutdown, nil, nil); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
+
 	_ = cc.Notify(ctx, protocol.MethodExit, nil)
 	cancel()
 }
@@ -166,5 +175,6 @@ func completionLabels(items []protocol.CompletionItem) []string {
 	for i, it := range items {
 		out[i] = it.Label
 	}
+
 	return out
 }

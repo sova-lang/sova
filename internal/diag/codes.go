@@ -2,8 +2,8 @@ package diag
 
 var (
 	ErrPreparsingFailed = templateErr(CategoryInternal, "Preparsing did not return a valid HIR file")
-	ErrVisitorPanic     = templateErr(CategoryInternal, "internal error while building HIR for %s: %s (this usually means the source has a syntax error that confuses the visitor — fix the syntax errors reported above first)")
-	ErrPassPanic        = templateErr(CategoryInternal, "internal error during compiler pass '%s': %s (this usually means a syntax or binding error earlier in the file produced an inconsistent HIR — fix the diagnostics above first)")
+	ErrVisitorPanic     = templateErr(CategoryInternal, "internal error while building HIR for %s: %s (this usually means the source has a syntax error that confuses the visitor - fix the syntax errors reported above first)")
+	ErrPassPanic        = templateErr(CategoryInternal, "internal error during compiler pass '%s': %s (this usually means a syntax or binding error earlier in the file produced an inconsistent HIR - fix the diagnostics above first)")
 
 	ErrUnexpectedEOF   = templateErr(CategorySyntax, "Unexpected end of file")
 	ErrUnexpectedToken = templateErr(CategorySyntax, "Unexpected token: %s")
@@ -34,8 +34,8 @@ var (
 	ErrWireInvalidTransport           = templateErr(CategorySemantic, "wire(transport: %q) on '%s' is not supported; expected one of: \"http\", \"ws\", \"sse\", \"raw\"")
 	ErrWireTransportSideMismatch      = templateErr(CategorySemantic, "wire(transport: %q) on '%s' is invalid for a %s wire (backend wires can only use http, ws, or raw; frontend wires can only use ws or sse)")
 	ErrWireRawBadSignature            = templateErr(CategorySemantic, "wire(transport: \"raw\") '%s' must take exactly two `any` parameters (`req`, `res`); got %d parameters")
-	ErrWireRawBadParamType            = templateErr(CategorySemantic, "wire(transport: \"raw\") '%s' parameters must be typed `http.Request` and `http.Response` (in that order) — import \"std/http\" and use the typed handles so the compiler can catch swapped arguments at compile time")
-	ErrWireRawBadReturn               = templateErr(CategorySemantic, "wire(transport: \"raw\") '%s' must not return a value — write to the response via `std/http` helpers on the `res` handle instead")
+	ErrWireRawBadParamType            = templateErr(CategorySemantic, "wire(transport: \"raw\") '%s' parameters must be typed `http.Request` and `http.Response` (in that order) - import \"std/http\" and use the typed handles so the compiler can catch swapped arguments at compile time")
+	ErrWireRawBadReturn               = templateErr(CategorySemantic, "wire(transport: \"raw\") '%s' must not return a value - write to the response via `std/http` helpers on the `res` handle instead")
 	ErrWireConflictingParamBinding    = templateErr(CategorySemantic, "wired param '%s' has conflicting bindings (already bound as %s, also annotated as %s); pick one of @query/@path/@header/@cookie/@body")
 	ErrWirePathParamMissing           = templateErr(CategorySemantic, "wired param '%s' is annotated `@path` but `%s` has no `:%[1]s` placeholder; add it to the path or pick a different binding")
 	ErrAnnotationNotConst             = templateErr(CategorySemantic, "annotation '@%s' argument must be a compile-time constant (literal or const-named string/int/bool, or a `+` of those)")
@@ -69,7 +69,7 @@ var (
 	ErrEmbedBadType                   = templateErr(CategorySemantic, "`@embed` on '%s' requires a declared type of `string` (for text) or `[]byte` / `bytes` (for binary); got %s")
 	ErrEmbedBadPath                   = templateErr(CategorySemantic, "`@embed` path must be a relative path string literal (got %s); paths are resolved against the declaring file's directory")
 	ErrEmbedFileNotFound              = templateErr(CategorySemantic, "`@embed` on '%s' cannot find file %s (resolved to %s)")
-	ErrEmbedFileTooLarge              = templateErr(CategorySemantic, "`@embed` on '%s' refuses to embed %s (%d bytes); the size cap is %d bytes — raise it in sova.toml under `[build.embed] max-bytes` if you really need this")
+	ErrEmbedFileTooLarge              = templateErr(CategorySemantic, "`@embed` on '%s' refuses to embed %s (%d bytes); the size cap is %d bytes - raise it in sova.toml under `[build.embed] max-bytes` if you really need this")
 	ErrEmbedPathEscapesProject        = templateErr(CategorySemantic, "`@embed` path %s escapes the project root after resolution; embeds must reference files inside the project tree (including dependency packages)")
 	ErrEmbedSassUnavailable           = templateErr(CategorySemantic, "`@embed` on '%s' (%s) targets a .scss/.sass file but no Sass preprocessor is available; install `sass` (https://sass-lang.com/install) and ensure it's on PATH, or pin its location via `[build.scss] command = \"<path>\"` in sova.toml")
 	ErrEmbedSassFailed                = templateErr(CategorySemantic, "`@embed` on '%s' (%s) failed Sass preprocessing: %s")
