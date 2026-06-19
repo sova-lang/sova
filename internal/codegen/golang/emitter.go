@@ -406,403 +406,11 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 
 		e.emitBlock(ctx, pkg, f, block, s.Stmts)
 	case *ir.VarDeclStmt:
-		if ir.GetMetadata(ctx.Cache).EmbedFor(s) != nil && topLevel {
-			e.emitEmbeddedVar(ctx, pkg, block, s)
-			return
-		}
-
-		if s.IsWired && topLevel {
-			e.wiredVars = append(e.wiredVars, s)
-			e.emitWiredVarGetter(ctx, pkg, f, block, s)
-			e.emitWiredVarHandler(ctx, pkg, f, block, s)
-			return
-		}
-
-		if len(s.Targets) == 1 {
-			target := &s.Targets[0]
-			if topLevel {
-				if _, isFuncLit := s.Init.(*ir.FuncLitExpr); isFuncLit && target.Name != nil {
-					name := symNameWithUnused(ctx, pkg, target.Name.Sym)
-					ty := typeToGoWithContext(ctx, pkg, ctx.Types, typeOfSym(pkg, target.Name.Sym))
-
-					e.withStmt(block, func() jen.Code {
-						jv := jen.Var().Id(name).Add(ty)
-						orig := symOrigName(ctx, target.Name.Sym)
-						if orig != "" {
-							jv.Commentf("Original name: %s", orig)
-						}
-
-						return jv
-					})
-
-					rhs := e.buildExpr(ctx, pkg, f, s.Init)
-					e.deferredInits = append(e.deferredInits, jen.Id(name).Op("=").Add(rhs))
-					return
-				}
-			}
-
-			e.withStmt(block, func() jen.Code {
-				if target.Name == nil {
-					return jen.Id("_").Op("=").Add(e.buildExpr(ctx, pkg, f, s.Init))
-				}
-
-				name := symNameWithUnused(ctx, pkg, target.Name.Sym)
-
-				var rhs jen.Code = nil
-				asConst := false
-				if s.Init != nil {
-					rhs = e.buildExpr(ctx, pkg, f, s.Init)
-
-					if isExprConstant(s.Init) {
-						asConst = true
-					}
-
-					targetType := typeOfSym(pkg, target.Name.Sym)
-					initType := s.Init.GetType()
-					if targetType != 0 && initType != 0 {
-						targetTy, _ := ctx.Types.GetByID(targetType)
-						initTy, _ := ctx.Types.GetByID(initType)
-
-						if targetTy != nil && targetTy.Kind == ir.TK_Option &&
-							initTy != nil && initTy.Kind != ir.TK_Option && initTy.Kind != ir.TK_PrimitiveNone {
-
-							tempVar := e.hk.NewTemp()
-							rhs = jen.Func().Params().Op("*").Add(typeToGoWithContext(ctx, pkg, ctx.Types, targetTy.ElemType)).Block(
-								jen.Id(tempVar).Op(":=").Add(rhs),
-								jen.Return(jen.Op("&").Id(tempVar)),
-							).Call()
-							asConst = false
-						}
-
-						if rhs != nil {
-							if conv := goNumericConversionWrapper(targetType, initType, ctx.Types, rhs); conv != nil {
-								rhs = conv
-								asConst = false
-							}
-						}
-
-						if rhs != nil && targetTy != nil && targetTy.Kind == ir.TK_PrimitiveAny {
-							if conv := goAnyBoxWrapper(initType, ctx.Types, rhs); conv != nil {
-								rhs = conv
-								asConst = false
-							}
-						}
-					}
-				}
-
-				ty := typeToGoWithContext(ctx, pkg, ctx.Types, typeOfSym(pkg, target.Name.Sym))
-
-				jv := jen.Var()
-				if asConst && s.IsConst {
-					jv = jen.Const()
-				}
-
-				jv = jv.Id(name).Add(ty).Op("=").Add(rhs)
-
-				orig := symOrigName(ctx, target.Name.Sym)
-				if orig != "" {
-					jv.Commentf("Original name: %s", orig)
-				}
-
-				return jv
-			})
-		} else {
-			hasNonDiscard := false
-			for _, target := range s.Targets {
-				if target.Name != nil {
-					name := symNameWithUnused(ctx, pkg, target.Name.Sym)
-					if name != "_" {
-						hasNonDiscard = true
-						break
-					}
-				}
-			}
-
-			if hasNonDiscard {
-				tupleVarName := "__tuple_tmp_" + e.hk.NewTemp()
-
-				e.withStmt(block, func() jen.Code {
-					rhs := e.buildExpr(ctx, pkg, f, s.Init)
-					return jen.Id(tupleVarName).Op(":=").Add(rhs)
-				})
-
-				e.withStmt(block, func() jen.Code {
-					var names []jen.Code
-					var values []jen.Code
-
-					for i, target := range s.Targets {
-						if target.Name == nil {
-							names = append(names, jen.Id("_"))
-						} else {
-							names = append(names, jen.Id(symNameWithUnused(ctx, pkg, target.Name.Sym)))
-						}
-
-						elemAccess := jen.Id(tupleVarName).Index(jen.Lit(i))
-
-						if target.Name != nil {
-							elemType := typeOfSym(pkg, target.Name.Sym)
-							if elemType != 0 {
-								elemAccess = elemAccess.Assert(typeToGoWithContext(ctx, pkg, ctx.Types, elemType))
-							}
-						}
-
-						values = append(values, elemAccess)
-					}
-
-					return jen.List(names...).Op(":=").List(values...)
-				})
-			}
-		}
-
+		e.emitVarDeclStmt(ctx, pkg, f, block, s, topLevel)
 	case *ir.FuncDeclStmt:
-		if hasBuiltinAnnotation(s.Annotations) {
-			return
-		}
-
-		if !s.IsWired {
-			side := ir.SideShared
-			if s.Side != nil {
-				side = s.Side.Kind
-			} else if f != nil {
-				side = f.Side.Kind
-			}
-
-			if side == ir.SideFrontend {
-				return
-			}
-		}
-
-		if s.IsWired {
-			e.wiredFuncs = append(e.wiredFuncs, s)
-		}
-
-		e.withStmt(block, func() jen.Code {
-			funcName := symName(ctx, s.Name.Sym)
-			orig := symOrigName(ctx, s.Name.Sym)
-
-			if orig == "main" && len(s.Params) == 0 && e.mangledMainName == "" {
-				e.mangledMainName = funcName
-			}
-
-			params := make([]jen.Code, 0, len(s.Params)+1)
-			if s.IsWired && (!isRawWire(s) || rawWireUsesSession(s)) {
-				params = append(params, jen.Id("__session").Op("*").Id("fn____Session"))
-			}
-
-			for _, param := range s.Params {
-				paramName := symNameWithUnused(ctx, pkg, param.Name.Sym)
-				paramType := typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ)
-				params = append(params, jen.Id(paramName).Add(paramType))
-			}
-
-			funcDecl := jen.Func().Id(funcName).Params(params...)
-
-			if s.ReturnType.Typ != ctx.Types.TypNone() {
-				returnType := typeToGoWithContext(ctx, pkg, ctx.Types, s.ReturnType.Typ)
-				funcDecl = funcDecl.Add(returnType)
-			}
-
-			prevFunc := e.currentFunc
-			e.currentFunc = s
-
-			fDecl := funcDecl.BlockFunc(func(g *jen.Group) {
-				e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
-			})
-
-			e.currentFunc = prevFunc
-			f := fDecl
-
-			if orig != "" {
-				f.Commentf("Original name: %s", orig)
-			}
-
-			return f
-		})
-		if s.IsWired {
-			e.emitWiredHandler(ctx, pkg, f, block, s)
-			if s.Wire != nil && s.Wire.Transport == "ws" && needsSessionManagerFromCache(ctx) {
-				e.emitWiredWSAdapter(ctx, pkg, f, block, s)
-			}
-		}
-
+		e.emitFuncDeclStmt(ctx, pkg, f, block, s)
 	case *ir.ExternDeclStmt:
-		targetSide := ir.SideBackend
-		if f.Side.Kind == ir.SideFrontend {
-			return
-		} else if f.Side.Kind == ir.SideShared {
-			targetSide = ir.SideBackend
-		}
-
-		for _, fn := range s.Funcs {
-			var sideMapping *ir.SideMapping
-			var externModule *string
-
-			if fn.Mapping.Simple != nil {
-				sideMapping = &ir.SideMapping{
-					NativeFunc: *fn.Mapping.Simple,
-					Module:     nil,
-				}
-
-				externModule = s.Module
-			} else if fn.Mapping.Shared != nil {
-				mapping, exists := fn.Mapping.Shared[targetSide]
-				if !exists {
-					continue
-				}
-
-				sideMapping = mapping
-				externModule = s.Module
-			} else {
-				continue
-			}
-
-			if sideMapping.Module != nil && *sideMapping.Module != "" {
-				e.registerExternImport(*sideMapping.Module, sideMapping.NativeFunc)
-			} else if externModule != nil && *externModule != "" {
-				e.registerExternImport(*externModule, sideMapping.NativeFunc)
-			}
-
-			e.withStmt(block, func() jen.Code {
-				funcName := symName(ctx, fn.Name.Sym)
-				orig := symOrigName(ctx, fn.Name.Sym)
-
-				params := make([]jen.Code, len(fn.Params))
-				paramNames := make([]jen.Code, len(fn.Params))
-				for i, param := range fn.Params {
-					paramName := param.Name.Name
-					paramType := typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ)
-					params[i] = jen.Id(paramName).Add(paramType)
-					paramNames[i] = jen.Id(paramName)
-				}
-
-				funcDecl := jen.Func().Id(funcName).Params(params...)
-
-				var returnType jen.Code
-				hasReturn := fn.ReturnType != nil && fn.ReturnType.Typ != ctx.Types.TypNone()
-				if hasReturn {
-					returnType = typeToGoWithContext(ctx, pkg, ctx.Types, fn.ReturnType.Typ)
-					funcDecl = funcDecl.Add(returnType)
-				}
-
-				nativeCall := sideMapping.NativeFunc
-				modulePath := ""
-				if sideMapping.Module != nil {
-					nativeCall = e.replaceModPlaceholder(nativeCall, *sideMapping.Module)
-					modulePath = *sideMapping.Module
-				} else if externModule != nil {
-					nativeCall = e.replaceModPlaceholder(nativeCall, *externModule)
-					modulePath = *externModule
-				}
-
-				origNameForMock := orig
-				if origNameForMock == "" {
-					origNameForMock = fn.Name.Name
-				}
-
-				mockableName := origNameForMock
-				if pkg != nil && pkg.Path.String() == "std/testing" {
-					mockableName = ""
-				}
-
-				testMode := isTestMode(ctx)
-
-				result := funcDecl.BlockFunc(func(g *jen.Group) {
-					if testMode && mockableName != "" {
-						mockArgs := []jen.Code{jen.Lit(mockableName)}
-
-						mockArgs = append(mockArgs, paramNames...)
-						if hasReturn {
-							g.If(jen.List(jen.Id("__mockV"), jen.Id("__mockHas"), jen.Id("__mockReg")).Op(":=").Id("__sovaMockHook").Call(mockArgs...), jen.Id("__mockReg")).Block(
-								jen.If(jen.Id("__mockHas")).Block(
-									jen.Return(jen.Id("__mockV").Assert(returnType)),
-								),
-								jen.Var().Id("__mockZero").Add(returnType),
-								jen.Return(jen.Id("__mockZero")),
-							)
-						} else {
-							g.If(jen.List(jen.Id("_"), jen.Id("_"), jen.Id("__mockReg")).Op(":=").Id("__sovaMockHook").Call(mockArgs...), jen.Id("__mockReg")).Block(
-								jen.Return(),
-							)
-						}
-					}
-
-					callExpr := e.buildNativeCallWithModule(nativeCall, modulePath, paramNames)
-					if hasReturn {
-						g.Return(callExpr)
-					} else {
-						g.Add(callExpr)
-					}
-				})
-
-				if orig != "" {
-					result.Commentf("Original name: %s", orig)
-				}
-
-				return result
-			})
-		}
-
-		for _, v := range s.Vars {
-			var sideMapping *ir.SideMapping
-			var externModule *string
-
-			if v.Mapping.Simple != nil {
-				sideMapping = &ir.SideMapping{
-					NativeFunc: *v.Mapping.Simple,
-					Module:     nil,
-				}
-
-				externModule = s.Module
-			} else if v.Mapping.Shared != nil {
-				mapping, exists := v.Mapping.Shared[targetSide]
-				if !exists {
-					continue
-				}
-
-				sideMapping = mapping
-				externModule = s.Module
-			} else {
-				continue
-			}
-
-			if sideMapping.Module != nil && *sideMapping.Module != "" {
-				e.registerExternImport(*sideMapping.Module, sideMapping.NativeFunc)
-			} else if externModule != nil && *externModule != "" {
-				e.registerExternImport(*externModule, sideMapping.NativeFunc)
-			}
-
-			e.withStmt(block, func() jen.Code {
-				varName := symName(ctx, v.Name.Sym)
-				orig := symOrigName(ctx, v.Name.Sym)
-				varType := typeToGoWithContext(ctx, pkg, ctx.Types, v.Type.Typ)
-
-				nativeRef := sideMapping.NativeFunc
-				modulePath := ""
-				if sideMapping.Module != nil {
-					nativeRef = e.replaceModPlaceholder(nativeRef, *sideMapping.Module)
-					modulePath = *sideMapping.Module
-				} else if externModule != nil {
-					nativeRef = e.replaceModPlaceholder(nativeRef, *externModule)
-					modulePath = *externModule
-				}
-
-				nativeExpr := e.buildNativeRefWithModule(nativeRef, modulePath)
-
-				var result *jen.Statement
-				if v.IsConst {
-					result = jen.Var().Id(varName).Add(varType).Op("=").Add(nativeExpr)
-				} else {
-					result = jen.Var().Id(varName).Add(varType).Op("=").Add(nativeExpr)
-				}
-
-				if orig != "" {
-					result.Commentf("Original name: %s", orig)
-				}
-
-				return result
-			})
-		}
-
+		e.emitExternDeclStmt(ctx, pkg, f, block, s)
 	case *ir.MixinDeclStmt:
 		_ = s
 	case *ir.ImportStmt:
@@ -835,378 +443,9 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			return jen.Type().Id(ifaceName).Interface(methods...)
 		})
 	case *ir.TypeDeclStmt:
-		if s.IsExtern {
-			return
-		}
-
-		if hasBuiltinAnnotation(s.Annotations) {
-			return
-		}
-
-		typeName := symName(ctx, s.Name.Sym)
-		structFields := []jen.Code{}
-
-		for _, ref := range s.MixedIn {
-			if ref.Sym == 0 {
-				continue
-			}
-
-			symPkg := pkg
-			if ref.Qualifier != "" {
-				if found := lookupImportedPackage(ctx, pkg, ref.Qualifier); found != nil {
-					symPkg = found
-				}
-			}
-
-			embedSym, ok := symPkg.Syms.GetByID(ref.Sym)
-			if !ok || embedSym.Typ == 0 {
-				continue
-			}
-
-			embedTy, ok := ctx.Types.GetByID(embedSym.Typ)
-			if !ok || embedTy.Kind != ir.TK_Struct {
-				continue
-			}
-
-			if embedTy.IsExtern {
-				structFields = append(structFields, jen.Qual(embedTy.ExternModule, embedTy.StructName))
-			} else {
-				structFields = append(structFields, jen.Id(symName(ctx, ref.Sym)))
-			}
-		}
-
-		for _, field := range s.Fields {
-			fieldType := typeToGoWithContext(ctx, pkg, ctx.Types, field.Type.Typ)
-			fieldDecl := jen.Id(goExportedName(field.Name.Name)).Add(fieldType)
-			tag := buildStructTag(field.Annotations)
-			if tag == nil {
-				tag = map[string]string{}
-			}
-
-			if _, ok := tag["json"]; !ok && !strings.HasPrefix(field.Name.Name, "__") {
-				tag["json"] = field.Name.Name
-			}
-
-			if len(tag) > 0 {
-				fieldDecl = fieldDecl.Tag(tag)
-			}
-
-			structFields = append(structFields, fieldDecl)
-			if fieldHasReactiveAnnotation(field.Annotations) {
-				obsType := jen.Index().Func().Params(
-					typeToGoWithContext(ctx, pkg, ctx.Types, field.Type.Typ),
-					typeToGoWithContext(ctx, pkg, ctx.Types, field.Type.Typ),
-				)
-				obsField := jen.Id("__obs" + goExportedName(field.Name.Name)).Add(obsType)
-				structFields = append(structFields, obsField)
-			}
-		}
-
-		e.withStmt(block, func() jen.Code {
-			return jen.Type().Id(typeName).Struct(structFields...)
-		})
-		for _, field := range s.Fields {
-			if !fieldHasReactiveAnnotation(field.Annotations) {
-				continue
-			}
-
-			fldRef := field
-			e.withStmt(block, func() jen.Code {
-				fieldType := typeToGoWithContext(ctx, pkg, ctx.Types, fldRef.Type.Typ)
-				fieldName := goExportedName(fldRef.Name.Name)
-				setName := "set" + fieldName
-				return jen.Func().Params(jen.Id("this").Op("*").Id(typeName)).Id(setName).Params(jen.Id("v").Add(fieldType)).BlockFunc(func(g *jen.Group) {
-					g.Id("__old").Op(":=").Id("this").Dot(fieldName)
-					g.Id("this").Dot(fieldName).Op("=").Id("v")
-					g.For(jen.List(jen.Id("_"), jen.Id("__o")).Op(":=").Range().Id("this").Dot("__obs" + fieldName)).Block(
-						jen.Id("__o").Call(jen.Id("__old"), jen.Id("v")),
-					)
-				})
-			})
-			e.withStmt(block, func() jen.Code {
-				fieldName := goExportedName(fldRef.Name.Name)
-				obsName := "observe" + fieldName
-				fnType := jen.Func().Params(
-					typeToGoWithContext(ctx, pkg, ctx.Types, fldRef.Type.Typ),
-					typeToGoWithContext(ctx, pkg, ctx.Types, fldRef.Type.Typ),
-				)
-				obsField := "__obs" + fieldName
-				return jen.Func().Params(jen.Id("this").Op("*").Id(typeName)).Id(obsName).Params(jen.Id("__fn").Add(fnType)).Func().Params().Any().BlockFunc(func(g *jen.Group) {
-					g.Id("__idx").Op(":=").Qual("", "len").Call(jen.Id("this").Dot(obsField))
-					g.Id("this").Dot(obsField).Op("=").Append(jen.Id("this").Dot(obsField), jen.Id("__fn"))
-					g.Return(jen.Func().Params().Any().BlockFunc(func(rg *jen.Group) {
-						rg.If(jen.Id("__idx").Op(">=").Qual("", "len").Call(jen.Id("this").Dot(obsField))).Block(
-							jen.Return(jen.Nil()),
-						)
-						rg.Id("this").Dot(obsField).Op("=").Append(
-							jen.Id("this").Dot(obsField).Index(jen.Empty(), jen.Id("__idx")),
-							jen.Id("this").Dot(obsField).Index(jen.Id("__idx").Op("+").Lit(1), jen.Empty()).Op("..."),
-						)
-						rg.Return(jen.Nil())
-					}))
-				})
-			})
-		}
-
-		for _, method := range s.Methods {
-			methodRef := method
-			declRef := s
-			e.withStmt(block, func() jen.Code {
-				fn := methodRef.Func
-				methodName := symName(ctx, fn.Name.Sym)
-				params := make([]jen.Code, len(fn.Params))
-				for i, param := range fn.Params {
-					paramName := symNameWithUnused(ctx, pkg, param.Name.Sym)
-					params[i] = jen.Id(paramName).Add(typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ))
-				}
-
-				receiver := jen.Id("this").Op("*").Id(typeName)
-				funcDecl := jen.Func().Params(receiver).Id(methodName).Params(params...)
-				hasReturn := fn.ReturnType != nil && fn.ReturnType.Typ != 0 && fn.ReturnType.Typ != ctx.Types.TypNone()
-				if hasReturn {
-					funcDecl = funcDecl.Add(typeToGoWithContext(ctx, pkg, ctx.Types, fn.ReturnType.Typ))
-				}
-
-				return funcDecl.BlockFunc(func(g *jen.Group) {
-					prevFunc := e.currentFunc
-					prevType := e.currentTypeDecl
-					e.currentFunc = fn
-					e.currentTypeDecl = declRef
-					defer func() {
-						e.currentFunc = prevFunc
-						e.currentTypeDecl = prevType
-					}()
-					for _, st := range fn.Body.Stmts {
-						e.emitStmt(ctx, pkg, f, g, st, false)
-					}
-				})
-			})
-		}
-
-		hasUserToString := false
-		hasUserHashCode := false
-		for _, m := range s.Methods {
-			if m.Func.Name.Name == "toString" {
-				hasUserToString = true
-			}
-
-			if m.Func.Name.Name == "hashCode" {
-				hasUserHashCode = true
-			}
-		}
-
-		if !hasUserToString {
-			decl := s
-			e.withStmt(block, func() jen.Code {
-				return jen.Func().Params(jen.Id("this").Op("*").Id(typeName)).Id("toString").Params().String().BlockFunc(func(g *jen.Group) {
-					var format strings.Builder
-					format.WriteString(decl.Name.Name)
-					format.WriteString("{")
-					var args []jen.Code
-					for i, field := range decl.Fields {
-						if i > 0 {
-							format.WriteString(", ")
-						}
-
-						format.WriteString(field.Name.Name)
-						format.WriteString(": %v")
-						args = append(args, jen.Id("this").Dot(goExportedName(field.Name.Name)))
-					}
-
-					format.WriteString("}")
-					call := []jen.Code{jen.Lit(format.String())}
-
-					call = append(call, args...)
-					g.Return(jen.Qual("fmt", "Sprintf").Call(call...))
-				})
-			})
-		}
-
-		if !hasUserHashCode {
-			decl := s
-			e.withStmt(block, func() jen.Code {
-				return jen.Func().Params(jen.Id("this").Op("*").Id(typeName)).Id("hashCode").Params().Int64().BlockFunc(func(g *jen.Group) {
-					g.Var().Id("h").Int64().Op("=").Lit(int64(5381))
-					var format strings.Builder
-					format.WriteString(decl.Name.Name)
-					var args []jen.Code
-					for _, field := range decl.Fields {
-						format.WriteString("|%v")
-						args = append(args, jen.Id("this").Dot(goExportedName(field.Name.Name)))
-					}
-
-					call := []jen.Code{jen.Lit(format.String())}
-
-					call = append(call, args...)
-					g.Id("repr").Op(":=").Qual("fmt", "Sprintf").Call(call...)
-					g.For(jen.List(jen.Id("_"), jen.Id("c")).Op(":=").Range().Id("repr")).Block(
-						jen.Id("h").Op("=").Parens(jen.Parens(jen.Id("h").Op("<<").Lit(5)).Op("+").Id("h")).Op("+").Int64().Call(jen.Id("c")),
-					)
-					g.Return(jen.Id("h"))
-				})
-			})
-		}
-
-		for _, ctor := range s.Ctors {
-			ctorRef := ctor
-			decl := s
-			e.withStmt(block, func() jen.Code {
-				ctorName := symName(ctx, ctorRef.Sym)
-				params := make([]jen.Code, len(ctorRef.Params))
-				for i, param := range ctorRef.Params {
-					paramName := symNameWithUnused(ctx, pkg, param.Name.Sym)
-					params[i] = jen.Id(paramName).Add(typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ))
-				}
-
-				returnType := jen.Op("*").Id(typeName)
-				return jen.Func().Id(ctorName).Params(params...).Add(returnType).BlockFunc(func(g *jen.Group) {
-					var inits []jen.Code
-					for _, field := range decl.Fields {
-						if field.Default != nil {
-							inits = append(inits, jen.Id(goExportedName(field.Name.Name)).Op(":").Add(e.buildExpr(ctx, pkg, f, field.Default)))
-						}
-					}
-
-					g.Id("this").Op(":=").Op("&").Id(typeName).Values(inits...)
-					for _, st := range ctorRef.Body.Stmts {
-						e.emitStmt(ctx, pkg, f, g, st, false)
-					}
-
-					g.Return(jen.Id("this"))
-				})
-			})
-		}
-
-		for _, cast := range s.Casts {
-			castRef := cast
-			e.withStmt(block, func() jen.Code {
-				castName := symName(ctx, castRef.Sym)
-				paramName := symNameWithUnused(ctx, pkg, castRef.Param.Name.Sym)
-				paramType := typeToGoWithContext(ctx, pkg, ctx.Types, castRef.Param.Type.Typ)
-				returnTyp := castRef.Param.Type.Typ
-				if castRef.ReturnType != nil && castRef.ReturnType.Typ != 0 {
-					returnTyp = castRef.ReturnType.Typ
-				} else {
-					returnTyp = typeOfSym(pkg, s.Name.Sym)
-				}
-
-				returnType := typeToGoWithContext(ctx, pkg, ctx.Types, returnTyp)
-				return jen.Func().Id(castName).Params(jen.Id(paramName).Add(paramType)).Add(returnType).BlockFunc(func(g *jen.Group) {
-					for _, st := range castRef.Body.Stmts {
-						e.emitStmt(ctx, pkg, f, g, st, false)
-					}
-				})
-			})
-		}
-
+		e.emitTypeDeclStmt(ctx, pkg, f, block, s)
 	case *ir.EnumDeclStmt:
-		enumName := symName(ctx, s.Name.Sym)
-		enumTyp, _ := ctx.Types.GetByID(typeOfSym(pkg, s.Name.Sym))
-
-		if enumTyp != nil && enumTyp.IsNumeric {
-
-			e.withStmt(block, func() jen.Code {
-				return jen.Type().Id(enumName).Int64()
-			})
-
-			e.withStmt(block, func() jen.Code {
-				return jen.Const().DefsFunc(func(g *jen.Group) {
-					for _, c := range enumTyp.EnumCases {
-						g.Id(enumName + c.Name).Id(enumName).Op("=").Id(enumName).Call(jen.Lit(c.Value))
-					}
-				})
-			})
-		} else if enumTyp != nil {
-
-			e.withStmt(block, func() jen.Code {
-				fields := []jen.Code{
-					jen.Id("__ordinal").Int64(),
-					jen.Id("__name").String(),
-				}
-
-				for _, fld := range enumTyp.EnumFields {
-					fields = append(fields,
-						jen.Id(fld.Name).Add(typeToGoWithContext(ctx, pkg, ctx.Types, fld.Type)))
-				}
-
-				return jen.Type().Id(enumName).Struct(fields...)
-			})
-
-			for i, c := range s.Cases {
-				caseIndex := i
-				caseDef := c
-				e.withStmt(block, func() jen.Code {
-					args := []jen.Code{
-						jen.Lit(int64(caseIndex)),
-						jen.Lit(caseDef.Name.Name),
-					}
-
-					for _, arg := range caseDef.Args {
-						args = append(args, e.buildExpr(ctx, pkg, f, arg))
-					}
-
-					for j := len(caseDef.Args); j < len(s.Fields); j++ {
-						if s.Fields[j].Default != nil {
-							args = append(args, e.buildExpr(ctx, pkg, f, s.Fields[j].Default))
-						}
-					}
-
-					return jen.Var().Id(enumName + caseDef.Name.Name).Op("=").
-						Op("&").Id(enumName).Values(args...)
-				})
-			}
-
-			e.withStmt(block, func() jen.Code {
-				var vals []jen.Code
-				for _, c := range s.Cases {
-					vals = append(vals, jen.Id(enumName+c.Name.Name))
-				}
-
-				return jen.Var().Id(enumName + "Values").Op("=").
-					Index().Op("*").Id(enumName).Values(vals...)
-			})
-
-			e.withStmt(block, func() jen.Code {
-				return jen.Func().Params(jen.Id("e").Op("*").Id(enumName)).
-					Id("String").Params().String().Block(
-					jen.Return(jen.Id("e").Dot("__name")),
-				)
-			})
-
-			e.withStmt(block, func() jen.Code {
-				return jen.Func().Params(jen.Id("e").Op("*").Id(enumName)).
-					Id("HashCode").Params().Int64().Block(
-					jen.Return(jen.Id("e").Dot("__ordinal")),
-				)
-			})
-
-			for _, method := range s.Methods {
-				methodDef := method
-				e.withStmt(block, func() jen.Code {
-					methodName := symName(ctx, methodDef.Name.Sym)
-
-					params := make([]jen.Code, len(methodDef.Params))
-					for i, param := range methodDef.Params {
-						paramName := symNameWithUnused(ctx, pkg, param.Name.Sym)
-						paramType := typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ)
-						params[i] = jen.Id(paramName).Add(paramType)
-					}
-
-					funcDecl := jen.Func().Params(jen.Id("this").Op("*").Id(enumName)).
-						Id(methodName).Params(params...)
-
-					if methodDef.ReturnType.Typ != ctx.Types.TypNone() {
-						returnType := typeToGoWithContext(ctx, pkg, ctx.Types, methodDef.ReturnType.Typ)
-						funcDecl = funcDecl.Add(returnType)
-					}
-
-					return funcDecl.BlockFunc(func(g *jen.Group) {
-						e.emitBlock(ctx, pkg, f, g, methodDef.Body.Stmts)
-					})
-				})
-			}
-		}
-
+		e.emitEnumDeclStmt(ctx, pkg, f, block, s)
 	case *ir.ExprStmt:
 		if topLevel {
 			return
@@ -1564,167 +803,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 			return forLoop
 		})
 	case *ir.ForStmt:
-		if topLevel {
-			return
-		}
-
-		e.withStmt(block, func() jen.Code {
-			loopLevel := len(e.loopLabels) + 1
-			needsLabel := e.loopNeedsLabel(s.Body.Stmts, loopLevel)
-
-			label := e.pushLoop()
-			defer e.popLoop()
-
-			var forLoop *jen.Statement
-			var prepend *jen.Statement = nil
-			if s.CondType == ir.ForCondInfinite {
-				forLoop = jen.For().BlockFunc(func(g *jen.Group) {
-					e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
-				})
-			} else if s.CondType == ir.ForCondRange {
-				rangeCollectionVar := e.hk.NewTemp()
-				elemTy := s.CondRange.RangeStart.GetType()
-				if elemTy == 0 {
-					elemTy = ctx.Types.PrimInt()
-				}
-
-				sliceTy := ctx.Types.SliceOf(elemTy)
-				prepend = jen.Id(rangeCollectionVar).Op(":=").Add(e.buildRangeExpr(ctx, pkg, f, sliceTy, s.CondRange.RangeStart, s.CondRange.RangeEnd, nil))
-
-				rangeIterVar := symNameWithUnused(ctx, pkg, s.CondRange.RangeVar.Sym)
-				rangeIterOrig := symOrigName(ctx, s.CondRange.RangeVar.Sym)
-
-				if rangeIterVar == "_" {
-					forLoop = jen.For(jen.Range().Id(rangeCollectionVar)).BlockFunc(func(g *jen.Group) {
-						if rangeIterOrig != "" {
-							g.Commentf("Original name: %s", rangeIterOrig)
-						}
-
-						e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
-					})
-				} else {
-					forLoop = jen.For(jen.Id(rangeIterVar).Op(":=").Range().Id(rangeCollectionVar)).BlockFunc(func(g *jen.Group) {
-						if rangeIterOrig != "" {
-							g.Commentf("Original name: %s", rangeIterOrig)
-						}
-
-						e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
-					})
-				}
-			} else if s.CondType == ir.ForCondIn {
-				inFirstVar := symNameWithUnused(ctx, pkg, s.CondIn.InFirstVar.Sym)
-				inFirstOrig := symOrigName(ctx, s.CondIn.InFirstVar.Sym)
-				inSecondVar := ""
-				inSecondOrig := ""
-				inThirdVar := ""
-				inThirdOrig := ""
-				if s.CondIn.InSecondVar != nil {
-					inSecondVar = symNameWithUnused(ctx, pkg, s.CondIn.InSecondVar.Sym)
-					inSecondOrig = symOrigName(ctx, s.CondIn.InSecondVar.Sym)
-				}
-
-				if s.CondIn.InThirdVar != nil {
-					inThirdVar = symNameWithUnused(ctx, pkg, s.CondIn.InThirdVar.Sym)
-					inThirdOrig = symOrigName(ctx, s.CondIn.InThirdVar.Sym)
-				}
-
-				isMap := ctx.Types.IsTypeOfKind(s.CondIn.IterExpr.GetType(), ir.TK_Map)
-				isIterable := s.CondIn.IterNextSym != 0
-				useIndex := (inSecondVar != "" && !isMap && !isIterable) || (inThirdVar != "" && isMap) || (isIterable && inSecondVar != "")
-				indexVar := e.hk.NewTemp()
-				if useIndex {
-					prepend = jen.Var().Id(indexVar).Int64().Op("=").Lit(-1)
-				}
-
-				var iterOptTemp string
-				var iterNextMethod string
-				if isIterable {
-					iterNextMethod = symName(ctx, s.CondIn.IterNextSym)
-					iterOptTemp = e.hk.NewTemp()
-					forLoop = jen.For()
-				} else if isMap {
-					if inSecondVar != "" {
-						if inFirstVar == "_" && inSecondVar == "_" {
-							forLoop = jen.For(jen.Range().Add(e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)))
-						} else {
-							forLoop = jen.For(jen.Id(inFirstVar).Op(",").Id(inSecondVar).Op(":=").Range().Add(e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)))
-						}
-					} else {
-						if inFirstVar == "_" {
-							forLoop = jen.For(jen.Range().Add(e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)))
-						} else {
-							forLoop = jen.For(jen.Id(inFirstVar).Op(",").Id("_").Op(":=").Range().Add(e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)))
-						}
-					}
-				} else {
-					if inFirstVar == "_" {
-						forLoop = jen.For(jen.Range().Add(e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)))
-					} else {
-						forLoop = jen.For(jen.Id("_").Op(",").Id(inFirstVar).Op(":=").Range().Add(e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)))
-					}
-				}
-
-				forLoop = forLoop.BlockFunc(func(g *jen.Group) {
-					if isIterable {
-						g.Id(iterOptTemp).Op(":=").Add(e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)).Dot(iterNextMethod).Call()
-						g.If(jen.Id(iterOptTemp).Op("==").Nil()).Block(jen.Break())
-						if inFirstVar != "_" {
-							g.Id(inFirstVar).Op(":=").Op("*").Id(iterOptTemp)
-							g.Id("_").Op("=").Id(inFirstVar)
-						}
-					}
-
-					if inFirstOrig != "" {
-						g.Commentf("Original name: %s for var %s", inFirstOrig, inFirstVar)
-					}
-
-					if inSecondOrig != "" {
-						g.Commentf("Original name: %s for var %s", inSecondOrig, inSecondVar)
-					}
-
-					if inThirdOrig != "" {
-						g.Commentf("Original name: %s for var %s", inThirdOrig, inThirdVar)
-					}
-
-					if useIndex {
-						g.Id(indexVar).Op("++")
-						if inSecondVar != "" && inSecondVar != "_" && !isMap {
-							g.Id(inSecondVar).Op(":=").Id(indexVar)
-							g.Id("_").Op("=").Id(inSecondVar)
-						}
-					}
-
-					e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
-				})
-			} else if s.CondType == ir.ForCondInt {
-				initVarName := symNameWithUnused(ctx, pkg, s.CondInt.Init.Targets[0].Name.Sym)
-				initVarOrig := symOrigName(ctx, s.CondInt.Init.Targets[0].Name.Sym)
-
-				forLoop = jen.For(
-					jen.Id(initVarName).Op(":=").Add(e.buildExpr(ctx, pkg, f, s.CondInt.Init.Init)),
-					e.buildExpr(ctx, pkg, f, s.CondInt.Cond),
-					e.buildExpr(ctx, pkg, f, s.CondInt.Post),
-				).BlockFunc(func(g *jen.Group) {
-					if initVarOrig != "" {
-						g.Commentf("Original name: %s", initVarOrig)
-					}
-
-					e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
-				})
-			} else {
-				panic("unsupported for loop condition type")
-			}
-
-			if needsLabel {
-				forLoop = jen.Id(label).Op(":").Add(forLoop)
-			}
-
-			if prepend != nil {
-				forLoop = prepend.Line().Add(forLoop)
-			}
-
-			return forLoop
-		})
+		e.emitForStmt(ctx, pkg, f, block, s, topLevel)
 	case *ir.TypeAliasStmt:
 
 	default:
@@ -5757,4 +4836,952 @@ func wrapPrimitiveForAny(ctx *codegen.EmitContext, expr ir.Expr, emitted jen.Cod
 	}
 
 	return emitted
+}
+
+func (e *CodeEmitter) emitVarDeclStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, block *jen.Group, s *ir.VarDeclStmt, topLevel bool) {
+	if ir.GetMetadata(ctx.Cache).EmbedFor(s) != nil && topLevel {
+		e.emitEmbeddedVar(ctx, pkg, block, s)
+		return
+	}
+
+	if s.IsWired && topLevel {
+		e.wiredVars = append(e.wiredVars, s)
+		e.emitWiredVarGetter(ctx, pkg, f, block, s)
+		e.emitWiredVarHandler(ctx, pkg, f, block, s)
+		return
+	}
+
+	if len(s.Targets) == 1 {
+		target := &s.Targets[0]
+		if topLevel {
+			if _, isFuncLit := s.Init.(*ir.FuncLitExpr); isFuncLit && target.Name != nil {
+				name := symNameWithUnused(ctx, pkg, target.Name.Sym)
+				ty := typeToGoWithContext(ctx, pkg, ctx.Types, typeOfSym(pkg, target.Name.Sym))
+
+				e.withStmt(block, func() jen.Code {
+					jv := jen.Var().Id(name).Add(ty)
+					orig := symOrigName(ctx, target.Name.Sym)
+					if orig != "" {
+						jv.Commentf("Original name: %s", orig)
+					}
+
+					return jv
+				})
+
+				rhs := e.buildExpr(ctx, pkg, f, s.Init)
+				e.deferredInits = append(e.deferredInits, jen.Id(name).Op("=").Add(rhs))
+				return
+			}
+		}
+
+		e.withStmt(block, func() jen.Code {
+			if target.Name == nil {
+				return jen.Id("_").Op("=").Add(e.buildExpr(ctx, pkg, f, s.Init))
+			}
+
+			name := symNameWithUnused(ctx, pkg, target.Name.Sym)
+
+			var rhs jen.Code = nil
+			asConst := false
+			if s.Init != nil {
+				rhs = e.buildExpr(ctx, pkg, f, s.Init)
+
+				if isExprConstant(s.Init) {
+					asConst = true
+				}
+
+				targetType := typeOfSym(pkg, target.Name.Sym)
+				initType := s.Init.GetType()
+				if targetType != 0 && initType != 0 {
+					targetTy, _ := ctx.Types.GetByID(targetType)
+					initTy, _ := ctx.Types.GetByID(initType)
+
+					if targetTy != nil && targetTy.Kind == ir.TK_Option &&
+						initTy != nil && initTy.Kind != ir.TK_Option && initTy.Kind != ir.TK_PrimitiveNone {
+
+						tempVar := e.hk.NewTemp()
+						rhs = jen.Func().Params().Op("*").Add(typeToGoWithContext(ctx, pkg, ctx.Types, targetTy.ElemType)).Block(
+							jen.Id(tempVar).Op(":=").Add(rhs),
+							jen.Return(jen.Op("&").Id(tempVar)),
+						).Call()
+						asConst = false
+					}
+
+					if rhs != nil {
+						if conv := goNumericConversionWrapper(targetType, initType, ctx.Types, rhs); conv != nil {
+							rhs = conv
+							asConst = false
+						}
+					}
+
+					if rhs != nil && targetTy != nil && targetTy.Kind == ir.TK_PrimitiveAny {
+						if conv := goAnyBoxWrapper(initType, ctx.Types, rhs); conv != nil {
+							rhs = conv
+							asConst = false
+						}
+					}
+				}
+			}
+
+			ty := typeToGoWithContext(ctx, pkg, ctx.Types, typeOfSym(pkg, target.Name.Sym))
+
+			jv := jen.Var()
+			if asConst && s.IsConst {
+				jv = jen.Const()
+			}
+
+			jv = jv.Id(name).Add(ty).Op("=").Add(rhs)
+
+			orig := symOrigName(ctx, target.Name.Sym)
+			if orig != "" {
+				jv.Commentf("Original name: %s", orig)
+			}
+
+			return jv
+		})
+
+		return
+	}
+
+	hasNonDiscard := false
+	for _, target := range s.Targets {
+		if target.Name != nil {
+			name := symNameWithUnused(ctx, pkg, target.Name.Sym)
+			if name != "_" {
+				hasNonDiscard = true
+				break
+			}
+		}
+	}
+
+	if !hasNonDiscard {
+		return
+	}
+
+	tupleVarName := "__tuple_tmp_" + e.hk.NewTemp()
+
+	e.withStmt(block, func() jen.Code {
+		rhs := e.buildExpr(ctx, pkg, f, s.Init)
+		return jen.Id(tupleVarName).Op(":=").Add(rhs)
+	})
+
+	e.withStmt(block, func() jen.Code {
+		var names []jen.Code
+		var values []jen.Code
+
+		for i, target := range s.Targets {
+			if target.Name == nil {
+				names = append(names, jen.Id("_"))
+			} else {
+				names = append(names, jen.Id(symNameWithUnused(ctx, pkg, target.Name.Sym)))
+			}
+
+			elemAccess := jen.Id(tupleVarName).Index(jen.Lit(i))
+
+			if target.Name != nil {
+				elemType := typeOfSym(pkg, target.Name.Sym)
+				if elemType != 0 {
+					elemAccess = elemAccess.Assert(typeToGoWithContext(ctx, pkg, ctx.Types, elemType))
+				}
+			}
+
+			values = append(values, elemAccess)
+		}
+
+		return jen.List(names...).Op(":=").List(values...)
+	})
+}
+
+func (e *CodeEmitter) emitFuncDeclStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, block *jen.Group, s *ir.FuncDeclStmt) {
+	if hasBuiltinAnnotation(s.Annotations) {
+		return
+	}
+
+	if !s.IsWired {
+		side := ir.SideShared
+		if s.Side != nil {
+			side = s.Side.Kind
+		} else if f != nil {
+			side = f.Side.Kind
+		}
+
+		if side == ir.SideFrontend {
+			return
+		}
+	}
+
+	if s.IsWired {
+		e.wiredFuncs = append(e.wiredFuncs, s)
+	}
+
+	e.withStmt(block, func() jen.Code {
+		funcName := symName(ctx, s.Name.Sym)
+		orig := symOrigName(ctx, s.Name.Sym)
+
+		if orig == "main" && len(s.Params) == 0 && e.mangledMainName == "" {
+			e.mangledMainName = funcName
+		}
+
+		params := make([]jen.Code, 0, len(s.Params)+1)
+		if s.IsWired && (!isRawWire(s) || rawWireUsesSession(s)) {
+			params = append(params, jen.Id("__session").Op("*").Id("fn____Session"))
+		}
+
+		for _, param := range s.Params {
+			paramName := symNameWithUnused(ctx, pkg, param.Name.Sym)
+			paramType := typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ)
+			params = append(params, jen.Id(paramName).Add(paramType))
+		}
+
+		funcDecl := jen.Func().Id(funcName).Params(params...)
+
+		if s.ReturnType.Typ != ctx.Types.TypNone() {
+			returnType := typeToGoWithContext(ctx, pkg, ctx.Types, s.ReturnType.Typ)
+			funcDecl = funcDecl.Add(returnType)
+		}
+
+		prevFunc := e.currentFunc
+		e.currentFunc = s
+
+		fDecl := funcDecl.BlockFunc(func(g *jen.Group) {
+			e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
+		})
+
+		e.currentFunc = prevFunc
+		fOut := fDecl
+
+		if orig != "" {
+			fOut.Commentf("Original name: %s", orig)
+		}
+
+		return fOut
+	})
+	if s.IsWired {
+		e.emitWiredHandler(ctx, pkg, f, block, s)
+		if s.Wire != nil && s.Wire.Transport == "ws" && needsSessionManagerFromCache(ctx) {
+			e.emitWiredWSAdapter(ctx, pkg, f, block, s)
+		}
+	}
+}
+
+func (e *CodeEmitter) emitExternDeclStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, block *jen.Group, s *ir.ExternDeclStmt) {
+	targetSide := ir.SideBackend
+	if f.Side.Kind == ir.SideFrontend {
+		return
+	} else if f.Side.Kind == ir.SideShared {
+		targetSide = ir.SideBackend
+	}
+
+	for _, fn := range s.Funcs {
+		var sideMapping *ir.SideMapping
+		var externModule *string
+
+		if fn.Mapping.Simple != nil {
+			sideMapping = &ir.SideMapping{
+				NativeFunc: *fn.Mapping.Simple,
+				Module:     nil,
+			}
+
+			externModule = s.Module
+		} else if fn.Mapping.Shared != nil {
+			mapping, exists := fn.Mapping.Shared[targetSide]
+			if !exists {
+				continue
+			}
+
+			sideMapping = mapping
+			externModule = s.Module
+		} else {
+			continue
+		}
+
+		if sideMapping.Module != nil && *sideMapping.Module != "" {
+			e.registerExternImport(*sideMapping.Module, sideMapping.NativeFunc)
+		} else if externModule != nil && *externModule != "" {
+			e.registerExternImport(*externModule, sideMapping.NativeFunc)
+		}
+
+		e.withStmt(block, func() jen.Code {
+			funcName := symName(ctx, fn.Name.Sym)
+			orig := symOrigName(ctx, fn.Name.Sym)
+
+			params := make([]jen.Code, len(fn.Params))
+			paramNames := make([]jen.Code, len(fn.Params))
+			for i, param := range fn.Params {
+				paramName := param.Name.Name
+				paramType := typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ)
+				params[i] = jen.Id(paramName).Add(paramType)
+				paramNames[i] = jen.Id(paramName)
+			}
+
+			funcDecl := jen.Func().Id(funcName).Params(params...)
+
+			var returnType jen.Code
+			hasReturn := fn.ReturnType != nil && fn.ReturnType.Typ != ctx.Types.TypNone()
+			if hasReturn {
+				returnType = typeToGoWithContext(ctx, pkg, ctx.Types, fn.ReturnType.Typ)
+				funcDecl = funcDecl.Add(returnType)
+			}
+
+			nativeCall := sideMapping.NativeFunc
+			modulePath := ""
+			if sideMapping.Module != nil {
+				nativeCall = e.replaceModPlaceholder(nativeCall, *sideMapping.Module)
+				modulePath = *sideMapping.Module
+			} else if externModule != nil {
+				nativeCall = e.replaceModPlaceholder(nativeCall, *externModule)
+				modulePath = *externModule
+			}
+
+			origNameForMock := orig
+			if origNameForMock == "" {
+				origNameForMock = fn.Name.Name
+			}
+
+			mockableName := origNameForMock
+			if pkg != nil && pkg.Path.String() == "std/testing" {
+				mockableName = ""
+			}
+
+			testMode := isTestMode(ctx)
+
+			result := funcDecl.BlockFunc(func(g *jen.Group) {
+				if testMode && mockableName != "" {
+					mockArgs := []jen.Code{jen.Lit(mockableName)}
+
+					mockArgs = append(mockArgs, paramNames...)
+					if hasReturn {
+						g.If(jen.List(jen.Id("__mockV"), jen.Id("__mockHas"), jen.Id("__mockReg")).Op(":=").Id("__sovaMockHook").Call(mockArgs...), jen.Id("__mockReg")).Block(
+							jen.If(jen.Id("__mockHas")).Block(
+								jen.Return(jen.Id("__mockV").Assert(returnType)),
+							),
+							jen.Var().Id("__mockZero").Add(returnType),
+							jen.Return(jen.Id("__mockZero")),
+						)
+					} else {
+						g.If(jen.List(jen.Id("_"), jen.Id("_"), jen.Id("__mockReg")).Op(":=").Id("__sovaMockHook").Call(mockArgs...), jen.Id("__mockReg")).Block(
+							jen.Return(),
+						)
+					}
+				}
+
+				callExpr := e.buildNativeCallWithModule(nativeCall, modulePath, paramNames)
+				if hasReturn {
+					g.Return(callExpr)
+				} else {
+					g.Add(callExpr)
+				}
+			})
+
+			if orig != "" {
+				result.Commentf("Original name: %s", orig)
+			}
+
+			return result
+		})
+	}
+
+	for _, v := range s.Vars {
+		var sideMapping *ir.SideMapping
+		var externModule *string
+
+		if v.Mapping.Simple != nil {
+			sideMapping = &ir.SideMapping{
+				NativeFunc: *v.Mapping.Simple,
+				Module:     nil,
+			}
+
+			externModule = s.Module
+		} else if v.Mapping.Shared != nil {
+			mapping, exists := v.Mapping.Shared[targetSide]
+			if !exists {
+				continue
+			}
+
+			sideMapping = mapping
+			externModule = s.Module
+		} else {
+			continue
+		}
+
+		if sideMapping.Module != nil && *sideMapping.Module != "" {
+			e.registerExternImport(*sideMapping.Module, sideMapping.NativeFunc)
+		} else if externModule != nil && *externModule != "" {
+			e.registerExternImport(*externModule, sideMapping.NativeFunc)
+		}
+
+		e.withStmt(block, func() jen.Code {
+			varName := symName(ctx, v.Name.Sym)
+			orig := symOrigName(ctx, v.Name.Sym)
+			varType := typeToGoWithContext(ctx, pkg, ctx.Types, v.Type.Typ)
+
+			nativeRef := sideMapping.NativeFunc
+			modulePath := ""
+			if sideMapping.Module != nil {
+				nativeRef = e.replaceModPlaceholder(nativeRef, *sideMapping.Module)
+				modulePath = *sideMapping.Module
+			} else if externModule != nil {
+				nativeRef = e.replaceModPlaceholder(nativeRef, *externModule)
+				modulePath = *externModule
+			}
+
+			nativeExpr := e.buildNativeRefWithModule(nativeRef, modulePath)
+
+			var result *jen.Statement
+			if v.IsConst {
+				result = jen.Var().Id(varName).Add(varType).Op("=").Add(nativeExpr)
+			} else {
+				result = jen.Var().Id(varName).Add(varType).Op("=").Add(nativeExpr)
+			}
+
+			if orig != "" {
+				result.Commentf("Original name: %s", orig)
+			}
+
+			return result
+		})
+	}
+}
+
+func (e *CodeEmitter) emitTypeDeclStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, block *jen.Group, s *ir.TypeDeclStmt) {
+	if s.IsExtern {
+		return
+	}
+
+	if hasBuiltinAnnotation(s.Annotations) {
+		return
+	}
+
+	typeName := symName(ctx, s.Name.Sym)
+	structFields := []jen.Code{}
+
+	for _, ref := range s.MixedIn {
+		if ref.Sym == 0 {
+			continue
+		}
+
+		symPkg := pkg
+		if ref.Qualifier != "" {
+			if found := lookupImportedPackage(ctx, pkg, ref.Qualifier); found != nil {
+				symPkg = found
+			}
+		}
+
+		embedSym, ok := symPkg.Syms.GetByID(ref.Sym)
+		if !ok || embedSym.Typ == 0 {
+			continue
+		}
+
+		embedTy, ok := ctx.Types.GetByID(embedSym.Typ)
+		if !ok || embedTy.Kind != ir.TK_Struct {
+			continue
+		}
+
+		if embedTy.IsExtern {
+			structFields = append(structFields, jen.Qual(embedTy.ExternModule, embedTy.StructName))
+		} else {
+			structFields = append(structFields, jen.Id(symName(ctx, ref.Sym)))
+		}
+	}
+
+	for _, field := range s.Fields {
+		fieldType := typeToGoWithContext(ctx, pkg, ctx.Types, field.Type.Typ)
+		fieldDecl := jen.Id(goExportedName(field.Name.Name)).Add(fieldType)
+		tag := buildStructTag(field.Annotations)
+		if tag == nil {
+			tag = map[string]string{}
+		}
+
+		if _, ok := tag["json"]; !ok && !strings.HasPrefix(field.Name.Name, "__") {
+			tag["json"] = field.Name.Name
+		}
+
+		if len(tag) > 0 {
+			fieldDecl = fieldDecl.Tag(tag)
+		}
+
+		structFields = append(structFields, fieldDecl)
+		if fieldHasReactiveAnnotation(field.Annotations) {
+			obsType := jen.Index().Func().Params(
+				typeToGoWithContext(ctx, pkg, ctx.Types, field.Type.Typ),
+				typeToGoWithContext(ctx, pkg, ctx.Types, field.Type.Typ),
+			)
+			obsField := jen.Id("__obs" + goExportedName(field.Name.Name)).Add(obsType)
+			structFields = append(structFields, obsField)
+		}
+	}
+
+	e.withStmt(block, func() jen.Code {
+		return jen.Type().Id(typeName).Struct(structFields...)
+	})
+	for _, field := range s.Fields {
+		if !fieldHasReactiveAnnotation(field.Annotations) {
+			continue
+		}
+
+		fldRef := field
+		e.withStmt(block, func() jen.Code {
+			fieldType := typeToGoWithContext(ctx, pkg, ctx.Types, fldRef.Type.Typ)
+			fieldName := goExportedName(fldRef.Name.Name)
+			setName := "set" + fieldName
+			return jen.Func().Params(jen.Id("this").Op("*").Id(typeName)).Id(setName).Params(jen.Id("v").Add(fieldType)).BlockFunc(func(g *jen.Group) {
+				g.Id("__old").Op(":=").Id("this").Dot(fieldName)
+				g.Id("this").Dot(fieldName).Op("=").Id("v")
+				g.For(jen.List(jen.Id("_"), jen.Id("__o")).Op(":=").Range().Id("this").Dot("__obs" + fieldName)).Block(
+					jen.Id("__o").Call(jen.Id("__old"), jen.Id("v")),
+				)
+			})
+		})
+		e.withStmt(block, func() jen.Code {
+			fieldName := goExportedName(fldRef.Name.Name)
+			obsName := "observe" + fieldName
+			fnType := jen.Func().Params(
+				typeToGoWithContext(ctx, pkg, ctx.Types, fldRef.Type.Typ),
+				typeToGoWithContext(ctx, pkg, ctx.Types, fldRef.Type.Typ),
+			)
+			obsField := "__obs" + fieldName
+			return jen.Func().Params(jen.Id("this").Op("*").Id(typeName)).Id(obsName).Params(jen.Id("__fn").Add(fnType)).Func().Params().Any().BlockFunc(func(g *jen.Group) {
+				g.Id("__idx").Op(":=").Qual("", "len").Call(jen.Id("this").Dot(obsField))
+				g.Id("this").Dot(obsField).Op("=").Append(jen.Id("this").Dot(obsField), jen.Id("__fn"))
+				g.Return(jen.Func().Params().Any().BlockFunc(func(rg *jen.Group) {
+					rg.If(jen.Id("__idx").Op(">=").Qual("", "len").Call(jen.Id("this").Dot(obsField))).Block(
+						jen.Return(jen.Nil()),
+					)
+					rg.Id("this").Dot(obsField).Op("=").Append(
+						jen.Id("this").Dot(obsField).Index(jen.Empty(), jen.Id("__idx")),
+						jen.Id("this").Dot(obsField).Index(jen.Id("__idx").Op("+").Lit(1), jen.Empty()).Op("..."),
+					)
+					rg.Return(jen.Nil())
+				}))
+			})
+		})
+	}
+
+	for _, method := range s.Methods {
+		methodRef := method
+		declRef := s
+		e.withStmt(block, func() jen.Code {
+			fn := methodRef.Func
+			methodName := symName(ctx, fn.Name.Sym)
+			params := make([]jen.Code, len(fn.Params))
+			for i, param := range fn.Params {
+				paramName := symNameWithUnused(ctx, pkg, param.Name.Sym)
+				params[i] = jen.Id(paramName).Add(typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ))
+			}
+
+			receiver := jen.Id("this").Op("*").Id(typeName)
+			funcDecl := jen.Func().Params(receiver).Id(methodName).Params(params...)
+			hasReturn := fn.ReturnType != nil && fn.ReturnType.Typ != 0 && fn.ReturnType.Typ != ctx.Types.TypNone()
+			if hasReturn {
+				funcDecl = funcDecl.Add(typeToGoWithContext(ctx, pkg, ctx.Types, fn.ReturnType.Typ))
+			}
+
+			return funcDecl.BlockFunc(func(g *jen.Group) {
+				prevFunc := e.currentFunc
+				prevType := e.currentTypeDecl
+				e.currentFunc = fn
+				e.currentTypeDecl = declRef
+				defer func() {
+					e.currentFunc = prevFunc
+					e.currentTypeDecl = prevType
+				}()
+				for _, st := range fn.Body.Stmts {
+					e.emitStmt(ctx, pkg, f, g, st, false)
+				}
+			})
+		})
+	}
+
+	hasUserToString := false
+	hasUserHashCode := false
+	for _, m := range s.Methods {
+		if m.Func.Name.Name == "toString" {
+			hasUserToString = true
+		}
+
+		if m.Func.Name.Name == "hashCode" {
+			hasUserHashCode = true
+		}
+	}
+
+	if !hasUserToString {
+		decl := s
+		e.withStmt(block, func() jen.Code {
+			return jen.Func().Params(jen.Id("this").Op("*").Id(typeName)).Id("toString").Params().String().BlockFunc(func(g *jen.Group) {
+				var format strings.Builder
+				format.WriteString(decl.Name.Name)
+				format.WriteString("{")
+				var args []jen.Code
+				for i, field := range decl.Fields {
+					if i > 0 {
+						format.WriteString(", ")
+					}
+
+					format.WriteString(field.Name.Name)
+					format.WriteString(": %v")
+					args = append(args, jen.Id("this").Dot(goExportedName(field.Name.Name)))
+				}
+
+				format.WriteString("}")
+				call := []jen.Code{jen.Lit(format.String())}
+
+				call = append(call, args...)
+				g.Return(jen.Qual("fmt", "Sprintf").Call(call...))
+			})
+		})
+	}
+
+	if !hasUserHashCode {
+		decl := s
+		e.withStmt(block, func() jen.Code {
+			return jen.Func().Params(jen.Id("this").Op("*").Id(typeName)).Id("hashCode").Params().Int64().BlockFunc(func(g *jen.Group) {
+				g.Var().Id("h").Int64().Op("=").Lit(int64(5381))
+				var format strings.Builder
+				format.WriteString(decl.Name.Name)
+				var args []jen.Code
+				for _, field := range decl.Fields {
+					format.WriteString("|%v")
+					args = append(args, jen.Id("this").Dot(goExportedName(field.Name.Name)))
+				}
+
+				call := []jen.Code{jen.Lit(format.String())}
+
+				call = append(call, args...)
+				g.Id("repr").Op(":=").Qual("fmt", "Sprintf").Call(call...)
+				g.For(jen.List(jen.Id("_"), jen.Id("c")).Op(":=").Range().Id("repr")).Block(
+					jen.Id("h").Op("=").Parens(jen.Parens(jen.Id("h").Op("<<").Lit(5)).Op("+").Id("h")).Op("+").Int64().Call(jen.Id("c")),
+				)
+				g.Return(jen.Id("h"))
+			})
+		})
+	}
+
+	for _, ctor := range s.Ctors {
+		ctorRef := ctor
+		decl := s
+		e.withStmt(block, func() jen.Code {
+			ctorName := symName(ctx, ctorRef.Sym)
+			params := make([]jen.Code, len(ctorRef.Params))
+			for i, param := range ctorRef.Params {
+				paramName := symNameWithUnused(ctx, pkg, param.Name.Sym)
+				params[i] = jen.Id(paramName).Add(typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ))
+			}
+
+			returnType := jen.Op("*").Id(typeName)
+			return jen.Func().Id(ctorName).Params(params...).Add(returnType).BlockFunc(func(g *jen.Group) {
+				var inits []jen.Code
+				for _, field := range decl.Fields {
+					if field.Default != nil {
+						inits = append(inits, jen.Id(goExportedName(field.Name.Name)).Op(":").Add(e.buildExpr(ctx, pkg, f, field.Default)))
+					}
+				}
+
+				g.Id("this").Op(":=").Op("&").Id(typeName).Values(inits...)
+				for _, st := range ctorRef.Body.Stmts {
+					e.emitStmt(ctx, pkg, f, g, st, false)
+				}
+
+				g.Return(jen.Id("this"))
+			})
+		})
+	}
+
+	for _, cast := range s.Casts {
+		castRef := cast
+		e.withStmt(block, func() jen.Code {
+			castName := symName(ctx, castRef.Sym)
+			paramName := symNameWithUnused(ctx, pkg, castRef.Param.Name.Sym)
+			paramType := typeToGoWithContext(ctx, pkg, ctx.Types, castRef.Param.Type.Typ)
+			returnTyp := castRef.Param.Type.Typ
+			if castRef.ReturnType != nil && castRef.ReturnType.Typ != 0 {
+				returnTyp = castRef.ReturnType.Typ
+			} else {
+				returnTyp = typeOfSym(pkg, s.Name.Sym)
+			}
+
+			returnType := typeToGoWithContext(ctx, pkg, ctx.Types, returnTyp)
+			return jen.Func().Id(castName).Params(jen.Id(paramName).Add(paramType)).Add(returnType).BlockFunc(func(g *jen.Group) {
+				for _, st := range castRef.Body.Stmts {
+					e.emitStmt(ctx, pkg, f, g, st, false)
+				}
+			})
+		})
+	}
+}
+
+func (e *CodeEmitter) emitEnumDeclStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, block *jen.Group, s *ir.EnumDeclStmt) {
+	enumName := symName(ctx, s.Name.Sym)
+	enumTyp, _ := ctx.Types.GetByID(typeOfSym(pkg, s.Name.Sym))
+
+	if enumTyp != nil && enumTyp.IsNumeric {
+		e.withStmt(block, func() jen.Code {
+			return jen.Type().Id(enumName).Int64()
+		})
+
+		e.withStmt(block, func() jen.Code {
+			return jen.Const().DefsFunc(func(g *jen.Group) {
+				for _, c := range enumTyp.EnumCases {
+					g.Id(enumName + c.Name).Id(enumName).Op("=").Id(enumName).Call(jen.Lit(c.Value))
+				}
+			})
+		})
+
+		return
+	}
+
+	if enumTyp == nil {
+		return
+	}
+
+	e.withStmt(block, func() jen.Code {
+		fields := []jen.Code{
+			jen.Id("__ordinal").Int64(),
+			jen.Id("__name").String(),
+		}
+
+		for _, fld := range enumTyp.EnumFields {
+			fields = append(fields,
+				jen.Id(fld.Name).Add(typeToGoWithContext(ctx, pkg, ctx.Types, fld.Type)))
+		}
+
+		return jen.Type().Id(enumName).Struct(fields...)
+	})
+
+	for i, c := range s.Cases {
+		caseIndex := i
+		caseDef := c
+		e.withStmt(block, func() jen.Code {
+			args := []jen.Code{
+				jen.Lit(int64(caseIndex)),
+				jen.Lit(caseDef.Name.Name),
+			}
+
+			for _, arg := range caseDef.Args {
+				args = append(args, e.buildExpr(ctx, pkg, f, arg))
+			}
+
+			for j := len(caseDef.Args); j < len(s.Fields); j++ {
+				if s.Fields[j].Default != nil {
+					args = append(args, e.buildExpr(ctx, pkg, f, s.Fields[j].Default))
+				}
+			}
+
+			return jen.Var().Id(enumName + caseDef.Name.Name).Op("=").
+				Op("&").Id(enumName).Values(args...)
+		})
+	}
+
+	e.withStmt(block, func() jen.Code {
+		var vals []jen.Code
+		for _, c := range s.Cases {
+			vals = append(vals, jen.Id(enumName+c.Name.Name))
+		}
+
+		return jen.Var().Id(enumName + "Values").Op("=").
+			Index().Op("*").Id(enumName).Values(vals...)
+	})
+
+	e.withStmt(block, func() jen.Code {
+		return jen.Func().Params(jen.Id("e").Op("*").Id(enumName)).
+			Id("String").Params().String().Block(
+			jen.Return(jen.Id("e").Dot("__name")),
+		)
+	})
+
+	e.withStmt(block, func() jen.Code {
+		return jen.Func().Params(jen.Id("e").Op("*").Id(enumName)).
+			Id("HashCode").Params().Int64().Block(
+			jen.Return(jen.Id("e").Dot("__ordinal")),
+		)
+	})
+
+	for _, method := range s.Methods {
+		methodDef := method
+		e.withStmt(block, func() jen.Code {
+			methodName := symName(ctx, methodDef.Name.Sym)
+
+			params := make([]jen.Code, len(methodDef.Params))
+			for i, param := range methodDef.Params {
+				paramName := symNameWithUnused(ctx, pkg, param.Name.Sym)
+				paramType := typeToGoWithContext(ctx, pkg, ctx.Types, param.Type.Typ)
+				params[i] = jen.Id(paramName).Add(paramType)
+			}
+
+			funcDecl := jen.Func().Params(jen.Id("this").Op("*").Id(enumName)).
+				Id(methodName).Params(params...)
+
+			if methodDef.ReturnType.Typ != ctx.Types.TypNone() {
+				returnType := typeToGoWithContext(ctx, pkg, ctx.Types, methodDef.ReturnType.Typ)
+				funcDecl = funcDecl.Add(returnType)
+			}
+
+			return funcDecl.BlockFunc(func(g *jen.Group) {
+				e.emitBlock(ctx, pkg, f, g, methodDef.Body.Stmts)
+			})
+		})
+	}
+}
+
+func (e *CodeEmitter) emitForStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, block *jen.Group, s *ir.ForStmt, topLevel bool) {
+	if topLevel {
+		return
+	}
+
+	e.withStmt(block, func() jen.Code {
+		loopLevel := len(e.loopLabels) + 1
+		needsLabel := e.loopNeedsLabel(s.Body.Stmts, loopLevel)
+
+		label := e.pushLoop()
+		defer e.popLoop()
+
+		var forLoop *jen.Statement
+		var prepend *jen.Statement = nil
+		if s.CondType == ir.ForCondInfinite {
+			forLoop = jen.For().BlockFunc(func(g *jen.Group) {
+				e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
+			})
+		} else if s.CondType == ir.ForCondRange {
+			rangeCollectionVar := e.hk.NewTemp()
+			elemTy := s.CondRange.RangeStart.GetType()
+			if elemTy == 0 {
+				elemTy = ctx.Types.PrimInt()
+			}
+
+			sliceTy := ctx.Types.SliceOf(elemTy)
+			prepend = jen.Id(rangeCollectionVar).Op(":=").Add(e.buildRangeExpr(ctx, pkg, f, sliceTy, s.CondRange.RangeStart, s.CondRange.RangeEnd, nil))
+
+			rangeIterVar := symNameWithUnused(ctx, pkg, s.CondRange.RangeVar.Sym)
+			rangeIterOrig := symOrigName(ctx, s.CondRange.RangeVar.Sym)
+
+			if rangeIterVar == "_" {
+				forLoop = jen.For(jen.Range().Id(rangeCollectionVar)).BlockFunc(func(g *jen.Group) {
+					if rangeIterOrig != "" {
+						g.Commentf("Original name: %s", rangeIterOrig)
+					}
+
+					e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
+				})
+			} else {
+				forLoop = jen.For(jen.Id(rangeIterVar).Op(":=").Range().Id(rangeCollectionVar)).BlockFunc(func(g *jen.Group) {
+					if rangeIterOrig != "" {
+						g.Commentf("Original name: %s", rangeIterOrig)
+					}
+
+					e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
+				})
+			}
+		} else if s.CondType == ir.ForCondIn {
+			inFirstVar := symNameWithUnused(ctx, pkg, s.CondIn.InFirstVar.Sym)
+			inFirstOrig := symOrigName(ctx, s.CondIn.InFirstVar.Sym)
+			inSecondVar := ""
+			inSecondOrig := ""
+			inThirdVar := ""
+			inThirdOrig := ""
+			if s.CondIn.InSecondVar != nil {
+				inSecondVar = symNameWithUnused(ctx, pkg, s.CondIn.InSecondVar.Sym)
+				inSecondOrig = symOrigName(ctx, s.CondIn.InSecondVar.Sym)
+			}
+
+			if s.CondIn.InThirdVar != nil {
+				inThirdVar = symNameWithUnused(ctx, pkg, s.CondIn.InThirdVar.Sym)
+				inThirdOrig = symOrigName(ctx, s.CondIn.InThirdVar.Sym)
+			}
+
+			isMap := ctx.Types.IsTypeOfKind(s.CondIn.IterExpr.GetType(), ir.TK_Map)
+			isIterable := s.CondIn.IterNextSym != 0
+			useIndex := (inSecondVar != "" && !isMap && !isIterable) || (inThirdVar != "" && isMap) || (isIterable && inSecondVar != "")
+			indexVar := e.hk.NewTemp()
+			if useIndex {
+				prepend = jen.Var().Id(indexVar).Int64().Op("=").Lit(-1)
+			}
+
+			var iterOptTemp string
+			var iterNextMethod string
+			if isIterable {
+				iterNextMethod = symName(ctx, s.CondIn.IterNextSym)
+				iterOptTemp = e.hk.NewTemp()
+				forLoop = jen.For()
+			} else if isMap {
+				if inSecondVar != "" {
+					if inFirstVar == "_" && inSecondVar == "_" {
+						forLoop = jen.For(jen.Range().Add(e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)))
+					} else {
+						forLoop = jen.For(jen.Id(inFirstVar).Op(",").Id(inSecondVar).Op(":=").Range().Add(e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)))
+					}
+				} else {
+					if inFirstVar == "_" {
+						forLoop = jen.For(jen.Range().Add(e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)))
+					} else {
+						forLoop = jen.For(jen.Id(inFirstVar).Op(",").Id("_").Op(":=").Range().Add(e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)))
+					}
+				}
+			} else {
+				if inFirstVar == "_" {
+					forLoop = jen.For(jen.Range().Add(e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)))
+				} else {
+					forLoop = jen.For(jen.Id("_").Op(",").Id(inFirstVar).Op(":=").Range().Add(e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)))
+				}
+			}
+
+			forLoop = forLoop.BlockFunc(func(g *jen.Group) {
+				if isIterable {
+					g.Id(iterOptTemp).Op(":=").Add(e.buildExpr(ctx, pkg, f, s.CondIn.IterExpr)).Dot(iterNextMethod).Call()
+					g.If(jen.Id(iterOptTemp).Op("==").Nil()).Block(jen.Break())
+					if inFirstVar != "_" {
+						g.Id(inFirstVar).Op(":=").Op("*").Id(iterOptTemp)
+						g.Id("_").Op("=").Id(inFirstVar)
+					}
+				}
+
+				if inFirstOrig != "" {
+					g.Commentf("Original name: %s for var %s", inFirstOrig, inFirstVar)
+				}
+
+				if inSecondOrig != "" {
+					g.Commentf("Original name: %s for var %s", inSecondOrig, inSecondVar)
+				}
+
+				if inThirdOrig != "" {
+					g.Commentf("Original name: %s for var %s", inThirdOrig, inThirdVar)
+				}
+
+				if useIndex {
+					g.Id(indexVar).Op("++")
+					if inSecondVar != "" && inSecondVar != "_" && !isMap {
+						g.Id(inSecondVar).Op(":=").Id(indexVar)
+						g.Id("_").Op("=").Id(inSecondVar)
+					}
+				}
+
+				e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
+			})
+		} else if s.CondType == ir.ForCondInt {
+			initVarName := symNameWithUnused(ctx, pkg, s.CondInt.Init.Targets[0].Name.Sym)
+			initVarOrig := symOrigName(ctx, s.CondInt.Init.Targets[0].Name.Sym)
+
+			forLoop = jen.For(
+				jen.Id(initVarName).Op(":=").Add(e.buildExpr(ctx, pkg, f, s.CondInt.Init.Init)),
+				e.buildExpr(ctx, pkg, f, s.CondInt.Cond),
+				e.buildExpr(ctx, pkg, f, s.CondInt.Post),
+			).BlockFunc(func(g *jen.Group) {
+				if initVarOrig != "" {
+					g.Commentf("Original name: %s", initVarOrig)
+				}
+
+				e.emitBlock(ctx, pkg, f, g, s.Body.Stmts)
+			})
+		} else {
+			panic("unsupported for loop condition type")
+		}
+
+		if needsLabel {
+			forLoop = jen.Id(label).Op(":").Add(forLoop)
+		}
+
+		if prepend != nil {
+			forLoop = prepend.Line().Add(forLoop)
+		}
+
+		return forLoop
+	})
 }
