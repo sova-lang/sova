@@ -1,10 +1,12 @@
 package passes
 
 import (
+	"fmt"
 	"path/filepath"
+
 	"sova/internal/codegen"
-	"sova/internal/codegen/golang"
-	"sova/internal/codegen/javascript"
+	_ "sova/internal/codegen/golang"
+	_ "sova/internal/codegen/javascript"
 	"sova/internal/ir"
 )
 
@@ -41,62 +43,46 @@ func resolveBuildPaths(pc *PassContext) buildPaths {
 
 type PassEmitGo struct{}
 
-func (p *PassEmitGo) Name() string       { return "emit_go" }
+func (p *PassEmitGo) Name() string { return "emit_go" }
 
-func (p *PassEmitGo) Scope() PassScope   { return PerBuild }
+func (p *PassEmitGo) Scope() PassScope { return PerBuild }
 
 func (p *PassEmitGo) Requires() []string { return []string{"mangle"} }
 
-func (p *PassEmitGo) NoErrors() bool     { return true }
+func (p *PassEmitGo) NoErrors() bool { return true }
 
 func (p *PassEmitGo) Run(pc *PassContext) error {
-	paths := resolveBuildPaths(pc)
-	outFile := filepath.Join(paths.OutputDir, paths.OutputName+".go")
-	if err := codegen.EnsureOutputDir(outFile); err != nil {
-		return err
-	}
-
 	publishTestRegistryView(pc)
-
-	pkgs, transPkgs := resolvePkgSlices(pc, ir.SideBackend)
-
-	var initPlan []*codegen.InitPlanEntry
-	if arr, ok := pc.Cache["init_plan"]; ok {
-		if ipe, ok := arr.([]*codegen.InitPlanEntry); ok {
-			initPlan = ipe
-		}
-	}
-
-	pfr := golang.BuildPolyfixes()
-	ctx := codegen.NewEmitContext(true, outFile, pkgs, transPkgs, pc.Names, pc.Types, initPlan, pfr.Require, pc.Cache)
-
-	emitter := &golang.CodeEmitter{}
-
-	if err := emitter.Init(ctx); err != nil {
-		return err
-	}
-
-	return emitter.Emit(ctx)
+	return runBackend(pc, "go")
 }
 
 type PassEmitJS struct{}
 
-func (p *PassEmitJS) Name() string       { return "emit_js" }
+func (p *PassEmitJS) Name() string { return "emit_js" }
 
-func (p *PassEmitJS) Scope() PassScope   { return PerBuild }
+func (p *PassEmitJS) Scope() PassScope { return PerBuild }
 
 func (p *PassEmitJS) Requires() []string { return []string{"mangle"} }
 
-func (p *PassEmitJS) NoErrors() bool     { return true }
+func (p *PassEmitJS) NoErrors() bool { return true }
 
 func (p *PassEmitJS) Run(pc *PassContext) error {
+	return runBackend(pc, "js")
+}
+
+func runBackend(pc *PassContext, name string) error {
+	backend, ok := codegen.Get(name)
+	if !ok {
+		return fmt.Errorf("codegen backend %q is not registered", name)
+	}
+
 	paths := resolveBuildPaths(pc)
-	outFile := filepath.Join(paths.OutputDir, paths.OutputName+".js")
+	outFile := filepath.Join(paths.OutputDir, paths.OutputName+backend.FileExt())
 	if err := codegen.EnsureOutputDir(outFile); err != nil {
 		return err
 	}
 
-	pkgs, transPkgs := resolvePkgSlices(pc, ir.SideFrontend)
+	pkgs, transPkgs := resolvePkgSlices(pc, backend.Side())
 
 	var initPlan []*codegen.InitPlanEntry
 	if arr, ok := pc.Cache["init_plan"]; ok {
@@ -105,10 +91,8 @@ func (p *PassEmitJS) Run(pc *PassContext) error {
 		}
 	}
 
-	pfr := javascript.BuildPolyfixes()
-	ctx := codegen.NewEmitContext(true, outFile, pkgs, transPkgs, pc.Names, pc.Types, initPlan, pfr.Require, pc.Cache)
-
-	emitter := &javascript.CodeEmitter{}
+	emitter, polyfixRequire := backend.Build()
+	ctx := codegen.NewEmitContext(true, outFile, pkgs, transPkgs, pc.Names, pc.Types, initPlan, polyfixRequire, pc.Cache)
 
 	if err := emitter.Init(ctx); err != nil {
 		return err
