@@ -406,7 +406,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 
 		e.emitBlock(ctx, pkg, f, block, s.Stmts)
 	case *ir.VarDeclStmt:
-		if s.Embed != nil && topLevel {
+		if ir.GetMetadata(ctx.Cache).EmbedFor(s) != nil && topLevel {
 			e.emitEmbeddedVar(ctx, pkg, block, s)
 			return
 		}
@@ -4973,15 +4973,16 @@ func pathWithBraces(p string) string {
 }
 
 func (e *CodeEmitter) emitEmbeddedVar(ctx *codegen.EmitContext, pkg *ir.PackageContext, block *jen.Group, vd *ir.VarDeclStmt) {
-	if vd.Embed == nil || len(vd.Targets) == 0 || vd.Targets[0].Name == nil {
+	info := ir.GetMetadata(ctx.Cache).EmbedFor(vd)
+	if info == nil || len(vd.Targets) == 0 || vd.Targets[0].Name == nil {
 		return
 	}
 
 	target := vd.Targets[0]
 	name := symNameWithUnused(ctx, pkg, target.Name.Sym)
-	staged := embedStagedRelPath(vd.Embed)
+	staged := embedStagedRelPath(info)
 	var goType jen.Code
-	switch vd.Embed.Kind {
+	switch info.Kind {
 	case ir.EmbedKindText:
 		goType = jen.Id("string")
 	case ir.EmbedKindBytes:

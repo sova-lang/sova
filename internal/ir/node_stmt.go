@@ -18,8 +18,6 @@ type VarDeclStmt struct {
 	IsWired     bool
 	Wire        *WireSpec
 	Annotations []Annotation
-	Embed       *EmbedInfo
-	Asset       *AssetInfo
 }
 
 func (*VarDeclStmt) stmtNode() {}

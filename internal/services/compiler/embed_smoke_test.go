@@ -71,20 +71,20 @@ const ButtonCSS: string = ""
 		t.Fatalf("ButtonCSS decl missing")
 	}
 
-	if vd.Embed == nil {
+	if ir.GetMetadata(c.Cache).EmbedFor(vd) == nil {
 		t.Fatalf("Embed info not populated; pass_resolve_embeds did not fire")
 	}
 
-	if vd.Embed.Kind != ir.EmbedKindText {
-		t.Fatalf("expected text kind, got %v", vd.Embed.Kind)
+	if ir.GetMetadata(c.Cache).EmbedFor(vd).Kind != ir.EmbedKindText {
+		t.Fatalf("expected text kind, got %v", ir.GetMetadata(c.Cache).EmbedFor(vd).Kind)
 	}
 
-	if vd.Embed.SizeBytes != int64(len(".btn { color: red; }")) {
-		t.Fatalf("size mismatch: want %d, got %d", len(".btn { color: red; }"), vd.Embed.SizeBytes)
+	if ir.GetMetadata(c.Cache).EmbedFor(vd).SizeBytes != int64(len(".btn { color: red; }")) {
+		t.Fatalf("size mismatch: want %d, got %d", len(".btn { color: red; }"), ir.GetMetadata(c.Cache).EmbedFor(vd).SizeBytes)
 	}
 
-	if len(vd.Embed.ContentHash) != 16 {
-		t.Fatalf("hash should be 16 hex chars, got %q", vd.Embed.ContentHash)
+	if len(ir.GetMetadata(c.Cache).EmbedFor(vd).ContentHash) != 16 {
+		t.Fatalf("hash should be 16 hex chars, got %q", ir.GetMetadata(c.Cache).EmbedFor(vd).ContentHash)
 	}
 
 	records, _ := c.Cache[passes.EmbedAssetsCacheKey].([]*passes.EmbedRecord)
@@ -92,7 +92,7 @@ const ButtonCSS: string = ""
 		t.Fatalf("registry should contain 1 record, got %d", len(records))
 	}
 
-	if records[0].Info != vd.Embed {
+	if records[0].Info != ir.GetMetadata(c.Cache).EmbedFor(vd) {
 		t.Fatalf("registry record info should reference the same EmbedInfo as the VarDeclStmt")
 	}
 }
@@ -130,12 +130,12 @@ const Logo: []byte = []
 		}
 	}
 
-	if vd == nil || vd.Embed == nil {
+	if vd == nil || ir.GetMetadata(c.Cache).EmbedFor(vd) == nil {
 		t.Fatalf("Logo decl or embed info missing")
 	}
 
-	if vd.Embed.Kind != ir.EmbedKindBytes {
-		t.Fatalf("expected bytes kind, got %v", vd.Embed.Kind)
+	if ir.GetMetadata(c.Cache).EmbedFor(vd).Kind != ir.EmbedKindBytes {
+		t.Fatalf("expected bytes kind, got %v", ir.GetMetadata(c.Cache).EmbedFor(vd).Kind)
 	}
 }
 
@@ -278,7 +278,7 @@ type Button {
 	}
 
 	fld := td.Fields[0]
-	if fld.Embed == nil {
+	if ir.GetMetadata(c.Cache).EmbedFor(fld) == nil {
 		t.Fatalf("field Embed info not populated")
 	}
 
@@ -370,7 +370,7 @@ synth StyleFile(path: string) on frontend type T {
 		t.Fatalf("__strixStyleSource field not injected by @StyleFile; fields=%v", fieldNames(td.Fields))
 	}
 
-	if styleField.Embed == nil {
+	if ir.GetMetadata(c.Cache).EmbedFor(styleField) == nil {
 		t.Fatalf("injected field's Embed info missing - synth-param substitution into @embed(path) did not chain to resolve_embeds")
 	}
 

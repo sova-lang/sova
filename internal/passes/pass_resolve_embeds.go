@@ -102,7 +102,7 @@ func (p *PassResolveEmbeds) resolveTopLevel(pc *PassContext, vd *ir.VarDeclStmt,
 		return nil
 	}
 
-	vd.Embed = info
+	ir.EnsureMetadata(pc.Cache).Embeds[vd.ID()] = info
 	vd.Init = placeholderInitFor(kind, vd.Span(), pc.NodeAlloc)
 	return &EmbedRecord{Decl: vd, Info: info, PackageRoot: fileDir}
 }
@@ -120,7 +120,7 @@ func (p *PassResolveEmbeds) resolveField(pc *PassContext, fld *ir.TypeField, ann
 		return nil
 	}
 
-	fld.Embed = info
+	ir.EnsureMetadata(pc.Cache).Embeds[fld.ID()] = info
 	fld.Default = inlinedLiteralFor(kind, content, fld.Span(), pc.NodeAlloc)
 	return &EmbedRecord{Decl: nil, Info: info, PackageRoot: fileDir}
 }

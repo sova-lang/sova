@@ -62,7 +62,6 @@ type TypeField struct {
 	Default     Expr
 	Private     bool
 	IsShared    bool
-	Embed       *EmbedInfo
 }
 
 type TypeMethodDecl struct {

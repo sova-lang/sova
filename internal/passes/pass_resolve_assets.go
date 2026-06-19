@@ -115,7 +115,7 @@ func (p *PassResolveAssets) resolveTopLevel(pc *PassContext, vd *ir.VarDeclStmt,
 		Span:        anno.Name.Span,
 	}
 
-	vd.Asset = info
+	ir.EnsureMetadata(pc.Cache).Assets[vd.ID()] = info
 	lit := &ir.LitString{Value: info.URL}
 
 	nid := ir.NodeID(0)

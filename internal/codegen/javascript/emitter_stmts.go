@@ -166,7 +166,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 }
 
 func (e *CodeEmitter) emitVarDecl(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, s *ir.VarDeclStmt, topLevel bool) {
-	if s.Embed != nil && topLevel {
+	if ir.GetMetadata(ctx.Cache).EmbedFor(s) != nil && topLevel {
 		e.emitEmbeddedVar(ctx, pkg, s)
 		return
 	}
@@ -1757,23 +1757,24 @@ func stubTypedResponseKind(ctx *codegen.EmitContext, s *ir.FuncDeclStmt) string 
 }
 
 func (e *CodeEmitter) emitEmbeddedVar(ctx *codegen.EmitContext, pkg *ir.PackageContext, s *ir.VarDeclStmt) {
-	if s.Embed == nil || len(s.Targets) == 0 || s.Targets[0].Name == nil {
+	info := ir.GetMetadata(ctx.Cache).EmbedFor(s)
+	if info == nil || len(s.Targets) == 0 || s.Targets[0].Name == nil {
 		return
 	}
 
 	target := &s.Targets[0]
 	name := symName(ctx, target.Name.Sym)
-	data, err := os.ReadFile(s.Embed.SourcePath)
+	data, err := os.ReadFile(info.SourcePath)
 	if err != nil {
 		return
 	}
 
 	orig := symOrigName(ctx, target.Name.Sym)
 	if orig != "" {
-		e.jf.Add(jsgen.Comment(fmt.Sprintf("@embed %s (%d bytes)", orig, s.Embed.SizeBytes)))
+		e.jf.Add(jsgen.Comment(fmt.Sprintf("@embed %s (%d bytes)", orig, info.SizeBytes)))
 	}
 
-	switch s.Embed.Kind {
+	switch info.Kind {
 	case ir.EmbedKindText:
 		encoded, _ := json.Marshal(string(data))
 		e.jf.Add(jsgen.Raw(fmt.Sprintf("const %s = %s;", name, string(encoded))))
