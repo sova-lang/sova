@@ -1612,149 +1612,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 		x.SetType(t)
 		return t
 	case *ir.BinaryExpr:
-		l := p.synthesizeTypeFromExpr(pc, x.Left)
-		r := p.synthesizeTypeFromExpr(pc, x.Right)
-		_ = r
-
-		if leftTy, ok := tt.GetByID(l); ok && leftTy.Kind == ir.TK_Struct {
-			if opName, isOp := operatorMethodName(x.Op); isOp {
-				for _, m := range leftTy.StructMethods {
-					if m.Name == opName {
-						if fnTy, ok := tt.GetByID(m.FuncTyp); ok && fnTy.Kind == ir.TK_Function {
-							x.SetType(fnTy.ReturnType)
-							return fnTy.ReturnType
-						}
-					}
-				}
-			}
-		}
-
-		isNum := func(t ir.TypID) bool { return t == tt.PrimInt() || t == tt.PrimFloat() || t == tt.PrimByte() }
-
-		commonNum := func(a, b ir.TypID) (ir.TypID, bool) {
-			if a == b && isNum(a) {
-				return a, true
-			}
-
-			if isNum(a) && isNum(b) {
-				if a == tt.PrimFloat() || b == tt.PrimFloat() {
-					return tt.PrimFloat(), true
-				}
-
-				return tt.PrimInt(), true
-			}
-
-			return 0, false
-		}
-
-		switch x.Op {
-		case ir.OpAdd, ir.OpSub, ir.OpMul, ir.OpDiv:
-			if x.Op == ir.OpAdd && l == tt.PrimString() || r == tt.PrimString() {
-				x.SetType(tt.PrimString())
-				return tt.PrimString()
-			}
-
-			if x.Op == ir.OpAdd {
-				if lTy, lok := tt.GetByID(l); lok && lTy.Kind == ir.TK_Slice {
-					if rTy, rok := tt.GetByID(r); rok && rTy.Kind == ir.TK_Slice {
-						if ok, _ := isTypeAssignable(tt, lTy.ElemType, rTy.ElemType); ok {
-							x.SetType(l)
-							return l
-						}
-
-						if ok, _ := isTypeAssignable(tt, rTy.ElemType, lTy.ElemType); ok {
-							x.SetType(r)
-							return r
-						}
-					}
-				}
-			}
-
-			if t, ok := commonNum(l, r); ok {
-				x.SetType(t)
-				return t
-			}
-
-			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "numeric (int or float)", typeName(pc, l)+", "+typeName(pc, r))
-			x.SetType(tt.TypError())
-			return tt.TypError()
-
-		case ir.OpMod:
-			if l == tt.PrimInt() && r == tt.PrimInt() {
-				x.SetType(tt.PrimInt())
-				return tt.PrimInt()
-			}
-
-			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "int % int", typeName(pc, l)+", "+typeName(pc, r))
-			x.SetType(tt.TypError())
-			return tt.TypError()
-
-		case ir.OpAnd, ir.OpOr, ir.OpXor:
-			if l == tt.PrimInt() && r == tt.PrimInt() {
-				x.SetType(tt.PrimInt())
-				return tt.PrimInt()
-			}
-
-			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "int (bitwise)", typeName(pc, l)+", "+typeName(pc, r))
-			x.SetType(tt.TypError())
-			return tt.TypError()
-
-		case ir.OpShl, ir.OpShr:
-			if l == tt.PrimInt() && r == tt.PrimInt() {
-				x.SetType(tt.PrimInt())
-				return tt.PrimInt()
-			}
-
-			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "int << int / int >> int", typeName(pc, l)+", "+typeName(pc, r))
-			x.SetType(tt.TypError())
-			return tt.TypError()
-
-		case ir.OpLAnd, ir.OpLOr:
-			if l == tt.PrimBool() && r == tt.PrimBool() {
-				x.SetType(tt.PrimBool())
-				return tt.PrimBool()
-			}
-
-			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "bool && bool / bool || bool", typeName(pc, l)+", "+typeName(pc, r))
-			x.SetType(tt.TypError())
-			return tt.TypError()
-
-		case ir.OpEq, ir.OpNeq:
-			if _, ok := commonNum(l, r); ok {
-				x.SetType(tt.PrimBool())
-				return tt.PrimBool()
-			}
-
-			if okAB, _ := isTypeAssignable(tt, l, r); okAB {
-				x.SetType(tt.PrimBool())
-				return tt.PrimBool()
-			}
-
-			if okBA, _ := isTypeAssignable(tt, r, l); okBA {
-				x.SetType(tt.PrimBool())
-				return tt.PrimBool()
-			}
-
-			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "comparable types for ==", typeName(pc, l)+", "+typeName(pc, r))
-			x.SetType(tt.TypError())
-			return tt.TypError()
-
-		case ir.OpLt, ir.OpLte, ir.OpGt, ir.OpGte:
-			if _, ok := commonNum(l, r); ok {
-				x.SetType(tt.PrimBool())
-				return tt.PrimBool()
-			}
-
-			pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "numeric comparison", typeName(pc, l)+", "+typeName(pc, r))
-			x.SetType(tt.TypError())
-			return tt.TypError()
-
-		default:
-			pc.Diag.Report(diag.ErrInvalidOperator, x.Span(), "unknown binary op: "+string(x.Op))
-			x.SetType(tt.TypError())
-			return tt.TypError()
-		}
-
+		return p.synthesizeBinaryExprType(pc, x)
 	case *ir.CoalesceExpr:
 		tLeft := p.synthesizeTypeFromExpr(pc, x.Left)
 		tDefault := p.synthesizeTypeFromExpr(pc, x.Default)
@@ -1977,195 +1835,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 		}
 
 	case *ir.FieldAccessExpr:
-		var pkgQualifiedStartField int
-		var pkgQualifiedCur ir.TypID
-		if vr, ok := x.Expr.(*ir.VarRef); ok && vr.Ref.Sym != 0 {
-			if recvSym, found := pc.Pkg.Syms.GetByID(vr.Ref.Sym); found && recvSym.Kind == ir.SK_Package && len(x.Fields) >= 1 {
-				targetPkg := findPackageByPath(pc, recvSym.PackagePath)
-				if targetPkg == nil {
-					pc.Diag.Report(diag.ErrUndeclaredSymbol, x.Fields[0].Span, recvSym.PackagePath)
-					x.SetType(tt.TypError())
-					return tt.TypError()
-				}
-
-				memberSym, found := targetPkg.Scopes.LookupOnlyCurrent(targetPkg.Root, x.Fields[0].Name)
-				if !found {
-					pc.Diag.Report(diag.ErrUndeclaredSymbol, x.Fields[0].Span, recvSym.PackagePath+"."+x.Fields[0].Name)
-					x.SetType(tt.TypError())
-					return tt.TypError()
-				}
-
-				if isPackagePrivateName(x.Fields[0].Name) && targetPkg != pc.Pkg {
-					pc.Diag.Report(diag.ErrPrivateSymbolAccess, x.Fields[0].Span, x.Fields[0].Name, recvSym.PackagePath)
-					x.SetType(tt.TypError())
-					return tt.TypError()
-				}
-
-				memberInfo, _ := targetPkg.Syms.GetByID(memberSym)
-				if len(x.Fields) == 1 {
-					x.ResolvedSym = memberSym
-					x.SetType(memberInfo.Typ)
-					return memberInfo.Typ
-				}
-
-				x.ResolvedSym = memberSym
-				pkgQualifiedStartField = 1
-				pkgQualifiedCur = memberInfo.Typ
-			}
-		}
-
-		var cur ir.TypID
-		if pkgQualifiedStartField > 0 {
-			cur = pkgQualifiedCur
-		} else {
-			cur = p.synthesizeTypeFromExpr(pc, x.Expr)
-		}
-
-		fieldsToWalk := x.Fields[pkgQualifiedStartField:]
-		for _, fld := range fieldsToWalk {
-			ty, ok := tt.GetByID(cur)
-			if !ok {
-				pc.Diag.Report(diag.ErrUnknownType, fld.Span, "base")
-				x.SetType(tt.TypError())
-				return tt.TypError()
-			}
-
-			switch ty.Kind {
-			case ir.TK_Chan:
-				switch fld.Name {
-				case "send":
-					sendParam := &ir.FuncParam{Name: ir.NameRef{Name: "v"}, Type: &ir.TypeRef{Typ: ty.ElemType}}
-
-					cur = tt.AsyncFuncOf([]*ir.FuncParam{sendParam}, tt.TypNone())
-				case "recv":
-					tupleTyp := tt.TupleOf(
-						ir.TupleField{Name: "value", Type: ty.ElemType},
-						ir.TupleField{Name: "ok", Type: tt.PrimBool()},
-					)
-					cur = tt.AsyncFuncOf(nil, tupleTyp)
-				case "close":
-					cur = tt.FuncOf(nil, tt.TypNone())
-				default:
-					pc.Diag.Report(diag.ErrUnknownType, fld.Span, "chan method '"+fld.Name+"' (expected send/recv/close)")
-					x.SetType(tt.TypError())
-					return tt.TypError()
-				}
-
-			case ir.TK_Map:
-				if ty.KeyType != tt.PrimString() && ty.KeyType != tt.PrimAny() {
-					ktName := typeName(pc, ty.KeyType)
-					pc.Diag.Report(diag.ErrTypeMismatch, fld.Span, "map<string, _>", "map<"+ktName+", _>")
-					x.SetType(tt.TypError())
-					return tt.TypError()
-				}
-
-				cur = ty.ValueType
-
-			case ir.TK_Struct:
-				found := false
-				for _, sf := range ty.StructFields {
-					if sf.Name == fld.Name {
-						found = true
-						if sf.Private && !fieldAccessIsThroughThis(pc, x.Expr) {
-							pc.Diag.Report(diag.ErrPrivateFieldAccess, fld.Span, fld.Name, ty.StructName, fld.Name)
-						}
-
-						cur = sf.Type
-						break
-					}
-				}
-
-				if !found {
-					if x.MethodSym != 0 {
-						for _, m := range ty.StructMethods {
-							if m.Sym == x.MethodSym {
-								found = true
-								cur = m.FuncTyp
-								break
-							}
-						}
-					}
-
-					if !found {
-						for _, m := range ty.StructMethods {
-							if m.Name == fld.Name {
-								found = true
-								cur = m.FuncTyp
-								break
-							}
-						}
-					}
-				}
-
-				if !found {
-					pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("type %s has no field or method '%s'", ty.StructName, fld.Name))
-					x.SetType(tt.TypError())
-					return tt.TypError()
-				}
-
-			case ir.TK_Interface:
-				found := false
-				for _, m := range ty.InterfaceMethods {
-					if m.Name == fld.Name {
-						found = true
-						cur = m.FuncTyp
-						break
-					}
-				}
-
-				if !found {
-					pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("interface %s has no method '%s'", ty.InterfaceName, fld.Name))
-					x.SetType(tt.TypError())
-					return tt.TypError()
-				}
-
-			case ir.TK_Enum:
-				foundCase := false
-				for _, c := range ty.EnumCases {
-					if c.Name == fld.Name {
-						foundCase = true
-						break
-					}
-				}
-
-				if !foundCase {
-					foundField := false
-					for _, f := range ty.EnumFields {
-						if f.Name == fld.Name {
-							foundField = true
-							cur = f.Type
-							break
-						}
-					}
-
-					if !foundField {
-						foundMethod := false
-						for _, m := range ty.EnumMethods {
-							if m.Name == fld.Name {
-								foundMethod = true
-								cur = m.Type
-								break
-							}
-						}
-
-						if !foundMethod {
-							pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("enum %s has no case, field, or method named '%s'", ty.EnumName, fld.Name))
-							x.SetType(tt.TypError())
-							return tt.TypError()
-						}
-					}
-				}
-
-			default:
-				baseName := typeName(pc, cur)
-				pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, baseName)
-				x.SetType(tt.TypError())
-				return tt.TypError()
-			}
-		}
-
-		x.SetType(cur)
-		return cur
+		return p.synthesizeFieldAccessExprType(pc, x)
 	case *ir.VarRef:
 		symPkg := pc.Pkg
 		if x.Ref.Qualifier != "" {
@@ -2221,144 +1891,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 		x.SetType(retType)
 		return retType
 	case *ir.FuncCallExpr:
-		prelimArgTypes := make([]ir.TypID, len(x.Args))
-		for i, arg := range x.Args {
-			prelimArgTypes[i] = p.synthesizeTypeFromExpr(pc, arg.Expr)
-		}
-
-		if varRef, ok := x.Callee.(*ir.VarRef); ok {
-			scope, _ := pc.Pkg.Scopes.EnclosingScope(x.ID())
-			candidates := pc.Pkg.Scopes.LookupAll(scope, varRef.Ref.Name)
-
-			if len(candidates) > 1 {
-				bestMatch := p.resolveOverload(pc, candidates, prelimArgTypes)
-				if bestMatch != 0 {
-					varRef.Ref.Sym = bestMatch
-				}
-			}
-		}
-
-		if fa, ok := x.Callee.(*ir.FieldAccessExpr); ok && len(fa.Fields) > 0 {
-			recvTy := p.synthesizeTypeFromExpr(pc, fa.Expr)
-			methodName := fa.Fields[len(fa.Fields)-1].Name
-			if ty, ok := tt.GetByID(recvTy); ok && ty.Kind == ir.TK_Struct {
-				var candidates []ir.SymID
-				for _, m := range ty.StructMethods {
-					if m.Name == methodName && m.Sym != 0 {
-						candidates = append(candidates, m.Sym)
-					}
-				}
-
-				if len(candidates) > 1 {
-					best := p.resolveOverload(pc, candidates, prelimArgTypes)
-					if best != 0 {
-						fa.MethodSym = best
-						for _, pkg := range pc.Pkgs {
-							if bestSym, ok := pkg.Syms.GetByID(best); ok {
-								fa.SetType(bestSym.Typ)
-								break
-							}
-						}
-					}
-				}
-			}
-		}
-
-		p.rewriteComposableCalleeToCtor(pc, x, prelimArgTypes)
-
-		funcTy := p.synthesizeTypeFromExpr(pc, x.Callee)
-		funcTyDef, ok := tt.GetByID(funcTy)
-		if !ok || funcTyDef.Kind != ir.TK_Function {
-			pc.Diag.Report(diag.ErrTypeMismatch, x.Callee.Span(), "function", typeName(pc, funcTy))
-			x.SetType(tt.TypError())
-			return tt.TypError()
-		}
-
-		hasNamedArgs := false
-		for _, arg := range x.Args {
-			if arg.Name != "" {
-				hasNamedArgs = true
-				break
-			}
-		}
-
-		var argTypes []ir.TypID
-		if hasNamedArgs {
-			argTypes = make([]ir.TypID, len(funcTyDef.ParamTypes))
-			reorderedArgs := make([]ir.FuncCallArg, len(funcTyDef.ParamTypes))
-			positionalIndex := 0
-			used := make([]bool, len(x.Args))
-
-			for i, arg := range x.Args {
-				if arg.Name == "" {
-					if positionalIndex >= len(funcTyDef.ParamTypes) {
-						pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), typeKeyDisplay(funcTyDef), "too many positional arguments")
-						x.SetType(tt.TypError())
-						return tt.TypError()
-					}
-
-					reorderedArgs[positionalIndex] = arg
-					used[i] = true
-					positionalIndex++
-				}
-			}
-
-			for i, arg := range x.Args {
-				if used[i] {
-					continue
-				}
-
-				paramIndex := -1
-				for pi, param := range funcTyDef.ParamTypes {
-					if param.Name.Name == arg.Name {
-						paramIndex = pi
-						break
-					}
-				}
-
-				if paramIndex == -1 {
-					pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), typeKeyDisplay(funcTyDef), fmt.Sprintf("unknown parameter name '%s'", arg.Name))
-					x.SetType(tt.TypError())
-					return tt.TypError()
-				}
-
-				if reorderedArgs[paramIndex].Expr != nil {
-					pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), typeKeyDisplay(funcTyDef), fmt.Sprintf("parameter '%s' specified multiple times", arg.Name))
-					x.SetType(tt.TypError())
-					return tt.TypError()
-				}
-
-				reorderedArgs[paramIndex] = arg
-			}
-
-			x.Args = reorderedArgs
-
-			for i, arg := range reorderedArgs {
-				if arg.Expr != nil {
-					argTypes[i] = p.synthesizeTypeFromExpr(pc, arg.Expr)
-				} else {
-					argTypes[i] = 0
-				}
-			}
-		} else {
-			argTypes = make([]ir.TypID, len(x.Args))
-			for i, arg := range x.Args {
-				argTypes[i] = p.synthesizeTypeFromExpr(pc, arg.Expr)
-				if i < len(funcTyDef.ParamTypes) && funcTyDef.ParamTypes[i] != nil && funcTyDef.ParamTypes[i].Type != nil {
-					p.applyLiteralTypeHint(pc, arg.Expr, funcTyDef.ParamTypes[i].Type.Typ)
-					argTypes[i] = arg.Expr.GetType()
-				}
-			}
-		}
-
-		if ok, reason := assertFunctionParameterCompatibility(pc, tt, funcTyDef, argTypes, x.Args); !ok {
-			pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), typeKeyDisplay(funcTyDef), reason)
-			x.SetType(tt.TypError())
-			return tt.TypError()
-		}
-
-		x.SetType(funcTyDef.ReturnType)
-		return funcTyDef.ReturnType
+		return p.synthesizeFuncCallExprType(pc, x)
 	case *ir.FuncLitExpr:
 		if x.GetType() != 0 {
 			return x.GetType()
@@ -2526,113 +2059,7 @@ func (p *PassInferTypes) synthesizeTypeFromExpr(pc *PassContext, expr ir.Expr) i
 		x.SetType(chTyp)
 		return chTyp
 	case *ir.NewExpr:
-		argTypes := make([]ir.TypID, len(x.Args))
-		for i, arg := range x.Args {
-			argTypes[i] = p.synthesizeTypeFromExpr(pc, arg.Expr)
-		}
-
-		if x.TypeName.Sym == 0 {
-			x.SetType(tt.TypError())
-			return tt.TypError()
-		}
-
-		symPkg := pc.Pkg
-		if x.Qualifier != "" {
-			scope, _ := pc.Pkg.Scopes.EnclosingScope(x.ID())
-			if qSym, ok := pc.Pkg.Scopes.Lookup(scope, x.Qualifier); ok {
-				if pkgSym, found := pc.Pkg.Syms.GetByID(qSym); found && pkgSym.Kind == ir.SK_Package {
-					if target := findPackageByPath(pc, pkgSym.PackagePath); target != nil {
-						symPkg = target
-					}
-				}
-			}
-		}
-
-		sym, ok := symPkg.Syms.GetByID(x.TypeName.Sym)
-		if !ok || sym.Typ == 0 {
-			x.SetType(tt.TypError())
-			return tt.TypError()
-		}
-
-		ty, ok := tt.GetByID(sym.Typ)
-		if !ok || ty.Kind != ir.TK_Struct {
-			pc.Diag.Report(diag.ErrTypeMismatch, x.TypeName.Span, "user-defined type", x.TypeName.Name)
-			x.SetType(tt.TypError())
-			return tt.TypError()
-		}
-
-		if x.CtorSym != 0 {
-			x.SetType(sym.Typ)
-			return sym.Typ
-		}
-
-		typeArgSub := buildTypeArgSubstitution(ty.TypeParams, x.TypeArgs)
-		if len(x.Args) > 0 {
-			matchedSym := ir.SymID(0)
-			var matchedArgs []ir.FuncCallArg
-			bestScore := -1
-			for _, ci := range ty.StructCtors {
-				ftDef, ok := tt.GetByID(ci.FuncTyp)
-				if !ok {
-					continue
-				}
-
-				params := substituteFuncParams(tt, ftDef.ParamTypes, typeArgSub)
-				resolved, ok := resolveCallArgs(tt, params, x.Args, argTypes)
-				if !ok {
-					continue
-				}
-
-				score := 0
-				for _, p := range params {
-					if p == nil || p.Type == nil {
-						continue
-					}
-
-					if p.Type.Typ != tt.PrimAny() {
-						score++
-					}
-				}
-
-				if score > bestScore {
-					bestScore = score
-					matchedSym = ci.Sym
-					matchedArgs = resolved
-				}
-			}
-
-			if matchedSym == 0 {
-				pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), "constructor", x.TypeName.Name)
-			} else {
-				x.Args = matchedArgs
-				if len(typeArgSub) > 0 {
-					for i, ci := range ty.StructCtors {
-						if ci.Sym != matchedSym {
-							continue
-						}
-
-						if ftDef, ok := tt.GetByID(ci.FuncTyp); ok {
-							for j := range x.Args {
-								if x.Args[j].Expr == nil || j >= len(ftDef.ParamTypes) || ftDef.ParamTypes[j] == nil || ftDef.ParamTypes[j].Type == nil {
-									continue
-								}
-
-								erased := eraseTypeParams(tt, ftDef.ParamTypes[j].Type.Typ)
-								applyCodegenLiteralHint(tt, x.Args[j].Expr, erased)
-							}
-						}
-
-						_ = i
-						break
-					}
-				}
-			}
-
-			x.CtorSym = matchedSym
-		}
-
-		x.SetType(sym.Typ)
-		return sym.Typ
+		return p.synthesizeNewExprType(pc, x)
 	case *ir.ComposableCallExpr:
 		return p.synthesizeComposableCallType(pc, x)
 	default:
@@ -4079,4 +3506,598 @@ func findIterableNext(pc *PassContext, ty *ir.Type) (ir.SymID, ir.TypID) {
 	}
 
 	return 0, 0
+}
+
+func (p *PassInferTypes) synthesizeBinaryExprType(pc *PassContext, x *ir.BinaryExpr) ir.TypID {
+	tt := pc.Types
+	l := p.synthesizeTypeFromExpr(pc, x.Left)
+	r := p.synthesizeTypeFromExpr(pc, x.Right)
+	_ = r
+
+	if leftTy, ok := tt.GetByID(l); ok && leftTy.Kind == ir.TK_Struct {
+		if opName, isOp := operatorMethodName(x.Op); isOp {
+			for _, m := range leftTy.StructMethods {
+				if m.Name == opName {
+					if fnTy, ok := tt.GetByID(m.FuncTyp); ok && fnTy.Kind == ir.TK_Function {
+						x.SetType(fnTy.ReturnType)
+						return fnTy.ReturnType
+					}
+				}
+			}
+		}
+	}
+
+	isNum := func(t ir.TypID) bool { return t == tt.PrimInt() || t == tt.PrimFloat() || t == tt.PrimByte() }
+
+	commonNum := func(a, b ir.TypID) (ir.TypID, bool) {
+		if a == b && isNum(a) {
+			return a, true
+		}
+
+		if isNum(a) && isNum(b) {
+			if a == tt.PrimFloat() || b == tt.PrimFloat() {
+				return tt.PrimFloat(), true
+			}
+
+			return tt.PrimInt(), true
+		}
+
+		return 0, false
+	}
+
+	switch x.Op {
+	case ir.OpAdd, ir.OpSub, ir.OpMul, ir.OpDiv:
+		if x.Op == ir.OpAdd && l == tt.PrimString() || r == tt.PrimString() {
+			x.SetType(tt.PrimString())
+			return tt.PrimString()
+		}
+
+		if x.Op == ir.OpAdd {
+			if lTy, lok := tt.GetByID(l); lok && lTy.Kind == ir.TK_Slice {
+				if rTy, rok := tt.GetByID(r); rok && rTy.Kind == ir.TK_Slice {
+					if ok, _ := isTypeAssignable(tt, lTy.ElemType, rTy.ElemType); ok {
+						x.SetType(l)
+						return l
+					}
+
+					if ok, _ := isTypeAssignable(tt, rTy.ElemType, lTy.ElemType); ok {
+						x.SetType(r)
+						return r
+					}
+				}
+			}
+		}
+
+		if t, ok := commonNum(l, r); ok {
+			x.SetType(t)
+			return t
+		}
+
+		pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "numeric (int or float)", typeName(pc, l)+", "+typeName(pc, r))
+		x.SetType(tt.TypError())
+		return tt.TypError()
+
+	case ir.OpMod:
+		if l == tt.PrimInt() && r == tt.PrimInt() {
+			x.SetType(tt.PrimInt())
+			return tt.PrimInt()
+		}
+
+		pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "int % int", typeName(pc, l)+", "+typeName(pc, r))
+		x.SetType(tt.TypError())
+		return tt.TypError()
+
+	case ir.OpAnd, ir.OpOr, ir.OpXor:
+		if l == tt.PrimInt() && r == tt.PrimInt() {
+			x.SetType(tt.PrimInt())
+			return tt.PrimInt()
+		}
+
+		pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "int (bitwise)", typeName(pc, l)+", "+typeName(pc, r))
+		x.SetType(tt.TypError())
+		return tt.TypError()
+
+	case ir.OpShl, ir.OpShr:
+		if l == tt.PrimInt() && r == tt.PrimInt() {
+			x.SetType(tt.PrimInt())
+			return tt.PrimInt()
+		}
+
+		pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "int << int / int >> int", typeName(pc, l)+", "+typeName(pc, r))
+		x.SetType(tt.TypError())
+		return tt.TypError()
+
+	case ir.OpLAnd, ir.OpLOr:
+		if l == tt.PrimBool() && r == tt.PrimBool() {
+			x.SetType(tt.PrimBool())
+			return tt.PrimBool()
+		}
+
+		pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "bool && bool / bool || bool", typeName(pc, l)+", "+typeName(pc, r))
+		x.SetType(tt.TypError())
+		return tt.TypError()
+
+	case ir.OpEq, ir.OpNeq:
+		if _, ok := commonNum(l, r); ok {
+			x.SetType(tt.PrimBool())
+			return tt.PrimBool()
+		}
+
+		if okAB, _ := isTypeAssignable(tt, l, r); okAB {
+			x.SetType(tt.PrimBool())
+			return tt.PrimBool()
+		}
+
+		if okBA, _ := isTypeAssignable(tt, r, l); okBA {
+			x.SetType(tt.PrimBool())
+			return tt.PrimBool()
+		}
+
+		pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "comparable types for ==", typeName(pc, l)+", "+typeName(pc, r))
+		x.SetType(tt.TypError())
+		return tt.TypError()
+
+	case ir.OpLt, ir.OpLte, ir.OpGt, ir.OpGte:
+		if _, ok := commonNum(l, r); ok {
+			x.SetType(tt.PrimBool())
+			return tt.PrimBool()
+		}
+
+		pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "numeric comparison", typeName(pc, l)+", "+typeName(pc, r))
+		x.SetType(tt.TypError())
+		return tt.TypError()
+	}
+
+	pc.Diag.Report(diag.ErrInvalidOperator, x.Span(), "unknown binary op: "+string(x.Op))
+	x.SetType(tt.TypError())
+	return tt.TypError()
+}
+
+func (p *PassInferTypes) synthesizeFieldAccessExprType(pc *PassContext, x *ir.FieldAccessExpr) ir.TypID {
+	tt := pc.Types
+
+	var pkgQualifiedStartField int
+	var pkgQualifiedCur ir.TypID
+	if vr, ok := x.Expr.(*ir.VarRef); ok && vr.Ref.Sym != 0 {
+		if recvSym, found := pc.Pkg.Syms.GetByID(vr.Ref.Sym); found && recvSym.Kind == ir.SK_Package && len(x.Fields) >= 1 {
+			targetPkg := findPackageByPath(pc, recvSym.PackagePath)
+			if targetPkg == nil {
+				pc.Diag.Report(diag.ErrUndeclaredSymbol, x.Fields[0].Span, recvSym.PackagePath)
+				x.SetType(tt.TypError())
+				return tt.TypError()
+			}
+
+			memberSym, found := targetPkg.Scopes.LookupOnlyCurrent(targetPkg.Root, x.Fields[0].Name)
+			if !found {
+				pc.Diag.Report(diag.ErrUndeclaredSymbol, x.Fields[0].Span, recvSym.PackagePath+"."+x.Fields[0].Name)
+				x.SetType(tt.TypError())
+				return tt.TypError()
+			}
+
+			if isPackagePrivateName(x.Fields[0].Name) && targetPkg != pc.Pkg {
+				pc.Diag.Report(diag.ErrPrivateSymbolAccess, x.Fields[0].Span, x.Fields[0].Name, recvSym.PackagePath)
+				x.SetType(tt.TypError())
+				return tt.TypError()
+			}
+
+			memberInfo, _ := targetPkg.Syms.GetByID(memberSym)
+			if len(x.Fields) == 1 {
+				x.ResolvedSym = memberSym
+				x.SetType(memberInfo.Typ)
+				return memberInfo.Typ
+			}
+
+			x.ResolvedSym = memberSym
+			pkgQualifiedStartField = 1
+			pkgQualifiedCur = memberInfo.Typ
+		}
+	}
+
+	var cur ir.TypID
+	if pkgQualifiedStartField > 0 {
+		cur = pkgQualifiedCur
+	} else {
+		cur = p.synthesizeTypeFromExpr(pc, x.Expr)
+	}
+
+	fieldsToWalk := x.Fields[pkgQualifiedStartField:]
+	for _, fld := range fieldsToWalk {
+		ty, ok := tt.GetByID(cur)
+		if !ok {
+			pc.Diag.Report(diag.ErrUnknownType, fld.Span, "base")
+			x.SetType(tt.TypError())
+			return tt.TypError()
+		}
+
+		switch ty.Kind {
+		case ir.TK_Chan:
+			switch fld.Name {
+			case "send":
+				sendParam := &ir.FuncParam{Name: ir.NameRef{Name: "v"}, Type: &ir.TypeRef{Typ: ty.ElemType}}
+
+				cur = tt.AsyncFuncOf([]*ir.FuncParam{sendParam}, tt.TypNone())
+			case "recv":
+				tupleTyp := tt.TupleOf(
+					ir.TupleField{Name: "value", Type: ty.ElemType},
+					ir.TupleField{Name: "ok", Type: tt.PrimBool()},
+				)
+				cur = tt.AsyncFuncOf(nil, tupleTyp)
+			case "close":
+				cur = tt.FuncOf(nil, tt.TypNone())
+			default:
+				pc.Diag.Report(diag.ErrUnknownType, fld.Span, "chan method '"+fld.Name+"' (expected send/recv/close)")
+				x.SetType(tt.TypError())
+				return tt.TypError()
+			}
+
+		case ir.TK_Map:
+			if ty.KeyType != tt.PrimString() && ty.KeyType != tt.PrimAny() {
+				ktName := typeName(pc, ty.KeyType)
+				pc.Diag.Report(diag.ErrTypeMismatch, fld.Span, "map<string, _>", "map<"+ktName+", _>")
+				x.SetType(tt.TypError())
+				return tt.TypError()
+			}
+
+			cur = ty.ValueType
+
+		case ir.TK_Struct:
+			found := false
+			for _, sf := range ty.StructFields {
+				if sf.Name == fld.Name {
+					found = true
+					if sf.Private && !fieldAccessIsThroughThis(pc, x.Expr) {
+						pc.Diag.Report(diag.ErrPrivateFieldAccess, fld.Span, fld.Name, ty.StructName, fld.Name)
+					}
+
+					cur = sf.Type
+					break
+				}
+			}
+
+			if !found {
+				if x.MethodSym != 0 {
+					for _, m := range ty.StructMethods {
+						if m.Sym == x.MethodSym {
+							found = true
+							cur = m.FuncTyp
+							break
+						}
+					}
+				}
+
+				if !found {
+					for _, m := range ty.StructMethods {
+						if m.Name == fld.Name {
+							found = true
+							cur = m.FuncTyp
+							break
+						}
+					}
+				}
+			}
+
+			if !found {
+				pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("type %s has no field or method '%s'", ty.StructName, fld.Name))
+				x.SetType(tt.TypError())
+				return tt.TypError()
+			}
+
+		case ir.TK_Interface:
+			found := false
+			for _, m := range ty.InterfaceMethods {
+				if m.Name == fld.Name {
+					found = true
+					cur = m.FuncTyp
+					break
+				}
+			}
+
+			if !found {
+				pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("interface %s has no method '%s'", ty.InterfaceName, fld.Name))
+				x.SetType(tt.TypError())
+				return tt.TypError()
+			}
+
+		case ir.TK_Enum:
+			foundCase := false
+			for _, c := range ty.EnumCases {
+				if c.Name == fld.Name {
+					foundCase = true
+					break
+				}
+			}
+
+			if !foundCase {
+				foundField := false
+				for _, f := range ty.EnumFields {
+					if f.Name == fld.Name {
+						foundField = true
+						cur = f.Type
+						break
+					}
+				}
+
+				if !foundField {
+					foundMethod := false
+					for _, m := range ty.EnumMethods {
+						if m.Name == fld.Name {
+							foundMethod = true
+							cur = m.Type
+							break
+						}
+					}
+
+					if !foundMethod {
+						pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("enum %s has no case, field, or method named '%s'", ty.EnumName, fld.Name))
+						x.SetType(tt.TypError())
+						return tt.TypError()
+					}
+				}
+			}
+
+		default:
+			baseName := typeName(pc, cur)
+			pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, baseName)
+			x.SetType(tt.TypError())
+			return tt.TypError()
+		}
+	}
+
+	x.SetType(cur)
+	return cur
+}
+
+func (p *PassInferTypes) synthesizeFuncCallExprType(pc *PassContext, x *ir.FuncCallExpr) ir.TypID {
+	tt := pc.Types
+
+	prelimArgTypes := make([]ir.TypID, len(x.Args))
+	for i, arg := range x.Args {
+		prelimArgTypes[i] = p.synthesizeTypeFromExpr(pc, arg.Expr)
+	}
+
+	if varRef, ok := x.Callee.(*ir.VarRef); ok {
+		scope, _ := pc.Pkg.Scopes.EnclosingScope(x.ID())
+		candidates := pc.Pkg.Scopes.LookupAll(scope, varRef.Ref.Name)
+
+		if len(candidates) > 1 {
+			bestMatch := p.resolveOverload(pc, candidates, prelimArgTypes)
+			if bestMatch != 0 {
+				varRef.Ref.Sym = bestMatch
+			}
+		}
+	}
+
+	if fa, ok := x.Callee.(*ir.FieldAccessExpr); ok && len(fa.Fields) > 0 {
+		recvTy := p.synthesizeTypeFromExpr(pc, fa.Expr)
+		methodName := fa.Fields[len(fa.Fields)-1].Name
+		if ty, ok := tt.GetByID(recvTy); ok && ty.Kind == ir.TK_Struct {
+			var candidates []ir.SymID
+			for _, m := range ty.StructMethods {
+				if m.Name == methodName && m.Sym != 0 {
+					candidates = append(candidates, m.Sym)
+				}
+			}
+
+			if len(candidates) > 1 {
+				best := p.resolveOverload(pc, candidates, prelimArgTypes)
+				if best != 0 {
+					fa.MethodSym = best
+					for _, pkg := range pc.Pkgs {
+						if bestSym, ok := pkg.Syms.GetByID(best); ok {
+							fa.SetType(bestSym.Typ)
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	p.rewriteComposableCalleeToCtor(pc, x, prelimArgTypes)
+
+	funcTy := p.synthesizeTypeFromExpr(pc, x.Callee)
+	funcTyDef, ok := tt.GetByID(funcTy)
+	if !ok || funcTyDef.Kind != ir.TK_Function {
+		pc.Diag.Report(diag.ErrTypeMismatch, x.Callee.Span(), "function", typeName(pc, funcTy))
+		x.SetType(tt.TypError())
+		return tt.TypError()
+	}
+
+	hasNamedArgs := false
+	for _, arg := range x.Args {
+		if arg.Name != "" {
+			hasNamedArgs = true
+			break
+		}
+	}
+
+	var argTypes []ir.TypID
+	if hasNamedArgs {
+		argTypes = make([]ir.TypID, len(funcTyDef.ParamTypes))
+		reorderedArgs := make([]ir.FuncCallArg, len(funcTyDef.ParamTypes))
+		positionalIndex := 0
+		used := make([]bool, len(x.Args))
+
+		for i, arg := range x.Args {
+			if arg.Name == "" {
+				if positionalIndex >= len(funcTyDef.ParamTypes) {
+					pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), typeKeyDisplay(funcTyDef), "too many positional arguments")
+					x.SetType(tt.TypError())
+					return tt.TypError()
+				}
+
+				reorderedArgs[positionalIndex] = arg
+				used[i] = true
+				positionalIndex++
+			}
+		}
+
+		for i, arg := range x.Args {
+			if used[i] {
+				continue
+			}
+
+			paramIndex := -1
+			for pi, param := range funcTyDef.ParamTypes {
+				if param.Name.Name == arg.Name {
+					paramIndex = pi
+					break
+				}
+			}
+
+			if paramIndex == -1 {
+				pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), typeKeyDisplay(funcTyDef), fmt.Sprintf("unknown parameter name '%s'", arg.Name))
+				x.SetType(tt.TypError())
+				return tt.TypError()
+			}
+
+			if reorderedArgs[paramIndex].Expr != nil {
+				pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), typeKeyDisplay(funcTyDef), fmt.Sprintf("parameter '%s' specified multiple times", arg.Name))
+				x.SetType(tt.TypError())
+				return tt.TypError()
+			}
+
+			reorderedArgs[paramIndex] = arg
+		}
+
+		x.Args = reorderedArgs
+
+		for i, arg := range reorderedArgs {
+			if arg.Expr != nil {
+				argTypes[i] = p.synthesizeTypeFromExpr(pc, arg.Expr)
+			} else {
+				argTypes[i] = 0
+			}
+		}
+	} else {
+		argTypes = make([]ir.TypID, len(x.Args))
+		for i, arg := range x.Args {
+			argTypes[i] = p.synthesizeTypeFromExpr(pc, arg.Expr)
+			if i < len(funcTyDef.ParamTypes) && funcTyDef.ParamTypes[i] != nil && funcTyDef.ParamTypes[i].Type != nil {
+				p.applyLiteralTypeHint(pc, arg.Expr, funcTyDef.ParamTypes[i].Type.Typ)
+				argTypes[i] = arg.Expr.GetType()
+			}
+		}
+	}
+
+	if ok, reason := assertFunctionParameterCompatibility(pc, tt, funcTyDef, argTypes, x.Args); !ok {
+		pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), typeKeyDisplay(funcTyDef), reason)
+		x.SetType(tt.TypError())
+		return tt.TypError()
+	}
+
+	x.SetType(funcTyDef.ReturnType)
+	return funcTyDef.ReturnType
+}
+
+func (p *PassInferTypes) synthesizeNewExprType(pc *PassContext, x *ir.NewExpr) ir.TypID {
+	tt := pc.Types
+
+	argTypes := make([]ir.TypID, len(x.Args))
+	for i, arg := range x.Args {
+		argTypes[i] = p.synthesizeTypeFromExpr(pc, arg.Expr)
+	}
+
+	if x.TypeName.Sym == 0 {
+		x.SetType(tt.TypError())
+		return tt.TypError()
+	}
+
+	symPkg := pc.Pkg
+	if x.Qualifier != "" {
+		scope, _ := pc.Pkg.Scopes.EnclosingScope(x.ID())
+		if qSym, ok := pc.Pkg.Scopes.Lookup(scope, x.Qualifier); ok {
+			if pkgSym, found := pc.Pkg.Syms.GetByID(qSym); found && pkgSym.Kind == ir.SK_Package {
+				if target := findPackageByPath(pc, pkgSym.PackagePath); target != nil {
+					symPkg = target
+				}
+			}
+		}
+	}
+
+	sym, ok := symPkg.Syms.GetByID(x.TypeName.Sym)
+	if !ok || sym.Typ == 0 {
+		x.SetType(tt.TypError())
+		return tt.TypError()
+	}
+
+	ty, ok := tt.GetByID(sym.Typ)
+	if !ok || ty.Kind != ir.TK_Struct {
+		pc.Diag.Report(diag.ErrTypeMismatch, x.TypeName.Span, "user-defined type", x.TypeName.Name)
+		x.SetType(tt.TypError())
+		return tt.TypError()
+	}
+
+	if x.CtorSym != 0 {
+		x.SetType(sym.Typ)
+		return sym.Typ
+	}
+
+	typeArgSub := buildTypeArgSubstitution(ty.TypeParams, x.TypeArgs)
+	if len(x.Args) > 0 {
+		matchedSym := ir.SymID(0)
+		var matchedArgs []ir.FuncCallArg
+		bestScore := -1
+		for _, ci := range ty.StructCtors {
+			ftDef, ok := tt.GetByID(ci.FuncTyp)
+			if !ok {
+				continue
+			}
+
+			params := substituteFuncParams(tt, ftDef.ParamTypes, typeArgSub)
+			resolved, ok := resolveCallArgs(tt, params, x.Args, argTypes)
+			if !ok {
+				continue
+			}
+
+			score := 0
+			for _, p := range params {
+				if p == nil || p.Type == nil {
+					continue
+				}
+
+				if p.Type.Typ != tt.PrimAny() {
+					score++
+				}
+			}
+
+			if score > bestScore {
+				bestScore = score
+				matchedSym = ci.Sym
+				matchedArgs = resolved
+			}
+		}
+
+		if matchedSym == 0 {
+			pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), "constructor", x.TypeName.Name)
+		} else {
+			x.Args = matchedArgs
+			if len(typeArgSub) > 0 {
+				for i, ci := range ty.StructCtors {
+					if ci.Sym != matchedSym {
+						continue
+					}
+
+					if ftDef, ok := tt.GetByID(ci.FuncTyp); ok {
+						for j := range x.Args {
+							if x.Args[j].Expr == nil || j >= len(ftDef.ParamTypes) || ftDef.ParamTypes[j] == nil || ftDef.ParamTypes[j].Type == nil {
+								continue
+							}
+
+							erased := eraseTypeParams(tt, ftDef.ParamTypes[j].Type.Typ)
+							applyCodegenLiteralHint(tt, x.Args[j].Expr, erased)
+						}
+					}
+
+					_ = i
+					break
+				}
+			}
+		}
+
+		x.CtorSym = matchedSym
+	}
+
+	x.SetType(sym.Typ)
+	return sym.Typ
 }
