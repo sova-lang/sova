@@ -62,7 +62,7 @@ func (s *Server) findDefinitionLocations(docURI uri.URI, pos protocol.Position, 
 		return nil, nil
 	}
 
-	return []protocol.Location{{URI: declURI, Range: spanToLSPRange(span)}}, nil
+	return []protocol.Location{{URI: declURI, Range: spanToRange(span)}}, nil
 }
 
 func declarationSpan(c *compiler.CompilerContext, target *cursorTarget, viaType bool) diag.TextSpan {

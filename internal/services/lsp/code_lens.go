@@ -34,7 +34,7 @@ func (s *Server) CodeLens(ctx context.Context, params *protocol.CodeLensParams) 
 			lenses = append(lenses, refsCountLens(c, n.Name.Sym, n.Name.Span))
 			if n.Name.Name == "main" {
 				lenses = append(lenses, protocol.CodeLens{
-					Range: spanToLSPRange(n.Name.Span),
+					Range: spanToRange(n.Name.Span),
 					Command: &protocol.Command{
 						Title:     "▶ Run",
 						Command:   "sova.runMain",
@@ -60,7 +60,7 @@ func (s *Server) CodeLens(ctx context.Context, params *protocol.CodeLensParams) 
 
 		case *ir.TestDeclStmt:
 			lenses = append(lenses, protocol.CodeLens{
-				Range: spanToLSPRange(n.Span()),
+				Range: spanToRange(n.Span()),
 				Command: &protocol.Command{
 					Title:     "▶ Run test",
 					Command:   "sova.runTest",
@@ -84,7 +84,7 @@ func refsCountLens(c *compiler.CompilerContext, sym ir.SymID, span diag.TextSpan
 	}
 
 	return protocol.CodeLens{
-		Range: spanToLSPRange(span),
+		Range: spanToRange(span),
 		Command: &protocol.Command{
 			Title: fmt.Sprintf("%d references", count),
 		},

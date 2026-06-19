@@ -231,7 +231,7 @@ func isClassNameValid(name string) bool {
 }
 
 func cssClassHover(c *compiler.CompilerContext, src string, pos protocol.Position) *protocol.Hover {
-	offset := lspPositionToOffset(src, pos)
+	offset := positionToOffset(src, pos)
 	name, start, end, ok := classNameAtCursor(src, offset)
 	if !ok {
 		return nil
@@ -258,8 +258,8 @@ func cssClassHover(c *compiler.CompilerContext, src string, pos protocol.Positio
 		body += "\n\n```css\n" + rule + "\n```"
 	}
 
-	startPos := offsetToLSPPosition(src, start)
-	endPos := offsetToLSPPosition(src, end)
+	startPos := offsetToPosition(src, start)
+	endPos := offsetToPosition(src, end)
 	rng := protocol.Range{Start: startPos, End: endPos}
 
 	return &protocol.Hover{
@@ -269,7 +269,7 @@ func cssClassHover(c *compiler.CompilerContext, src string, pos protocol.Positio
 }
 
 func cssClassDefinition(c *compiler.CompilerContext, src string, pos protocol.Position) []protocol.Location {
-	offset := lspPositionToOffset(src, pos)
+	offset := positionToOffset(src, pos)
 	name, _, _, ok := classNameAtCursor(src, offset)
 	if !ok {
 		return nil
@@ -479,7 +479,7 @@ func reportUnknownClassesInArg(arg ir.FuncCallArg, known map[string]struct{}, ou
 			Severity: protocol.DiagnosticSeverityWarning,
 			Source:   "sova-lsp",
 			Message:  "unknown CSS class `" + token + "` - does not appear in any project stylesheet",
-			Range:    spanToLSPRange(litSpan),
+			Range:    spanToRange(litSpan),
 		})
 	}
 }

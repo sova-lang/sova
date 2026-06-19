@@ -60,8 +60,8 @@ func buildDocumentSymbols(tt *ir.TypeTable, f *ir.File) []protocol.DocumentSymbo
 					Name:           tgt.Name.Name,
 					Detail:         detail,
 					Kind:           kind,
-					Range:          spanToLSPRange(n.Span()),
-					SelectionRange: spanToLSPRange(tgt.Name.Span),
+					Range:          spanToRange(n.Span()),
+					SelectionRange: spanToRange(tgt.Name.Span),
 				})
 			}
 
@@ -77,8 +77,8 @@ func buildDocumentSymbols(tt *ir.TypeTable, f *ir.File) []protocol.DocumentSymbo
 					Name:           fld.Name.Name,
 					Detail:         typeStr,
 					Kind:           protocol.SymbolKindField,
-					Range:          spanToLSPRange(fld.Span()),
-					SelectionRange: spanToLSPRange(fld.Name.Span),
+					Range:          spanToRange(fld.Span()),
+					SelectionRange: spanToRange(fld.Name.Span),
 				})
 			}
 
@@ -87,8 +87,8 @@ func buildDocumentSymbols(tt *ir.TypeTable, f *ir.File) []protocol.DocumentSymbo
 					Name:           "new",
 					Detail:         formatFuncParams(tt, ctor.Params),
 					Kind:           protocol.SymbolKindConstructor,
-					Range:          spanToLSPRange(ctor.Span()),
-					SelectionRange: spanToLSPRange(ctor.Span()),
+					Range:          spanToRange(ctor.Span()),
+					SelectionRange: spanToRange(ctor.Span()),
 				})
 			}
 
@@ -99,30 +99,30 @@ func buildDocumentSymbols(tt *ir.TypeTable, f *ir.File) []protocol.DocumentSymbo
 			out = append(out, protocol.DocumentSymbol{
 				Name:           n.Name.Name,
 				Kind:           protocol.SymbolKindClass,
-				Range:          spanToLSPRange(n.Span()),
-				SelectionRange: spanToLSPRange(n.Name.Span),
+				Range:          spanToRange(n.Span()),
+				SelectionRange: spanToRange(n.Name.Span),
 				Children:       children,
 			})
 		case *ir.EnumDeclStmt:
 			out = append(out, protocol.DocumentSymbol{
 				Name:           n.Name.Name,
 				Kind:           protocol.SymbolKindEnum,
-				Range:          spanToLSPRange(n.Span()),
-				SelectionRange: spanToLSPRange(n.Name.Span),
+				Range:          spanToRange(n.Span()),
+				SelectionRange: spanToRange(n.Name.Span),
 			})
 		case *ir.InterfaceDeclStmt:
 			out = append(out, protocol.DocumentSymbol{
 				Name:           n.Name.Name,
 				Kind:           protocol.SymbolKindInterface,
-				Range:          spanToLSPRange(n.Span()),
-				SelectionRange: spanToLSPRange(n.Name.Span),
+				Range:          spanToRange(n.Span()),
+				SelectionRange: spanToRange(n.Name.Span),
 			})
 		case *ir.TestDeclStmt:
 			out = append(out, protocol.DocumentSymbol{
 				Name:           "test \"" + n.Name + "\"",
 				Kind:           protocol.SymbolKindEvent,
-				Range:          spanToLSPRange(n.Span()),
-				SelectionRange: spanToLSPRange(n.Span()),
+				Range:          spanToRange(n.Span()),
+				SelectionRange: spanToRange(n.Span()),
 			})
 		}
 	}
@@ -140,8 +140,8 @@ func funcDocSymbol(tt *ir.TypeTable, fn *ir.FuncDeclStmt, isMethod bool) protoco
 		Name:           fn.Name.Name,
 		Detail:         formatFuncSignature(tt, fn),
 		Kind:           kind,
-		Range:          spanToLSPRange(fn.Span()),
-		SelectionRange: spanToLSPRange(fn.Name.Span),
+		Range:          spanToRange(fn.Span()),
+		SelectionRange: spanToRange(fn.Name.Span),
 	}
 }
 

@@ -45,7 +45,7 @@ func (s *Server) References(ctx context.Context, params *protocol.ReferenceParam
 			continue
 		}
 
-		out = append(out, protocol.Location{URI: u, Range: spanToLSPRange(h.span)})
+		out = append(out, protocol.Location{URI: u, Range: spanToRange(h.span)})
 	}
 
 	return out, nil
@@ -80,7 +80,7 @@ func (s *Server) DocumentHighlight(ctx context.Context, params *protocol.Documen
 			kind = protocol.DocumentHighlightKindWrite
 		}
 
-		out = append(out, protocol.DocumentHighlight{Range: spanToLSPRange(h.span), Kind: kind})
+		out = append(out, protocol.DocumentHighlight{Range: spanToRange(h.span), Kind: kind})
 	}
 
 	return out, nil
@@ -162,7 +162,7 @@ func emitWorkspaceSymbol(snap *Snapshot, name, container string, kind protocol.S
 	*out = append(*out, protocol.SymbolInformation{
 		Name:          name,
 		Kind:          kind,
-		Location:      protocol.Location{URI: u, Range: spanToLSPRange(span)},
+		Location:      protocol.Location{URI: u, Range: spanToRange(span)},
 		ContainerName: container,
 	})
 }

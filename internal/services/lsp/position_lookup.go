@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
 
 	"sova/internal/diag"
@@ -135,29 +134,3 @@ func lookupFileByURI(c *compiler.CompilerContext, target uri.URI) (*ir.PackageCo
 	return nil, nil, ""
 }
 
-func spanToLSPRange(s diag.TextSpan) protocol.Range {
-	startLn := uint32(0)
-	startCol := uint32(0)
-	endLn := uint32(0)
-	endCol := uint32(0)
-	if s.StartLn > 0 {
-		startLn = uint32(s.StartLn - 1)
-	}
-
-	if s.StartCol > 0 {
-		startCol = uint32(s.StartCol - 1)
-	}
-
-	if s.EndLn > 0 {
-		endLn = uint32(s.EndLn - 1)
-	}
-
-	if s.EndCol > 0 {
-		endCol = uint32(s.EndCol - 1)
-	}
-
-	return protocol.Range{
-		Start: protocol.Position{Line: startLn, Character: startCol},
-		End:   protocol.Position{Line: endLn, Character: endCol},
-	}
-}

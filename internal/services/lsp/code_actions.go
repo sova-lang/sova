@@ -63,7 +63,7 @@ func organizeImportsAction(file *ir.File, src string, docURI uri.URI) *protocol.
 			continue
 		}
 
-		entry := imp{path: i.Path.String(), alias: i.Alias, span: spanToLSPRange(i.Span())}
+		entry := imp{path: i.Path.String(), alias: i.Alias, span: spanToRange(i.Span())}
 
 		if i.UsingAll {
 			entry.using = " using *"

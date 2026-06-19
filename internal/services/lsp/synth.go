@@ -84,7 +84,7 @@ func synthDefinitionLocation(c *compiler.CompilerContext, snap *Snapshot, name s
 		return nil
 	}
 
-	return &protocol.Location{URI: u, Range: spanToLSPRange(span)}
+	return &protocol.Location{URI: u, Range: spanToRange(span)}
 }
 
 func lookupSynth(c *compiler.CompilerContext, name string) *ir.SynthDeclStmt {

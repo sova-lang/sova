@@ -105,7 +105,7 @@ func implementersOfInterface(c *compiler.CompilerContext, snap *Snapshot, ifaceT
 				continue
 			}
 
-			out = append(out, protocol.Location{URI: u, Range: spanToLSPRange(span)})
+			out = append(out, protocol.Location{URI: u, Range: spanToRange(span)})
 		}
 	}
 
@@ -129,7 +129,7 @@ func methodImplementationsFor(c *compiler.CompilerContext, snap *Snapshot, iface
 				continue
 			}
 
-			out = append(out, protocol.Location{URI: u, Range: spanToLSPRange(span)})
+			out = append(out, protocol.Location{URI: u, Range: spanToRange(span)})
 		}
 	}
 

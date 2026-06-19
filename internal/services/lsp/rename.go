@@ -28,7 +28,7 @@ func (s *Server) PrepareRename(ctx context.Context, params *protocol.PrepareRena
 		return nil, nil
 	}
 
-	r := spanToLSPRange(target.span)
+	r := spanToRange(target.span)
 	return &r, nil
 }
 
@@ -70,7 +70,7 @@ func (s *Server) Rename(ctx context.Context, params *protocol.RenameParams) (*pr
 		}
 
 		edits[u] = append(edits[u], protocol.TextEdit{
-			Range:   spanToLSPRange(h.span),
+			Range:   spanToRange(h.span),
 			NewText: params.NewName,
 		})
 	}

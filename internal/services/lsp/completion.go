@@ -46,7 +46,7 @@ func (s *Server) Completion(ctx context.Context, params *protocol.CompletionPara
 	case completionAnnotation:
 		items = annotationCompletions(c)
 	case completionCSSClass:
-		offset := lspPositionToOffset(src, params.Position)
+		offset := positionToOffset(src, params.Position)
 		var slot *callContext
 		if ctx, ok := cssClassSlotAt(c, src, offset); ok {
 			slot = &ctx
@@ -71,7 +71,7 @@ func applyWordReplaceRange(items []protocol.CompletionItem, src string, pos prot
 		return
 	}
 
-	offset := lspPositionToOffset(src, pos)
+	offset := positionToOffset(src, pos)
 	wordStart := offset
 	for wordStart > 0 && isClassCharForKind(src[wordStart-1], kind) {
 		wordStart--
@@ -82,8 +82,8 @@ func applyWordReplaceRange(items []protocol.CompletionItem, src string, pos prot
 		wordEnd++
 	}
 
-	startPos := offsetToLSPPosition(src, wordStart)
-	endPos := offsetToLSPPosition(src, wordEnd)
+	startPos := offsetToPosition(src, wordStart)
+	endPos := offsetToPosition(src, wordEnd)
 	rng := protocol.Range{Start: startPos, End: endPos}
 
 	for i := range items {
@@ -96,28 +96,6 @@ func applyWordReplaceRange(items []protocol.CompletionItem, src string, pos prot
 	}
 }
 
-func offsetToLSPPosition(src string, offset int) protocol.Position {
-	if offset < 0 {
-		offset = 0
-	}
-
-	if offset > len(src) {
-		offset = len(src)
-	}
-
-	line, col := uint32(0), uint32(0)
-	for i := 0; i < offset; i++ {
-		if src[i] == '\n' {
-			line++
-			col = 0
-			continue
-		}
-
-		col++
-	}
-
-	return protocol.Position{Line: line, Character: col}
-}
 
 type completionContextKind int
 
@@ -132,7 +110,7 @@ const (
 )
 
 func classifyCompletion(src string, pos protocol.Position) (completionContextKind, string) {
-	offset := lspPositionToOffset(src, pos)
+	offset := positionToOffset(src, pos)
 	if offset <= 0 {
 		return completionIdentifier, ""
 	}
@@ -523,29 +501,6 @@ func isClassCharForKind(b byte, kind completionContextKind) bool {
 	}
 
 	return isIdentChar(b)
-}
-
-func lspPositionToOffset(src string, pos protocol.Position) int {
-	line, col := uint32(0), uint32(0)
-	for i := 0; i < len(src); i++ {
-		if line == pos.Line && col == pos.Character {
-			return i
-		}
-
-		if src[i] == '\n' {
-			line++
-			col = 0
-			if line > pos.Line {
-				return i
-			}
-
-			continue
-		}
-
-		col++
-	}
-
-	return len(src)
 }
 
 func localScopeCompletions(c *compiler.CompilerContext, file *ir.File, pos protocol.Position) []protocol.CompletionItem {

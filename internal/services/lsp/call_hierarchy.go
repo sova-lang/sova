@@ -87,7 +87,7 @@ func (s *Server) IncomingCalls(ctx context.Context, params *protocol.CallHierarc
 
 				ranges := make([]protocol.Range, len(sites))
 				for i, s := range sites {
-					ranges[i] = spanToLSPRange(s)
+					ranges[i] = spanToRange(s)
 				}
 
 				entry, exists := byCaller[fn.Name.Sym]
@@ -193,8 +193,8 @@ func buildCallHierarchyItem(c *compiler.CompilerContext, snap *Snapshot, symID i
 		Kind:           protocol.SymbolKindFunction,
 		Detail:         detail,
 		URI:            uri.URI(u),
-		Range:          spanToLSPRange(span),
-		SelectionRange: spanToLSPRange(nameSpan),
+		Range:          spanToRange(span),
+		SelectionRange: spanToRange(nameSpan),
 		Data:           map[string]interface{}{"sym": float64(symID)},
 	}
 }
@@ -497,7 +497,7 @@ func outgoingInExpr(e ir.Expr, c *compiler.CompilerContext, byCallee map[ir.SymI
 						byCallee[sym] = entry
 					}
 
-					entry.ranges = append(entry.ranges, spanToLSPRange(calleeNameSpan(n.Callee)))
+					entry.ranges = append(entry.ranges, spanToRange(calleeNameSpan(n.Callee)))
 				}
 			}
 		}

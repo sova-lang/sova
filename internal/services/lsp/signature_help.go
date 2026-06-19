@@ -393,7 +393,7 @@ func renderSignature(c *compiler.CompilerContext, sym *ir.Symbol, fnTy *ir.Type)
 }
 
 func signatureHelpFromSource(c *compiler.CompilerContext, file *ir.File, src string, pos protocol.Position) (*ir.Symbol, uint32) {
-	offset := lspPositionToOffset(src, pos)
+	offset := positionToOffset(src, pos)
 	if offset > len(src) {
 		offset = len(src)
 	}
