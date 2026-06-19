@@ -12,110 +12,93 @@ import (
 )
 
 func (s *Server) PrepareCallHierarchy(ctx context.Context, params *protocol.CallHierarchyPrepareParams) ([]protocol.CallHierarchyItem, error) {
-	snap := s.session.Snapshot()
-	if snap == nil {
-		return nil, nil
-	}
+	return withCursor(s, params.TextDocument.URI, params.Position, func(snap *Snapshot, c *compiler.CompilerContext, target *cursorTarget) ([]protocol.CallHierarchyItem, error) {
+		if target.sym == 0 {
+			return nil, nil
+		}
 
-	c, _, err := snap.Compile(s.compileSnapshot)
-	if err != nil || c == nil {
-		return nil, nil
-	}
+		sym, _ := lookupSymbol(c, target.sym)
+		if sym == nil || sym.Kind != ir.SK_Function {
+			return nil, nil
+		}
 
-	target := findCursorTarget(c, params.TextDocument.URI, params.Position.Line, params.Position.Character)
-	if target == nil || target.sym == 0 {
-		return nil, nil
-	}
+		item := buildCallHierarchyItem(c, snap, target.sym)
+		if item == nil {
+			return nil, nil
+		}
 
-	sym, _ := lookupSymbol(c, target.sym)
-	if sym == nil || sym.Kind != ir.SK_Function {
-		return nil, nil
-	}
-
-	item := buildCallHierarchyItem(c, snap, target.sym)
-	if item == nil {
-		return nil, nil
-	}
-
-	return []protocol.CallHierarchyItem{*item}, nil
+		return []protocol.CallHierarchyItem{*item}, nil
+	})
 }
 
 func (s *Server) IncomingCalls(ctx context.Context, params *protocol.CallHierarchyIncomingCallsParams) ([]protocol.CallHierarchyIncomingCall, error) {
-	snap := s.session.Snapshot()
-	if snap == nil {
-		return nil, nil
-	}
+	return withSnapshot(s, func(snap *Snapshot, c *compiler.CompilerContext) ([]protocol.CallHierarchyIncomingCall, error) {
+		targetSym, ok := decodeCallHierarchySym(params.Item.Data)
+		if !ok {
+			return nil, nil
+		}
 
-	c, _, err := snap.Compile(s.compileSnapshot)
-	if err != nil || c == nil {
-		return nil, nil
-	}
+		type acc struct {
+			ranges    []protocol.Range
+			callerSym ir.SymID
+		}
 
-	targetSym, ok := decodeCallHierarchySym(params.Item.Data)
-	if !ok {
-		return nil, nil
-	}
+		byCaller := map[ir.SymID]*acc{}
 
-	type acc struct {
-		ranges    []protocol.Range
-		callerSym ir.SymID
-	}
+		for _, pkg := range c.Packages {
+			for _, f := range pkg.Files {
+				if f.Hir == nil {
+					continue
+				}
 
-	byCaller := map[ir.SymID]*acc{}
+				for _, st := range f.Hir.Statements {
+					fn, ok := st.(*ir.FuncDeclStmt)
+					if !ok || fn.Body == nil {
+						continue
+					}
 
-	for _, pkg := range c.Packages {
-		for _, f := range pkg.Files {
-			if f.Hir == nil {
+					if fn.Name.Sym == targetSym {
+						continue
+					}
+
+					var sites []diag.TextSpan
+					collectCallSites(fn.Body, targetSym, &sites)
+					if len(sites) == 0 {
+						continue
+					}
+
+					ranges := make([]protocol.Range, len(sites))
+					for i, s := range sites {
+						ranges[i] = spanToRange(s)
+					}
+
+					entry, exists := byCaller[fn.Name.Sym]
+					if !exists {
+						entry = &acc{callerSym: fn.Name.Sym}
+
+						byCaller[fn.Name.Sym] = entry
+					}
+
+					entry.ranges = append(entry.ranges, ranges...)
+				}
+			}
+		}
+
+		var out []protocol.CallHierarchyIncomingCall
+		for _, entry := range byCaller {
+			item := buildCallHierarchyItem(c, snap, entry.callerSym)
+			if item == nil {
 				continue
 			}
 
-			for _, st := range f.Hir.Statements {
-				fn, ok := st.(*ir.FuncDeclStmt)
-				if !ok || fn.Body == nil {
-					continue
-				}
-
-				if fn.Name.Sym == targetSym {
-					continue
-				}
-
-				var sites []diag.TextSpan
-				collectCallSites(fn.Body, targetSym, &sites)
-				if len(sites) == 0 {
-					continue
-				}
-
-				ranges := make([]protocol.Range, len(sites))
-				for i, s := range sites {
-					ranges[i] = spanToRange(s)
-				}
-
-				entry, exists := byCaller[fn.Name.Sym]
-				if !exists {
-					entry = &acc{callerSym: fn.Name.Sym}
-
-					byCaller[fn.Name.Sym] = entry
-				}
-
-				entry.ranges = append(entry.ranges, ranges...)
-			}
-		}
-	}
-
-	var out []protocol.CallHierarchyIncomingCall
-	for _, entry := range byCaller {
-		item := buildCallHierarchyItem(c, snap, entry.callerSym)
-		if item == nil {
-			continue
+			out = append(out, protocol.CallHierarchyIncomingCall{
+				From:       *item,
+				FromRanges: entry.ranges,
+			})
 		}
 
-		out = append(out, protocol.CallHierarchyIncomingCall{
-			From:       *item,
-			FromRanges: entry.ranges,
-		})
-	}
-
-	return out, nil
+		return out, nil
+	})
 }
 
 type callSiteAcc struct {
@@ -123,43 +106,35 @@ type callSiteAcc struct {
 }
 
 func (s *Server) OutgoingCalls(ctx context.Context, params *protocol.CallHierarchyOutgoingCallsParams) ([]protocol.CallHierarchyOutgoingCall, error) {
-	snap := s.session.Snapshot()
-	if snap == nil {
-		return nil, nil
-	}
-
-	c, _, err := snap.Compile(s.compileSnapshot)
-	if err != nil || c == nil {
-		return nil, nil
-	}
-
-	targetSym, ok := decodeCallHierarchySym(params.Item.Data)
-	if !ok {
-		return nil, nil
-	}
-
-	fn := findFuncDeclForSym(c, targetSym)
-	if fn == nil || fn.Body == nil {
-		return nil, nil
-	}
-
-	byCallee := map[ir.SymID]*callSiteAcc{}
-
-	collectOutgoingCalls(fn.Body, c, byCallee)
-	var out []protocol.CallHierarchyOutgoingCall
-	for sym, entry := range byCallee {
-		item := buildCallHierarchyItem(c, snap, sym)
-		if item == nil {
-			continue
+	return withSnapshot(s, func(snap *Snapshot, c *compiler.CompilerContext) ([]protocol.CallHierarchyOutgoingCall, error) {
+		targetSym, ok := decodeCallHierarchySym(params.Item.Data)
+		if !ok {
+			return nil, nil
 		}
 
-		out = append(out, protocol.CallHierarchyOutgoingCall{
-			To:         *item,
-			FromRanges: entry.ranges,
-		})
-	}
+		fn := findFuncDeclForSym(c, targetSym)
+		if fn == nil || fn.Body == nil {
+			return nil, nil
+		}
 
-	return out, nil
+		byCallee := map[ir.SymID]*callSiteAcc{}
+
+		collectOutgoingCalls(fn.Body, c, byCallee)
+		var out []protocol.CallHierarchyOutgoingCall
+		for sym, entry := range byCallee {
+			item := buildCallHierarchyItem(c, snap, sym)
+			if item == nil {
+				continue
+			}
+
+			out = append(out, protocol.CallHierarchyOutgoingCall{
+				To:         *item,
+				FromRanges: entry.ranges,
+			})
+		}
+
+		return out, nil
+	})
 }
 
 func buildCallHierarchyItem(c *compiler.CompilerContext, snap *Snapshot, symID ir.SymID) *protocol.CallHierarchyItem {

@@ -12,51 +12,43 @@ import (
 )
 
 func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (*protocol.Hover, error) {
-	snap := s.session.Snapshot()
-	if snap == nil {
-		return nil, nil
-	}
+	return withSnapshot(s, func(snap *Snapshot, c *compiler.CompilerContext) (*protocol.Hover, error) {
+		if src, ok := snap.ReadFile(params.TextDocument.URI); ok {
+			if name, rng, ok := annotationAtCursor(src, params.Position); ok {
+				if hov := synthAnnotationHover(c, name, rng); hov != nil {
+					return hov, nil
+				}
+			}
 
-	c, _, err := snap.Compile(s.compileSnapshot)
-	if err != nil || c == nil {
-		return nil, nil
-	}
-
-	if src, ok := snap.ReadFile(params.TextDocument.URI); ok {
-		if name, rng, ok := annotationAtCursor(src, params.Position); ok {
-			if hov := synthAnnotationHover(c, name, rng); hov != nil {
+			if hov := cssClassHover(c, src, params.Position); hov != nil {
 				return hov, nil
 			}
 		}
 
-		if hov := cssClassHover(c, src, params.Position); hov != nil {
-			return hov, nil
+		target := findCursorTarget(c, params.TextDocument.URI, params.Position.Line, params.Position.Character)
+		if target == nil {
+			return nil, nil
 		}
-	}
 
-	target := findCursorTarget(c, params.TextDocument.URI, params.Position.Line, params.Position.Character)
-	if target == nil {
-		return nil, nil
-	}
+		consumerSide := ir.SideShared
+		if _, file, _ := lookupFileByURI(c, params.TextDocument.URI); file != nil {
+			consumerSide = file.Side.Kind
+		}
 
-	consumerSide := ir.SideShared
-	if _, file, _ := lookupFileByURI(c, params.TextDocument.URI); file != nil {
-		consumerSide = file.Side.Kind
-	}
+		contents := renderHover(c, target, consumerSide)
+		if contents == "" {
+			return nil, nil
+		}
 
-	contents := renderHover(c, target, consumerSide)
-	if contents == "" {
-		return nil, nil
-	}
-
-	rng := spanToRange(target.span)
-	return &protocol.Hover{
-		Contents: protocol.MarkupContent{
-			Kind:  protocol.Markdown,
-			Value: contents,
-		},
-		Range: &rng,
-	}, nil
+		rng := spanToRange(target.span)
+		return &protocol.Hover{
+			Contents: protocol.MarkupContent{
+				Kind:  protocol.Markdown,
+				Value: contents,
+			},
+			Range: &rng,
+		}, nil
+	})
 }
 
 func renderHover(c *compiler.CompilerContext, target *cursorTarget, consumerSide ir.SideKind) string {

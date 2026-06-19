@@ -12,36 +12,26 @@ import (
 )
 
 func (s *Server) Implementation(ctx context.Context, params *protocol.ImplementationParams) ([]protocol.Location, error) {
-	snap := s.session.Snapshot()
-	if snap == nil {
+	return withCursor(s, params.TextDocument.URI, params.Position, func(snap *Snapshot, c *compiler.CompilerContext, target *cursorTarget) ([]protocol.Location, error) {
+		if target.sym == 0 {
+			return nil, nil
+		}
+
+		sym, _ := lookupSymbol(c, target.sym)
+		if sym == nil {
+			return nil, nil
+		}
+
+		if ifaceType, ok := interfaceTypeForSymbol(c, sym); ok {
+			return implementersOfInterface(c, snap, ifaceType), nil
+		}
+
+		if methodName, ifaceTyp, ok := interfaceMethodForSymbol(c, sym); ok {
+			return methodImplementationsFor(c, snap, ifaceTyp, methodName), nil
+		}
+
 		return nil, nil
-	}
-
-	c, _, err := snap.Compile(s.compileSnapshot)
-	if err != nil || c == nil {
-		return nil, nil
-	}
-
-	target := findCursorTarget(c, params.TextDocument.URI, params.Position.Line, params.Position.Character)
-	if target == nil || target.sym == 0 {
-		return nil, nil
-	}
-
-	sym, _ := lookupSymbol(c, target.sym)
-	if sym == nil {
-		return nil, nil
-	}
-
-	switch ifaceType, ok := interfaceTypeForSymbol(c, sym); {
-	case ok:
-		return implementersOfInterface(c, snap, ifaceType), nil
-	}
-
-	if methodName, ifaceTyp, ok := interfaceMethodForSymbol(c, sym); ok {
-		return methodImplementationsFor(c, snap, ifaceTyp, methodName), nil
-	}
-
-	return nil, nil
+	})
 }
 
 func interfaceTypeForSymbol(c *compiler.CompilerContext, sym *ir.Symbol) (ir.TypID, bool) {

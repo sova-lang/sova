@@ -6,30 +6,19 @@ import (
 
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
+
+	"sova/internal/services/compiler"
 )
 
 func (s *Server) PrepareRename(ctx context.Context, params *protocol.PrepareRenameParams) (*protocol.Range, error) {
-	snap := s.session.Snapshot()
-	if snap == nil {
-		return nil, nil
-	}
+	return withCursor(s, params.TextDocument.URI, params.Position, func(snap *Snapshot, c *compiler.CompilerContext, target *cursorTarget) (*protocol.Range, error) {
+		if target.sym == 0 || !canRenameSymbol(c, target) {
+			return nil, nil
+		}
 
-	c, _, err := snap.Compile(s.compileSnapshot)
-	if err != nil || c == nil {
-		return nil, nil
-	}
-
-	target := findCursorTarget(c, params.TextDocument.URI, params.Position.Line, params.Position.Character)
-	if target == nil || target.sym == 0 {
-		return nil, nil
-	}
-
-	if !canRenameSymbol(c, target) {
-		return nil, nil
-	}
-
-	r := spanToRange(target.span)
-	return &r, nil
+		r := spanToRange(target.span)
+		return &r, nil
+	})
 }
 
 func (s *Server) Rename(ctx context.Context, params *protocol.RenameParams) (*protocol.WorkspaceEdit, error) {
@@ -37,45 +26,36 @@ func (s *Server) Rename(ctx context.Context, params *protocol.RenameParams) (*pr
 		return nil, err
 	}
 
-	snap := s.session.Snapshot()
-	if snap == nil {
-		return nil, nil
-	}
-
-	c, _, err := snap.Compile(s.compileSnapshot)
-	if err != nil || c == nil {
-		return nil, nil
-	}
-
-	target := findCursorTarget(c, params.TextDocument.URI, params.Position.Line, params.Position.Character)
-	if target == nil || target.sym == 0 {
-		return nil, nil
-	}
-
-	if !canRenameSymbol(c, target) {
-		return nil, fmt.Errorf("symbol is not renameable")
-	}
-
-	hits := collectReferences(c, target.sym)
-	if len(hits) == 0 {
-		return nil, nil
-	}
-
-	edits := map[uri.URI][]protocol.TextEdit{}
-
-	for _, h := range hits {
-		u := uriForSpan(c, snap, h.span)
-		if u == "" {
-			continue
+	return withCursor(s, params.TextDocument.URI, params.Position, func(snap *Snapshot, c *compiler.CompilerContext, target *cursorTarget) (*protocol.WorkspaceEdit, error) {
+		if target.sym == 0 {
+			return nil, nil
 		}
 
-		edits[u] = append(edits[u], protocol.TextEdit{
-			Range:   spanToRange(h.span),
-			NewText: params.NewName,
-		})
-	}
+		if !canRenameSymbol(c, target) {
+			return nil, fmt.Errorf("symbol is not renameable")
+		}
 
-	return &protocol.WorkspaceEdit{Changes: edits}, nil
+		hits := collectReferences(c, target.sym)
+		if len(hits) == 0 {
+			return nil, nil
+		}
+
+		edits := map[uri.URI][]protocol.TextEdit{}
+
+		for _, h := range hits {
+			u := uriForSpan(c, snap, h.span)
+			if u == "" {
+				continue
+			}
+
+			edits[u] = append(edits[u], protocol.TextEdit{
+				Range:   spanToRange(h.span),
+				NewText: params.NewName,
+			})
+		}
+
+		return &protocol.WorkspaceEdit{Changes: edits}, nil
+	})
 }
 
 func canRenameSymbol(c interface {

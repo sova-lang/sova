@@ -9,111 +9,87 @@ import (
 
 	"sova/internal/diag"
 	"sova/internal/ir"
+	"sova/internal/services/compiler"
 )
 
 func (s *Server) References(ctx context.Context, params *protocol.ReferenceParams) ([]protocol.Location, error) {
-	snap := s.session.Snapshot()
-	if snap == nil {
-		return nil, nil
-	}
-
-	c, _, err := snap.Compile(s.compileSnapshot)
-	if err != nil || c == nil {
-		return nil, nil
-	}
-
-	if src, ok := snap.ReadFile(params.TextDocument.URI); ok {
-		if locs := cssClassDefinition(c, src, params.Position); len(locs) > 0 {
-			return locs, nil
-		}
-	}
-
-	target := findCursorTarget(c, params.TextDocument.URI, params.Position.Line, params.Position.Character)
-	if target == nil || target.sym == 0 {
-		return nil, nil
-	}
-
-	hits := collectReferences(c, target.sym)
-	out := make([]protocol.Location, 0, len(hits))
-	for _, h := range hits {
-		if h.isDecl && !params.Context.IncludeDeclaration {
-			continue
+	return withSnapshot(s, func(snap *Snapshot, c *compiler.CompilerContext) ([]protocol.Location, error) {
+		if src, ok := snap.ReadFile(params.TextDocument.URI); ok {
+			if locs := cssClassDefinition(c, src, params.Position); len(locs) > 0 {
+				return locs, nil
+			}
 		}
 
-		u := uriForSpan(c, snap, h.span)
-		if u == "" {
-			continue
+		target := findCursorTarget(c, params.TextDocument.URI, params.Position.Line, params.Position.Character)
+		if target == nil || target.sym == 0 {
+			return nil, nil
 		}
 
-		out = append(out, protocol.Location{URI: u, Range: spanToRange(h.span)})
-	}
-
-	return out, nil
-}
-
-func (s *Server) DocumentHighlight(ctx context.Context, params *protocol.DocumentHighlightParams) ([]protocol.DocumentHighlight, error) {
-	snap := s.session.Snapshot()
-	if snap == nil {
-		return nil, nil
-	}
-
-	c, _, err := snap.Compile(s.compileSnapshot)
-	if err != nil || c == nil {
-		return nil, nil
-	}
-
-	target := findCursorTarget(c, params.TextDocument.URI, params.Position.Line, params.Position.Character)
-	if target == nil || target.sym == 0 {
-		return nil, nil
-	}
-
-	hits := collectReferences(c, target.sym)
-	var out []protocol.DocumentHighlight
-	for _, h := range hits {
-		u := uriForSpan(c, snap, h.span)
-		if u != params.TextDocument.URI {
-			continue
-		}
-
-		kind := protocol.DocumentHighlightKindRead
-		if h.isDecl {
-			kind = protocol.DocumentHighlightKindWrite
-		}
-
-		out = append(out, protocol.DocumentHighlight{Range: spanToRange(h.span), Kind: kind})
-	}
-
-	return out, nil
-}
-
-func (s *Server) Symbols(ctx context.Context, params *protocol.WorkspaceSymbolParams) ([]protocol.SymbolInformation, error) {
-	snap := s.session.Snapshot()
-	if snap == nil {
-		return nil, nil
-	}
-
-	c, _, err := snap.Compile(s.compileSnapshot)
-	if err != nil || c == nil {
-		return nil, nil
-	}
-
-	query := strings.ToLower(strings.TrimSpace(params.Query))
-	const cap = 256
-	var out []protocol.SymbolInformation
-	for _, pkg := range c.Packages {
-		for _, f := range pkg.Files {
-			if f.Hir == nil {
+		hits := collectReferences(c, target.sym)
+		out := make([]protocol.Location, 0, len(hits))
+		for _, h := range hits {
+			if h.isDecl && !params.Context.IncludeDeclaration {
 				continue
 			}
 
-			collectWorkspaceSymbols(c, snap, f.Hir, query, &out)
-			if len(out) >= cap {
-				return out[:cap], nil
+			u := uriForSpan(c, snap, h.span)
+			if u == "" {
+				continue
+			}
+
+			out = append(out, protocol.Location{URI: u, Range: spanToRange(h.span)})
+		}
+
+		return out, nil
+	})
+}
+
+func (s *Server) DocumentHighlight(ctx context.Context, params *protocol.DocumentHighlightParams) ([]protocol.DocumentHighlight, error) {
+	return withCursor(s, params.TextDocument.URI, params.Position, func(snap *Snapshot, c *compiler.CompilerContext, target *cursorTarget) ([]protocol.DocumentHighlight, error) {
+		if target.sym == 0 {
+			return nil, nil
+		}
+
+		hits := collectReferences(c, target.sym)
+		var out []protocol.DocumentHighlight
+		for _, h := range hits {
+			u := uriForSpan(c, snap, h.span)
+			if u != params.TextDocument.URI {
+				continue
+			}
+
+			kind := protocol.DocumentHighlightKindRead
+			if h.isDecl {
+				kind = protocol.DocumentHighlightKindWrite
+			}
+
+			out = append(out, protocol.DocumentHighlight{Range: spanToRange(h.span), Kind: kind})
+		}
+
+		return out, nil
+	})
+}
+
+func (s *Server) Symbols(ctx context.Context, params *protocol.WorkspaceSymbolParams) ([]protocol.SymbolInformation, error) {
+	return withSnapshot(s, func(snap *Snapshot, c *compiler.CompilerContext) ([]protocol.SymbolInformation, error) {
+		query := strings.ToLower(strings.TrimSpace(params.Query))
+		const cap = 256
+		var out []protocol.SymbolInformation
+		for _, pkg := range c.Packages {
+			for _, f := range pkg.Files {
+				if f.Hir == nil {
+					continue
+				}
+
+				collectWorkspaceSymbols(c, snap, f.Hir, query, &out)
+				if len(out) >= cap {
+					return out[:cap], nil
+				}
 			}
 		}
-	}
 
-	return out, nil
+		return out, nil
+	})
 }
 
 func collectWorkspaceSymbols(_ interface{}, snap *Snapshot, f *ir.File, query string, out *[]protocol.SymbolInformation) {

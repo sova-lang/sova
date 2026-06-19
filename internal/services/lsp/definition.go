@@ -23,46 +23,38 @@ func (s *Server) TypeDefinition(ctx context.Context, params *protocol.TypeDefini
 }
 
 func (s *Server) findDefinitionLocations(docURI uri.URI, pos protocol.Position, viaType bool) ([]protocol.Location, error) {
-	snap := s.session.Snapshot()
-	if snap == nil {
-		return nil, nil
-	}
+	return withSnapshot(s, func(snap *Snapshot, c *compiler.CompilerContext) ([]protocol.Location, error) {
+		if !viaType {
+			if src, ok := snap.ReadFile(docURI); ok {
+				if name, _, ok := annotationAtCursor(src, pos); ok {
+					if loc := synthDefinitionLocation(c, snap, name); loc != nil {
+						return []protocol.Location{*loc}, nil
+					}
+				}
 
-	c, _, err := snap.Compile(s.compileSnapshot)
-	if err != nil || c == nil {
-		return nil, nil
-	}
-
-	if !viaType {
-		if src, ok := snap.ReadFile(docURI); ok {
-			if name, _, ok := annotationAtCursor(src, pos); ok {
-				if loc := synthDefinitionLocation(c, snap, name); loc != nil {
-					return []protocol.Location{*loc}, nil
+				if locs := cssClassDefinition(c, src, pos); len(locs) > 0 {
+					return locs, nil
 				}
 			}
-
-			if locs := cssClassDefinition(c, src, pos); len(locs) > 0 {
-				return locs, nil
-			}
 		}
-	}
 
-	target := findCursorTarget(c, docURI, pos.Line, pos.Character)
-	if target == nil {
-		return nil, nil
-	}
+		target := findCursorTarget(c, docURI, pos.Line, pos.Character)
+		if target == nil {
+			return nil, nil
+		}
 
-	span := declarationSpan(c, target, viaType)
-	if span.StartLn == 0 && span.EndLn == 0 {
-		return nil, nil
-	}
+		span := declarationSpan(c, target, viaType)
+		if span.StartLn == 0 && span.EndLn == 0 {
+			return nil, nil
+		}
 
-	declURI := uriForSpan(c, snap, span)
-	if declURI == "" {
-		return nil, nil
-	}
+		declURI := uriForSpan(c, snap, span)
+		if declURI == "" {
+			return nil, nil
+		}
 
-	return []protocol.Location{{URI: declURI, Range: spanToRange(span)}}, nil
+		return []protocol.Location{{URI: declURI, Range: spanToRange(span)}}, nil
+	})
 }
 
 func declarationSpan(c *compiler.CompilerContext, target *cursorTarget, viaType bool) diag.TextSpan {

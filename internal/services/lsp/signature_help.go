@@ -11,84 +11,75 @@ import (
 )
 
 func (s *Server) SignatureHelp(ctx context.Context, params *protocol.SignatureHelpParams) (*protocol.SignatureHelp, error) {
-	snap := s.session.Snapshot()
-	if snap == nil {
-		return nil, nil
-	}
-
-	c, _, err := snap.Compile(s.compileSnapshot)
-	if err != nil || c == nil {
-		return nil, nil
-	}
-
-	_, file, _ := lookupFileByURI(c, params.TextDocument.URI)
-	if file == nil {
-		return nil, nil
-	}
-
-	cursor := position{line: int(params.Position.Line) + 1, col: int(params.Position.Character) + 1}
-
-	var sym *ir.Symbol
-	var activeArg uint32
-	if enclosing := findEnclosingCall(file, cursor); enclosing != nil {
-		if calleeSym := calleeSymbolFor(enclosing.callee); calleeSym != 0 {
-			sym, _ = lookupSymbol(c, calleeSym)
-			activeArg = uint32(enclosing.activeArg)
+	return withSnapshot(s, func(snap *Snapshot, c *compiler.CompilerContext) (*protocol.SignatureHelp, error) {
+		_, file, _ := lookupFileByURI(c, params.TextDocument.URI)
+		if file == nil {
+			return nil, nil
 		}
-	}
 
-	if sym == nil {
-		src, ok := snap.ReadFile(params.TextDocument.URI)
-		if ok {
-			if s, ai := signatureHelpFromSource(c, file, src, params.Position); s != nil {
-				sym = s
-				activeArg = ai
+		cursor := position{line: int(params.Position.Line) + 1, col: int(params.Position.Character) + 1}
+
+		var sym *ir.Symbol
+		var activeArg uint32
+		if enclosing := findEnclosingCall(file, cursor); enclosing != nil {
+			if calleeSym := calleeSymbolFor(enclosing.callee); calleeSym != 0 {
+				sym, _ = lookupSymbol(c, calleeSym)
+				activeArg = uint32(enclosing.activeArg)
 			}
 		}
-	}
 
-	if sym == nil {
-		return nil, nil
-	}
-
-	fnTy, ok := c.TypeUniverse.GetByID(sym.Typ)
-	if !ok || fnTy.Kind != ir.TK_Function {
-		return nil, nil
-	}
-
-	label, paramLabels := renderSignature(c, sym, fnTy)
-	sigParams := make([]protocol.ParameterInformation, len(paramLabels))
-	for i, pl := range paramLabels {
-		sigParams[i] = protocol.ParameterInformation{Label: pl}
-	}
-
-	active := activeArg
-	if active >= uint32(len(sigParams)) {
-		if len(sigParams) == 0 {
-			active = 0
-		} else {
-			active = uint32(len(sigParams) - 1)
+		if sym == nil {
+			if src, ok := snap.ReadFile(params.TextDocument.URI); ok {
+				if hs, ai := signatureHelpFromSource(c, file, src, params.Position); hs != nil {
+					sym = hs
+					activeArg = ai
+				}
+			}
 		}
-	}
 
-	sigInfo := protocol.SignatureInformation{
-		Label:           label,
-		Parameters:      sigParams,
-		ActiveParameter: active,
-	}
-
-	if doc := strings.TrimSpace(sym.Doc); doc != "" {
-		sigInfo.Documentation = protocol.MarkupContent{
-			Kind:  protocol.Markdown,
-			Value: renderDocComment(doc),
+		if sym == nil {
+			return nil, nil
 		}
-	}
 
-	return &protocol.SignatureHelp{
-		Signatures:      []protocol.SignatureInformation{sigInfo},
-		ActiveSignature: 0,
-		ActiveParameter: active,
-	}, nil
+		fnTy, ok := c.TypeUniverse.GetByID(sym.Typ)
+		if !ok || fnTy.Kind != ir.TK_Function {
+			return nil, nil
+		}
+
+		label, paramLabels := renderSignature(c, sym, fnTy)
+		sigParams := make([]protocol.ParameterInformation, len(paramLabels))
+		for i, pl := range paramLabels {
+			sigParams[i] = protocol.ParameterInformation{Label: pl}
+		}
+
+		active := activeArg
+		if active >= uint32(len(sigParams)) {
+			if len(sigParams) == 0 {
+				active = 0
+			} else {
+				active = uint32(len(sigParams) - 1)
+			}
+		}
+
+		sigInfo := protocol.SignatureInformation{
+			Label:           label,
+			Parameters:      sigParams,
+			ActiveParameter: active,
+		}
+
+		if doc := strings.TrimSpace(sym.Doc); doc != "" {
+			sigInfo.Documentation = protocol.MarkupContent{
+				Kind:  protocol.Markdown,
+				Value: renderDocComment(doc),
+			}
+		}
+
+		return &protocol.SignatureHelp{
+			Signatures:      []protocol.SignatureInformation{sigInfo},
+			ActiveSignature: 0,
+			ActiveParameter: active,
+		}, nil
+	})
 }
 
 type enclosingCallInfo struct {
