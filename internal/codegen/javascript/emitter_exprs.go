@@ -55,106 +55,142 @@ func escapeJSTemplateText(s string) string {
 func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, expr ir.Expr) *jsgen.Statement {
 	switch x := expr.(type) {
 	case *ir.WhenExpr:
-
 		return e.buildWhenExpr(ctx, pkg, f, x)
-
 	case *ir.UnaryExpr:
 		return jsgen.Unary(string(x.Op), e.buildExpr(ctx, pkg, f, x.Expr))
-
 	case *ir.PrefixUnaryExpr:
 		return jsgen.Unary(string(x.Op), e.buildExpr(ctx, pkg, f, x.Expr))
-
 	case *ir.PostfixUnaryExpr:
 		return e.buildExpr(ctx, pkg, f, x.Expr).Op(string(x.Op))
-
 	case *ir.BinaryExpr:
-		if leftTy, ok := ctx.Types.GetByID(x.Left.GetType()); ok && leftTy.Kind == ir.TK_Struct {
-			if methodName, isOp := jsOpOverloadName(x.Op); isOp {
-				for _, m := range leftTy.StructMethods {
-					if m.Name == methodName && m.Sym != 0 {
-						left := e.buildExpr(ctx, pkg, f, x.Left)
-						right := e.buildExpr(ctx, pkg, f, x.Right)
-						return left.Dot(symName(ctx, m.Sym)).Call(right)
-					}
-				}
-			}
-		}
-
-		if x.Op == ir.OpAdd {
-			if leftTy, ok := ctx.Types.GetByID(x.Left.GetType()); ok && leftTy.Kind == ir.TK_Slice {
-				if rightTy, rok := ctx.Types.GetByID(x.Right.GetType()); rok && rightTy.Kind == ir.TK_Slice {
-					left := e.buildExpr(ctx, pkg, f, x.Left)
-					right := e.buildExpr(ctx, pkg, f, x.Right)
-					return left.Dot("concat").Call(right)
-				}
-			}
-		}
-
-		left := e.buildExpr(ctx, pkg, f, x.Left)
-		right := e.buildExpr(ctx, pkg, f, x.Right)
-		return left.Op(string(x.Op)).Add(right)
-
+		return e.buildBinaryExpr(ctx, pkg, f, x)
 	case *ir.CoalesceExpr:
-
-		leftExprCond := e.buildExpr(ctx, pkg, f, x.Left)
-		leftExprThen := e.buildExpr(ctx, pkg, f, x.Left)
+		leftCond := e.buildExpr(ctx, pkg, f, x.Left)
+		leftThen := e.buildExpr(ctx, pkg, f, x.Left)
 		defaultExpr := e.buildExpr(ctx, pkg, f, x.Default)
-		cond := leftExprCond.Op("!==").Add(jsgen.Null())
-		return cond.Op("?").Add(leftExprThen).Op(":").Add(defaultExpr).Parens()
-
+		return leftCond.Op("!==").Add(jsgen.Null()).Op("?").Add(leftThen).Op(":").Add(defaultExpr).Parens()
 	case *ir.TenaryExpr:
 		cond := e.buildExpr(ctx, pkg, f, x.Cond)
 		thenExpr := e.buildExpr(ctx, pkg, f, x.Then)
 		elseExpr := e.buildExpr(ctx, pkg, f, x.Else)
 		return cond.Op("?").Add(thenExpr).Op(":").Add(elseExpr)
-
 	case *ir.GroupedExpr:
 		return e.buildExpr(ctx, pkg, f, x.Expr).Parens()
-
 	case *ir.OptionUnwrapExpr:
 		return e.buildExpr(ctx, pkg, f, x.Expr)
-
 	case *ir.AsExpr:
 		return e.buildAsExpr(ctx, pkg, f, x)
-
 	case *ir.InstanceofExpr:
 		return e.buildInstanceofExpr(ctx, pkg, f, x)
-
 	case *ir.AssignmentExpr:
-		var left *jsgen.Statement
-		if name, isMethod, ok := e.classMemberLookup(ctx, x.Left.Sym); ok && !isMethod {
-			left = jsgen.Raw("this.").Add(jsgen.Id(name))
-		} else if reactiveWireVarOriginalNameJS(ctx, x.Left.Sym) != "" {
-			left = jsgen.Id(symName(ctx, x.Left.Sym)).Dot("value")
-		} else {
-			left = jsgen.Id(symNameWithUnused(ctx, pkg, x.Left.Sym))
-		}
-
-		right := e.buildExpr(ctx, pkg, f, x.Right)
-		return left.Op(string(x.Op)).Add(right)
-
+		return e.buildAssignmentExpr(ctx, pkg, f, x)
 	case *ir.IndexExpr:
-		base := e.buildExpr(ctx, pkg, f, x.Expr)
-		index := e.buildExpr(ctx, pkg, f, x.Index)
-		return base.Index(index)
-
+		return e.buildExpr(ctx, pkg, f, x.Expr).Index(e.buildExpr(ctx, pkg, f, x.Index))
 	case *ir.SliceRangeExpr:
-		base := e.buildExpr(ctx, pkg, f, x.Expr)
-		args := []*jsgen.Statement{}
-
-		if x.Low != nil {
-			args = append(args, e.buildExpr(ctx, pkg, f, x.Low))
-		} else {
-			args = append(args, jsgen.Id("0"))
-		}
-
-		if x.High != nil {
-			args = append(args, e.buildExpr(ctx, pkg, f, x.High))
-		}
-
-		return base.Dot("slice").Call(args...)
-
+		return e.buildSliceRangeExpr(ctx, pkg, f, x)
 	case *ir.FieldAccessExpr:
+		return e.buildFieldAccessExpr(ctx, pkg, f, x)
+	case *ir.VarRef:
+		return e.buildVarRef(ctx, pkg, x)
+	case *ir.RangeExpr:
+		return e.buildRangeExpr(ctx, pkg, f, x.Start, x.End, x.Inc)
+	case *ir.FuncCallExpr:
+		return e.buildFuncCallExpr(ctx, pkg, f, x)
+	case *ir.FuncLitExpr:
+		return e.buildFuncLitExpr(ctx, pkg, f, x)
+	case *ir.LitInt:
+		return jsgen.Lit(x.Value)
+	case *ir.LitFloat:
+		return jsgen.Lit(x.Value)
+	case *ir.LitString:
+		return jsgen.Lit(x.Value)
+	case *ir.LitChar:
+		return jsgen.Lit(string(x.Value))
+	case *ir.LitBool:
+		return jsgen.Lit(x.Value)
+	case *ir.LitNone:
+		return jsgen.Null()
+	case *ir.ArrayLiteral:
+		return e.buildArrayLiteral(ctx, pkg, f, x)
+	case *ir.MapLiteral:
+		return e.buildMapLiteral(ctx, pkg, f, x)
+	case *ir.TupleLiteral:
+		return e.buildArrayLiteral(ctx, pkg, f, &ir.ArrayLiteral{Elems: x.Elems})
+	case *ir.StringTemplateExpr:
+		return e.buildStringTemplateExpr(ctx, pkg, f, x)
+	case *ir.SessionExpr:
+		return jsgen.Comment("[error] @-session is backend-only")
+	case *ir.ComposableCallExpr:
+		return e.buildComposableCallExpr(ctx, pkg, f, x)
+	case *ir.ChanInitExpr:
+		return e.buildChanInitExpr(ctx, pkg, f, x)
+	case *ir.NewExpr:
+		return e.buildNewExpr(ctx, pkg, f, x)
+	}
+
+	return jsgen.Comment("Unknown expression type")
+}
+
+func (e *CodeEmitter) buildBinaryExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.BinaryExpr) *jsgen.Statement {
+	if leftTy, ok := ctx.Types.GetByID(x.Left.GetType()); ok && leftTy.Kind == ir.TK_Struct {
+		if methodName, isOp := jsOpOverloadName(x.Op); isOp {
+			for _, m := range leftTy.StructMethods {
+				if m.Name == methodName && m.Sym != 0 {
+					left := e.buildExpr(ctx, pkg, f, x.Left)
+					right := e.buildExpr(ctx, pkg, f, x.Right)
+					return left.Dot(symName(ctx, m.Sym)).Call(right)
+				}
+			}
+		}
+	}
+
+	if x.Op == ir.OpAdd {
+		if leftTy, ok := ctx.Types.GetByID(x.Left.GetType()); ok && leftTy.Kind == ir.TK_Slice {
+			if rightTy, rok := ctx.Types.GetByID(x.Right.GetType()); rok && rightTy.Kind == ir.TK_Slice {
+				left := e.buildExpr(ctx, pkg, f, x.Left)
+				right := e.buildExpr(ctx, pkg, f, x.Right)
+				return left.Dot("concat").Call(right)
+			}
+		}
+	}
+
+	left := e.buildExpr(ctx, pkg, f, x.Left)
+	right := e.buildExpr(ctx, pkg, f, x.Right)
+	return left.Op(string(x.Op)).Add(right)
+}
+
+func (e *CodeEmitter) buildAssignmentExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.AssignmentExpr) *jsgen.Statement {
+	var left *jsgen.Statement
+	if name, isMethod, ok := e.classMemberLookup(ctx, x.Left.Sym); ok && !isMethod {
+		left = jsgen.Raw("this.").Add(jsgen.Id(name))
+	} else if reactiveWireVarOriginalNameJS(ctx, x.Left.Sym) != "" {
+		left = jsgen.Id(symName(ctx, x.Left.Sym)).Dot("value")
+	} else {
+		left = jsgen.Id(symNameWithUnused(ctx, pkg, x.Left.Sym))
+	}
+
+	right := e.buildExpr(ctx, pkg, f, x.Right)
+	return left.Op(string(x.Op)).Add(right)
+}
+
+func (e *CodeEmitter) buildSliceRangeExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.SliceRangeExpr) *jsgen.Statement {
+	base := e.buildExpr(ctx, pkg, f, x.Expr)
+	args := []*jsgen.Statement{}
+
+	if x.Low != nil {
+		args = append(args, e.buildExpr(ctx, pkg, f, x.Low))
+	} else {
+		args = append(args, jsgen.Id("0"))
+	}
+
+	if x.High != nil {
+		args = append(args, e.buildExpr(ctx, pkg, f, x.High))
+	}
+
+	return base.Dot("slice").Call(args...)
+}
+
+func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.FieldAccessExpr) *jsgen.Statement {
 		var base *jsgen.Statement
 		var fields []ir.FieldName
 		var curType ir.TypID
@@ -306,279 +342,255 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 			}
 		}
 
-		return base
+	return base
+}
 
-	case *ir.VarRef:
-		if orig, ok := ctx.Names.GetOriginalName(x.Ref.Sym); ok && orig == "this" && !e.suppressThisKeyword {
-			return jsgen.Id("this")
-		}
-
-		if name, isMethod, ok := e.classMemberLookup(ctx, x.Ref.Sym); ok {
-			ref := jsgen.Raw("this.").Add(jsgen.Id(name))
-			if isMethod {
-				return ref.Dot("bind").Call(jsgen.Id("this"))
-			}
-
-			return ref
-		}
-
-		if reactiveWireVarOriginalNameJS(ctx, x.Ref.Sym) != "" {
-			return jsgen.Id(symName(ctx, x.Ref.Sym)).Dot("value")
-		}
-
-		return jsgen.Id(symNameWithUnused(ctx, pkg, x.Ref.Sym))
-
-	case *ir.RangeExpr:
-		return e.buildRangeExpr(ctx, pkg, f, x.Start, x.End, x.Inc)
-
-	case *ir.FuncCallExpr:
-		if chOp, chRecv, ok := matchChanMethodJS(ctx, x); ok {
-			recv := e.buildExpr(ctx, pkg, f, chRecv)
-			switch chOp {
-			case "send":
-				var arg *jsgen.Statement
-				if len(x.Args) == 1 {
-					arg = e.buildExpr(ctx, pkg, f, x.Args[0].Expr)
-				} else {
-					arg = jsgen.Raw("undefined")
-				}
-
-				e.usesChanRuntime = true
-				return jsgen.Raw("(await ").Add(recv).Add(jsgen.Raw(".send(")).Add(arg).Add(jsgen.Raw("))"))
-			case "recv":
-				e.usesChanRuntime = true
-				return jsgen.Raw("(await ").Add(recv).Add(jsgen.Raw(".recv())"))
-			case "close":
-				e.usesChanRuntime = true
-				return recv.Dot("close").Call()
-			}
-		}
-
-		if intrinsic := lookupBuiltinIntrinsicJS(ctx, x.Callee); intrinsic != "" {
-			argCodes := make([]*jsgen.Statement, len(x.Args))
-			for i, arg := range x.Args {
-				argCodes[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
-			}
-
-			if code := emitBuiltinIntrinsicCallJS(intrinsic, argCodes); code != nil {
-				return code
-			}
-		}
-
-		callee := e.buildExpr(ctx, pkg, f, x.Callee)
-
-		var args []*jsgen.Statement
-		for _, arg := range x.Args {
-			args = append(args, e.buildExpr(ctx, pkg, f, arg.Expr))
-		}
-
-		call := callee.Call(args...)
-		if x.IsAsync {
-			return jsgen.Raw("await ").Add(call)
-		}
-
-		return call
-
-	case *ir.FuncLitExpr:
-		params := make([]string, len(x.Params))
-		for i, param := range x.Params {
-			params[i] = symNameWithUnused(ctx, pkg, param.Name.Sym)
-		}
-
-		var body []jsgen.Code
-		for _, stmt := range x.Body.Stmts {
-			body = append(body, e.buildStmtAsCode(ctx, pkg, f, stmt))
-		}
-
-		ab := jsgen.Arrow(params...)
-		if x.IsAsync {
-			ab = ab.Async()
-		}
-
-		return ab.Block(body...)
-
-	case *ir.LitInt:
-		return jsgen.Lit(x.Value)
-
-	case *ir.LitFloat:
-		return jsgen.Lit(x.Value)
-
-	case *ir.LitString:
-		return jsgen.Lit(x.Value)
-
-	case *ir.LitChar:
-		return jsgen.Lit(string(x.Value))
-
-	case *ir.LitBool:
-		return jsgen.Lit(x.Value)
-
-	case *ir.LitNone:
-		return jsgen.Null()
-
-	case *ir.ArrayLiteral:
-		var elements []*jsgen.Statement
-		for _, elem := range x.Elems {
-			elements = append(elements, e.buildExpr(ctx, pkg, f, elem))
-		}
-
-		return jsgen.Array(elements...)
-
-	case *ir.MapLiteral:
-		var pairs []jsgen.KeyValue
-		for _, entry := range x.Entries {
-			keyStr := ""
-			switch k := entry.Key.(type) {
-			case *ir.LitString:
-				keyStr = k.Value
-			case *ir.LitInt:
-				keyStr = string(rune(k.Value))
-			case *ir.VarRef:
-				keyStr = symNameWithUnused(ctx, pkg, k.Ref.Sym)
-			default:
-				keyStr = "key"
-			}
-
-			pairs = append(pairs, jsgen.Kv(keyStr, e.buildExpr(ctx, pkg, f, entry.Value)))
-		}
-
-		return jsgen.Object(pairs...)
-
-	case *ir.TupleLiteral:
-		var elements []*jsgen.Statement
-		for _, elem := range x.Elems {
-			elements = append(elements, e.buildExpr(ctx, pkg, f, elem))
-		}
-
-		return jsgen.Array(elements...)
-
-	case *ir.StringTemplateExpr:
-		var sb strings.Builder
-		sb.WriteByte('`')
-		for _, part := range x.Parts {
-			if part.Expr != nil {
-				sb.WriteString("${")
-				sb.WriteString(e.buildExpr(ctx, pkg, f, part.Expr).Render())
-				sb.WriteByte('}')
-			} else {
-				sb.WriteString(escapeJSTemplateText(part.Lit))
-			}
-		}
-		sb.WriteByte('`')
-		return jsgen.Raw(sb.String())
-
-	case *ir.SessionExpr:
-		return jsgen.Comment("[error] @-session is backend-only")
-	case *ir.ComposableCallExpr:
-		var ctorCall *jsgen.Statement
-		calleeSym := composableCalleeSymJS(x.Callee)
-		if x.CtorSym != 0 {
-			ctorName := symName(ctx, x.CtorSym)
-			ctorSym, _ := pkg.Syms.GetByID(x.CtorSym)
-			var ctorFunc *ir.Type
-			if ctorSym != nil {
-				ctorFunc, _ = ctx.Types.GetByID(ctorSym.Typ)
-			}
-
-			args := make([]*jsgen.Statement, len(x.Args))
-			for i, arg := range x.Args {
-				if arg.Expr != nil {
-					args[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
-				} else if ctorFunc != nil && i < len(ctorFunc.ParamTypes) && ctorFunc.ParamTypes[i].Default != nil {
-					args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.ParamTypes[i].Default)
-				} else {
-					args[i] = jsgen.Null()
-				}
-			}
-
-			ctorCall = jsgen.Id(ctorName).Call(args...)
-		} else if calleeSym != 0 {
-			typeName := symName(ctx, calleeSym)
-			ctorCall = jsgen.Raw(fmt.Sprintf("new %s()", typeName))
-		} else {
-			ctorCall = jsgen.Null()
-		}
-
-		var sb strings.Builder
-		sb.WriteString("((() => { const __c = ")
-		sb.WriteString(ctorCall.String())
-		sb.WriteString("; ")
-		for _, child := range x.Children {
-			if child.Expr == nil {
-				continue
-			}
-
-			childCode := e.buildExpr(ctx, pkg, f, child.Expr)
-			sb.WriteString("__c.children.push(")
-			sb.WriteString(childCode.String())
-			sb.WriteString("); ")
-		}
-
-		e.composableDepth++
-		for _, child := range x.Children {
-			if child.Stmt == nil {
-				continue
-			}
-
-			stmtCode := e.buildStmtAsCode(ctx, pkg, f, child.Stmt)
-			if stmtCode == nil {
-				continue
-			}
-
-			if stmtStmt, ok := stmtCode.(*jsgen.Statement); ok {
-				sb.WriteString(stmtStmt.String())
-				sb.WriteString("; ")
-			}
-		}
-
-		e.composableDepth--
-		sb.WriteString("return __c; })())")
-		return jsgen.Raw(sb.String())
-	case *ir.ChanInitExpr:
-		e.usesChanRuntime = true
-		var capCode *jsgen.Statement
-		if x.Capacity != nil {
-			capCode = e.buildExpr(ctx, pkg, f, x.Capacity)
-		} else {
-			capCode = jsgen.Raw("0")
-		}
-
-		return jsgen.Raw("new __SovaChan(").Add(capCode).Add(jsgen.Raw(")"))
-	case *ir.NewExpr:
-		typeName := symName(ctx, x.TypeName.Sym)
-		if x.CtorSym != 0 {
-			ctorName := symName(ctx, x.CtorSym)
-			ctorPkg := pkg
-			if x.Qualifier != "" {
-				if found := lookupImportedPackage(ctx, pkg, x.Qualifier); found != nil {
-					ctorPkg = found
-				}
-			}
-
-			ctorSym, _ := ctorPkg.Syms.GetByID(x.CtorSym)
-			var ctorFunc *ir.Type
-			if ctorSym != nil {
-				ctorFunc, _ = ctx.Types.GetByID(ctorSym.Typ)
-			}
-
-			args := make([]*jsgen.Statement, len(x.Args))
-			for i, arg := range x.Args {
-				if arg.Expr != nil {
-					args[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
-				} else if ctorFunc != nil && i < len(ctorFunc.ParamTypes) && ctorFunc.ParamTypes[i].Default != nil {
-					args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.ParamTypes[i].Default)
-				} else {
-					args[i] = jsgen.Null()
-				}
-			}
-
-			return jsgen.Id(ctorName).Call(args...)
-		}
-
-		return jsgen.Raw(fmt.Sprintf("new %s()", typeName))
-
-	default:
-		return jsgen.Comment("Unknown expression type")
+func (e *CodeEmitter) buildVarRef(ctx *codegen.EmitContext, pkg *ir.PackageContext, x *ir.VarRef) *jsgen.Statement {
+	if orig, ok := ctx.Names.GetOriginalName(x.Ref.Sym); ok && orig == "this" && !e.suppressThisKeyword {
+		return jsgen.Id("this")
 	}
+
+	if name, isMethod, ok := e.classMemberLookup(ctx, x.Ref.Sym); ok {
+		ref := jsgen.Raw("this.").Add(jsgen.Id(name))
+		if isMethod {
+			return ref.Dot("bind").Call(jsgen.Id("this"))
+		}
+
+		return ref
+	}
+
+	if reactiveWireVarOriginalNameJS(ctx, x.Ref.Sym) != "" {
+		return jsgen.Id(symName(ctx, x.Ref.Sym)).Dot("value")
+	}
+
+	return jsgen.Id(symNameWithUnused(ctx, pkg, x.Ref.Sym))
+}
+
+func (e *CodeEmitter) buildFuncCallExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.FuncCallExpr) *jsgen.Statement {
+	if chOp, chRecv, ok := matchChanMethodJS(ctx, x); ok {
+		recv := e.buildExpr(ctx, pkg, f, chRecv)
+		switch chOp {
+		case "send":
+			var arg *jsgen.Statement
+			if len(x.Args) == 1 {
+				arg = e.buildExpr(ctx, pkg, f, x.Args[0].Expr)
+			} else {
+				arg = jsgen.Raw("undefined")
+			}
+
+			e.usesChanRuntime = true
+			return jsgen.Raw("(await ").Add(recv).Add(jsgen.Raw(".send(")).Add(arg).Add(jsgen.Raw("))"))
+		case "recv":
+			e.usesChanRuntime = true
+			return jsgen.Raw("(await ").Add(recv).Add(jsgen.Raw(".recv())"))
+		case "close":
+			e.usesChanRuntime = true
+			return recv.Dot("close").Call()
+		}
+	}
+
+	if intrinsic := lookupBuiltinIntrinsicJS(ctx, x.Callee); intrinsic != "" {
+		argCodes := make([]*jsgen.Statement, len(x.Args))
+		for i, arg := range x.Args {
+			argCodes[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
+		}
+
+		if code := emitBuiltinIntrinsicCallJS(intrinsic, argCodes); code != nil {
+			return code
+		}
+	}
+
+	callee := e.buildExpr(ctx, pkg, f, x.Callee)
+
+	var args []*jsgen.Statement
+	for _, arg := range x.Args {
+		args = append(args, e.buildExpr(ctx, pkg, f, arg.Expr))
+	}
+
+	call := callee.Call(args...)
+	if x.IsAsync {
+		return jsgen.Raw("await ").Add(call)
+	}
+
+	return call
+}
+
+func (e *CodeEmitter) buildFuncLitExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.FuncLitExpr) *jsgen.Statement {
+	params := make([]string, len(x.Params))
+	for i, param := range x.Params {
+		params[i] = symNameWithUnused(ctx, pkg, param.Name.Sym)
+	}
+
+	var body []jsgen.Code
+	for _, stmt := range x.Body.Stmts {
+		body = append(body, e.buildStmtAsCode(ctx, pkg, f, stmt))
+	}
+
+	ab := jsgen.Arrow(params...)
+	if x.IsAsync {
+		ab = ab.Async()
+	}
+
+	return ab.Block(body...)
+}
+
+func (e *CodeEmitter) buildArrayLiteral(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.ArrayLiteral) *jsgen.Statement {
+	var elements []*jsgen.Statement
+	for _, elem := range x.Elems {
+		elements = append(elements, e.buildExpr(ctx, pkg, f, elem))
+	}
+
+	return jsgen.Array(elements...)
+}
+
+func (e *CodeEmitter) buildMapLiteral(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.MapLiteral) *jsgen.Statement {
+	var pairs []jsgen.KeyValue
+	for _, entry := range x.Entries {
+		keyStr := ""
+		switch k := entry.Key.(type) {
+		case *ir.LitString:
+			keyStr = k.Value
+		case *ir.LitInt:
+			keyStr = string(rune(k.Value))
+		case *ir.VarRef:
+			keyStr = symNameWithUnused(ctx, pkg, k.Ref.Sym)
+		default:
+			keyStr = "key"
+		}
+
+		pairs = append(pairs, jsgen.Kv(keyStr, e.buildExpr(ctx, pkg, f, entry.Value)))
+	}
+
+	return jsgen.Object(pairs...)
+}
+
+func (e *CodeEmitter) buildStringTemplateExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.StringTemplateExpr) *jsgen.Statement {
+	var sb strings.Builder
+	sb.WriteByte('`')
+	for _, part := range x.Parts {
+		if part.Expr != nil {
+			sb.WriteString("${")
+			sb.WriteString(e.buildExpr(ctx, pkg, f, part.Expr).Render())
+			sb.WriteByte('}')
+		} else {
+			sb.WriteString(escapeJSTemplateText(part.Lit))
+		}
+	}
+	sb.WriteByte('`')
+	return jsgen.Raw(sb.String())
+}
+
+func (e *CodeEmitter) buildComposableCallExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.ComposableCallExpr) *jsgen.Statement {
+	var ctorCall *jsgen.Statement
+	calleeSym := composableCalleeSymJS(x.Callee)
+	if x.CtorSym != 0 {
+		ctorName := symName(ctx, x.CtorSym)
+		ctorSym, _ := pkg.Syms.GetByID(x.CtorSym)
+		var ctorFunc *ir.Type
+		if ctorSym != nil {
+			ctorFunc, _ = ctx.Types.GetByID(ctorSym.Typ)
+		}
+
+		args := make([]*jsgen.Statement, len(x.Args))
+		for i, arg := range x.Args {
+			if arg.Expr != nil {
+				args[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
+			} else if ctorFunc != nil && i < len(ctorFunc.ParamTypes) && ctorFunc.ParamTypes[i].Default != nil {
+				args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.ParamTypes[i].Default)
+			} else {
+				args[i] = jsgen.Null()
+			}
+		}
+
+		ctorCall = jsgen.Id(ctorName).Call(args...)
+	} else if calleeSym != 0 {
+		typeName := symName(ctx, calleeSym)
+		ctorCall = jsgen.Raw(fmt.Sprintf("new %s()", typeName))
+	} else {
+		ctorCall = jsgen.Null()
+	}
+
+	var sb strings.Builder
+	sb.WriteString("((() => { const __c = ")
+	sb.WriteString(ctorCall.String())
+	sb.WriteString("; ")
+	for _, child := range x.Children {
+		if child.Expr == nil {
+			continue
+		}
+
+		childCode := e.buildExpr(ctx, pkg, f, child.Expr)
+		sb.WriteString("__c.children.push(")
+		sb.WriteString(childCode.String())
+		sb.WriteString("); ")
+	}
+
+	e.composableDepth++
+	for _, child := range x.Children {
+		if child.Stmt == nil {
+			continue
+		}
+
+		stmtCode := e.buildStmtAsCode(ctx, pkg, f, child.Stmt)
+		if stmtCode == nil {
+			continue
+		}
+
+		if stmtStmt, ok := stmtCode.(*jsgen.Statement); ok {
+			sb.WriteString(stmtStmt.String())
+			sb.WriteString("; ")
+		}
+	}
+
+	e.composableDepth--
+	sb.WriteString("return __c; })())")
+	return jsgen.Raw(sb.String())
+}
+
+func (e *CodeEmitter) buildChanInitExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.ChanInitExpr) *jsgen.Statement {
+	e.usesChanRuntime = true
+	var capCode *jsgen.Statement
+	if x.Capacity != nil {
+		capCode = e.buildExpr(ctx, pkg, f, x.Capacity)
+	} else {
+		capCode = jsgen.Raw("0")
+	}
+
+	return jsgen.Raw("new __SovaChan(").Add(capCode).Add(jsgen.Raw(")"))
+}
+
+func (e *CodeEmitter) buildNewExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.NewExpr) *jsgen.Statement {
+	typeName := symName(ctx, x.TypeName.Sym)
+	if x.CtorSym != 0 {
+		ctorName := symName(ctx, x.CtorSym)
+		ctorPkg := pkg
+		if x.Qualifier != "" {
+			if found := lookupImportedPackage(ctx, pkg, x.Qualifier); found != nil {
+				ctorPkg = found
+			}
+		}
+
+		ctorSym, _ := ctorPkg.Syms.GetByID(x.CtorSym)
+		var ctorFunc *ir.Type
+		if ctorSym != nil {
+			ctorFunc, _ = ctx.Types.GetByID(ctorSym.Typ)
+		}
+
+		args := make([]*jsgen.Statement, len(x.Args))
+		for i, arg := range x.Args {
+			if arg.Expr != nil {
+				args[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
+			} else if ctorFunc != nil && i < len(ctorFunc.ParamTypes) && ctorFunc.ParamTypes[i].Default != nil {
+				args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.ParamTypes[i].Default)
+			} else {
+				args[i] = jsgen.Null()
+			}
+		}
+
+		return jsgen.Id(ctorName).Call(args...)
+	}
+
+	return jsgen.Raw(fmt.Sprintf("new %s()", typeName))
 }
 
 func (e *CodeEmitter) buildWhenExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.WhenExpr) *jsgen.Statement {
