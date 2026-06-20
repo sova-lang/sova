@@ -796,6 +796,7 @@ func executeTestBinary(cfg BuildConfig, filter string, jsonOut bool, allowedName
 
 	buildCmd := exec.Command("go", "build", "-o", "sovatest", ".")
 	buildCmd.Dir = outDir
+	buildCmd.Env = append(os.Environ(), "GOWORK=off")
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
 	if err := buildCmd.Run(); err != nil {
