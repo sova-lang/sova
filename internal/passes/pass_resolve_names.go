@@ -204,8 +204,18 @@ func (p *PassResolveNames) resolveStmtNames(pc *PassContext, s ir.Stmt, pkg *ir.
 		}
 
 	case *ir.ForStmt:
-		if v.CondInt != nil && v.CondInt.Init != nil && v.CondInt.Init.Init != nil {
-			p.resolveExprNames(pc, v.CondInt.Init.Init, pkg)
+		if v.CondInt != nil {
+			if v.CondInt.Init != nil && v.CondInt.Init.Init != nil {
+				p.resolveExprNames(pc, v.CondInt.Init.Init, pkg)
+			}
+
+			if v.CondInt.Cond != nil {
+				p.resolveExprNames(pc, v.CondInt.Cond, pkg)
+			}
+
+			if v.CondInt.Post != nil {
+				p.resolveExprNames(pc, v.CondInt.Post, pkg)
+			}
 		} else if v.CondIn != nil {
 			p.resolveExprNames(pc, v.CondIn.IterExpr, pkg)
 		} else if v.CondRange != nil {

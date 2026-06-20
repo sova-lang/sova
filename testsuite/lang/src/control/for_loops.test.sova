@@ -1,5 +1,40 @@
 package langsuite/control on test
 
+test "for int loop" {
+    let sum = 0
+    for let i = 0, i < 10, i++ {
+        sum = sum + i
+    }
+    assert sum == 45
+}
+
+test "for int loop decreasing" {
+    let prod = 1
+    for let i = 1, i <= 5, i++ {
+        prod = prod * i
+    }
+    assert prod == 120
+}
+
+test "for int with typed init" {
+    let sum = 0
+    for let i: int = 0, i < 3, i++ {
+        sum = sum + i
+    }
+    assert sum == 3
+}
+
+test "for int continue" {
+    let sum = 0
+    for let i = 0, i < 10, i++ {
+        if i % 2 == 0 {
+            continue
+        }
+        sum = sum + i
+    }
+    assert sum == 25
+}
+
 test "for in array" {
     let xs = [10, 20, 30]
     let sum = 0

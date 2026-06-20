@@ -1335,12 +1335,16 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 		case *ir.ForStmt:
 			if st.CondInt != nil {
 				if st.CondInt.Init != nil {
-					ti := p.synthesizeTypeFromExpr(pc, st.CondInt.Init.Init)
-					expected := pc.Types.PrimInt()
-					if ok, _ := isTypeAssignable(pc.Types, expected, ti); !ok {
-						exTy, _ := pc.Types.GetByID(expected)
-						tiTy, _ := pc.Types.GetByID(ti)
-						pc.Diag.Report(diag.ErrTypeMismatch, st.CondInt.Init.Span(), typeKeyDisplay(exTy), typeKeyDisplay(tiTy))
+					p.resolveStmts(pc, []ir.Stmt{st.CondInt.Init})
+					if len(st.CondInt.Init.Targets) > 0 && st.CondInt.Init.Targets[0].Name != nil {
+						if sym, ok := pc.Pkg.Syms.GetByID(st.CondInt.Init.Targets[0].Name.Sym); ok && sym.Typ != 0 {
+							expected := pc.Types.PrimInt()
+							if assignable, _ := isTypeAssignable(pc.Types, expected, sym.Typ); !assignable {
+								exTy, _ := pc.Types.GetByID(expected)
+								tiTy, _ := pc.Types.GetByID(sym.Typ)
+								pc.Diag.Report(diag.ErrTypeMismatch, st.CondInt.Init.Span(), typeKeyDisplay(exTy), typeKeyDisplay(tiTy))
+							}
+						}
 					}
 				}
 

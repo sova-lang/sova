@@ -5764,9 +5764,14 @@ func (e *CodeEmitter) emitForStmt(ctx *codegen.EmitContext, pkg *ir.PackageConte
 		} else if s.CondType == ir.ForCondInt {
 			initVarName := symNameWithUnused(ctx, pkg, s.CondInt.Init.Targets[0].Name.Sym)
 			initVarOrig := symOrigName(ctx, s.CondInt.Init.Targets[0].Name.Sym)
+			initSym, _ := pkg.Syms.GetByID(s.CondInt.Init.Targets[0].Name.Sym)
+			initRhs := e.buildExpr(ctx, pkg, f, s.CondInt.Init.Init)
+			if initSym != nil && initSym.Typ != 0 {
+				initRhs = jen.Add(typeToGoWithContext(ctx, pkg, ctx.Types, initSym.Typ)).Call(initRhs)
+			}
 
 			forLoop = jen.For(
-				jen.Id(initVarName).Op(":=").Add(e.buildExpr(ctx, pkg, f, s.CondInt.Init.Init)),
+				jen.Id(initVarName).Op(":=").Add(initRhs),
 				e.buildExpr(ctx, pkg, f, s.CondInt.Cond),
 				e.buildExpr(ctx, pkg, f, s.CondInt.Post),
 			).BlockFunc(func(g *jen.Group) {

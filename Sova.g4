@@ -214,8 +214,8 @@ forCondition : forIntCondition
              | forRangeCondition
              ;
 
-forIntCondition : forIntConditionInit ';' expr ';' expr;
-forIntConditionInit : ID typeAnnot? ('=' expr)?;
+forIntCondition : forIntConditionInit ',' expr ',' expr;
+forIntConditionInit : LET ID typeAnnot? ('=' expr)?;
 forInCondition : forInTarget (',' forInTarget)* 'in' expr; // e.g., for key, value in map, for item in collection, for item, index in collection or for key, value, index in map
 forInTarget : ID | '_';
 forRangeCondition : ID 'in' expr '..' expr;
