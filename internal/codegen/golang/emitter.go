@@ -1662,11 +1662,11 @@ func (e *CodeEmitter) buildRangeExpr(ctx *codegen.EmitContext, pkg *ir.PackageCo
 		g.Var().Id(iterVar).Add(typeToGoWithContext(ctx, pkg, ctx.Types, elemTy)).Op("=").Add(e.buildExpr(ctx, pkg, f, start))
 
 		g.For().BlockFunc(func(bg *jen.Group) {
-			bg.Id(resArr).Op("=").Append(jen.Id(resArr), jen.Id(iterVar))
-
-			bg.If(jen.Id(iterVar).Op("==").Add(e.buildExpr(ctx, pkg, f, end))).Block(
+			bg.If(jen.Id(iterVar).Op(">=").Add(e.buildExpr(ctx, pkg, f, end))).Block(
 				jen.Break(),
 			)
+
+			bg.Id(resArr).Op("=").Append(jen.Id(resArr), jen.Id(iterVar))
 
 			if inc == nil {
 				bg.Id(iterVar).Op("=").Id(iterVar).Op("+").Lit(1)
