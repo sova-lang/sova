@@ -20,3 +20,14 @@ test "bool literals" {
     assert false == false
     assert true != false
 }
+
+test "char literal" {
+    let c: char = 'A'
+    assert c == 'A'
+}
+
+test "char inequality" {
+    let a: char = 'a'
+    let b: char = 'b'
+    assert a != b
+}

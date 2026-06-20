@@ -862,7 +862,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 	case *ir.LitString:
 		return jen.Lit(x.Value)
 	case *ir.LitChar:
-		return jen.Lit(string(x.Value))
+		return jen.LitRune(x.Value)
 	case *ir.LitNone:
 		return jen.Nil()
 	case *ir.VarRef:
