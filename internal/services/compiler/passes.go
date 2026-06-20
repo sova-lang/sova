@@ -57,6 +57,7 @@ func TestPipeline() []string {
 		"test_discovery",
 		"init_order",
 		"mangle",
+		"detect_unused",
 		"compute_reachability",
 		"emit_go",
 		"emit_js",

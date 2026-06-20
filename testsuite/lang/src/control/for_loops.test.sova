@@ -21,6 +21,24 @@ test "for in with index" {
     assert lastVal == 300
 }
 
+test "for in unused value" {
+    let xs = [100, 200, 300]
+    let lastIdx = 0
+    for v, i in xs {
+        lastIdx = i
+    }
+    assert lastIdx == 2
+}
+
+test "for in unused index" {
+    let xs = [10, 20, 30]
+    let lastVal = 0
+    for v, i in xs {
+        lastVal = v
+    }
+    assert lastVal == 30
+}
+
 test "for range exclusive end" {
     let sum = 0
     for x in 1..5 {

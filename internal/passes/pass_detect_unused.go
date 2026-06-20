@@ -121,6 +121,17 @@ func (p *PassDetectUnused) markUnused(pc *PassContext, st ir.Stmt) {
 		p.markUnused(pc, s.Body)
 	case *ir.WhileStmt:
 		p.markUnused(pc, s.Body)
+	case *ir.TestDeclStmt:
+		p.markUnused(pc, s.Body)
+	case *ir.GroupDeclStmt:
+		for _, stmt := range s.Body {
+			p.markUnused(pc, stmt)
+		}
+
+	case *ir.SetupStmt:
+		p.markUnused(pc, s.Body)
+	case *ir.TeardownStmt:
+		p.markUnused(pc, s.Body)
 	}
 }
 
@@ -242,6 +253,20 @@ func (p *PassDetectUnused) trackUsage(pc *PassContext, st ir.Stmt) {
 		if s.Body != nil {
 			p.trackUsage(pc, s.Body)
 		}
+
+	case *ir.TestDeclStmt:
+		p.trackUsage(pc, s.Body)
+	case *ir.GroupDeclStmt:
+		for _, stmt := range s.Body {
+			p.trackUsage(pc, stmt)
+		}
+
+	case *ir.SetupStmt:
+		p.trackUsage(pc, s.Body)
+	case *ir.TeardownStmt:
+		p.trackUsage(pc, s.Body)
+	case *ir.AssertStmt:
+		p.trackUsageExpr(pc, s.Expr)
 	}
 }
 
