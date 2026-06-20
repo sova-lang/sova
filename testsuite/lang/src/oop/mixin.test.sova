@@ -38,7 +38,7 @@ mixin Counted {
     }
 }
 
-type Page with Counted {
+type Page with Labeled, Counted {
     url: string = ""
 
     func tag(s: string): string {
@@ -64,12 +64,14 @@ test "field named tag (was soft-reserved)" {
     assert b.title == "Home"
 }
 
-test "single mixin Counted on Page" {
+test "two mixins composed" {
     let p = new Page()
     p.url = "/home"
+    p.setLabel("nav")
     p.bump()
     p.bump()
     p.bump()
     assert p.url == "/home"
+    assert p.label == "nav"
     assert p.count == 3
 }
