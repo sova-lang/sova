@@ -734,7 +734,7 @@ func (e *CodeEmitter) emitForStmt(ctx *codegen.EmitContext, pkg *ir.PackageConte
 			loopStmt = e.buildIterableLoop(ctx, s, iterExpr, inFirstVar, inSecondVar, body)
 		} else if isMap {
 			if inSecondVar != "" {
-				destructVars := "[" + inFirstVar + "," + inSecondVar + "]"
+				destructVars := jsForInDestructure(inFirstVar, inSecondVar)
 				loopStmt = jsgen.For(
 					jsgen.Const(destructVars).Op("of").Add(jsgen.Id("Object").Dot("entries").Call(iterExpr)),
 					nil,
@@ -749,7 +749,7 @@ func (e *CodeEmitter) emitForStmt(ctx *codegen.EmitContext, pkg *ir.PackageConte
 			}
 		} else {
 			if inSecondVar != "" {
-				destructVars := "[" + inSecondVar + "," + inFirstVar + "]"
+				destructVars := jsForInDestructure(inSecondVar, inFirstVar)
 				loopStmt = jsgen.For(
 					jsgen.Const(destructVars).Op("of").Add(iterExpr.Dot("entries").Call()),
 					nil,
@@ -879,14 +879,14 @@ func (e *CodeEmitter) buildForStmt(ctx *codegen.EmitContext, pkg *ir.PackageCont
 			loopStmt = e.buildIterableLoop(ctx, s, iterExpr, inFirstVar, inSecondVar, body)
 		} else if isMap {
 			if inSecondVar != "" {
-				destructVars := "[" + inFirstVar + "," + inSecondVar + "]"
+				destructVars := jsForInDestructure(inFirstVar, inSecondVar)
 				loopStmt = jsgen.For(jsgen.Const(destructVars).Op("of").Add(jsgen.Id("Object").Dot("entries").Call(iterExpr)), nil, nil).Block(body...)
 			} else {
 				loopStmt = jsgen.For(jsgen.Const(inFirstVar).Op("of").Add(jsgen.Id("Object").Dot("keys").Call(iterExpr)), nil, nil).Block(body...)
 			}
 		} else {
 			if inSecondVar != "" {
-				destructVars := "[" + inSecondVar + "," + inFirstVar + "]"
+				destructVars := jsForInDestructure(inSecondVar, inFirstVar)
 				loopStmt = jsgen.For(jsgen.Const(destructVars).Op("of").Add(iterExpr.Dot("entries").Call()), nil, nil).Block(body...)
 			} else {
 				loopStmt = jsgen.For(jsgen.Const(inFirstVar).Op("of").Add(iterExpr), nil, nil).Block(body...)
@@ -1849,4 +1849,12 @@ func (e *CodeEmitter) emitWiredVarStub(ctx *codegen.EmitContext, pkg *ir.Package
 	sb.WriteString(fmt.Sprintf("  return [__sovaReify(__data.value, %s), __data.state];\n", varDesc))
 	sb.WriteString("}")
 	e.jf.Add(jsgen.Raw(sb.String()))
+}
+
+func jsForInDestructure(a, b string) string {
+	if a == "_" && b == "_" {
+		return "[_, _v2]"
+	}
+
+	return "[" + a + "," + b + "]"
 }
