@@ -5,6 +5,18 @@ test "option is none" {
     assert x == none
 }
 
+test "option holds int literal" {
+    let x: option<int> = 42
+    assert x != none
+    assert (x ?? 0) == 42
+}
+
+test "option holds float literal" {
+    let x: option<float> = 3.5
+    assert x != none
+    assert (x ?? 0.0) == 3.5
+}
+
 test "option of string holds value" {
     let s: option<string> = "hello"
     assert s != none

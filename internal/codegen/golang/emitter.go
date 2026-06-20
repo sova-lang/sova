@@ -499,7 +499,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 						if srcTy, ok2 := ctx.Types.GetByID(srcTyp); ok2 && srcTy.Kind != ir.TK_Option && srcTy.Kind != ir.TK_PrimitiveNone {
 							tempVar := e.hk.NewTemp()
 							rhs = jen.Func().Params().Op("*").Add(typeToGoWithContext(ctx, pkg, ctx.Types, targetTy.ElemType)).Block(
-								jen.Id(tempVar).Op(":=").Add(rhs),
+								jen.Var().Id(tempVar).Add(typeToGoWithContext(ctx, pkg, ctx.Types, targetTy.ElemType)).Op("=").Add(rhs),
 								jen.Return(jen.Op("&").Id(tempVar)),
 							).Call()
 						}
@@ -669,7 +669,7 @@ func (e *CodeEmitter) emitStmt(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 
 							tempVar := e.hk.NewTemp()
 							expr = jen.Func().Params().Op("*").Add(typeToGoWithContext(ctx, pkg, ctx.Types, returnTy.ElemType)).Block(
-								jen.Id(tempVar).Op(":=").Add(expr),
+								jen.Var().Id(tempVar).Add(typeToGoWithContext(ctx, pkg, ctx.Types, returnTy.ElemType)).Op("=").Add(expr),
 								jen.Return(jen.Op("&").Id(tempVar)),
 							).Call()
 						}
@@ -4907,7 +4907,7 @@ func (e *CodeEmitter) emitVarDeclStmt(ctx *codegen.EmitContext, pkg *ir.PackageC
 
 						tempVar := e.hk.NewTemp()
 						rhs = jen.Func().Params().Op("*").Add(typeToGoWithContext(ctx, pkg, ctx.Types, targetTy.ElemType)).Block(
-							jen.Id(tempVar).Op(":=").Add(rhs),
+							jen.Var().Id(tempVar).Add(typeToGoWithContext(ctx, pkg, ctx.Types, targetTy.ElemType)).Op("=").Add(rhs),
 							jen.Return(jen.Op("&").Id(tempVar)),
 						).Call()
 						asConst = false
