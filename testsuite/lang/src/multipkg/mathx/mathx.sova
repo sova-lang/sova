@@ -1,0 +1,7 @@
+package langsuite/multipkg/mathx on shared
+
+func square(x: int): int {
+    return x * x
+}
+
+const PI: float = 3.14

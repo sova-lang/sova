@@ -465,6 +465,16 @@ func (p *PassComputeReachability) markStmt(pc *PassContext, s ir.Stmt) bool {
 		if p.markBlock(pc, x.Body) {
 			changed = true
 		}
+
+	case *ir.AssertStmt:
+		if p.markExpr(pc, x.Expr) {
+			changed = true
+		}
+
+	case *ir.AsSessionStmt:
+		if p.markBlock(pc, x.Body) {
+			changed = true
+		}
 	}
 
 	return changed

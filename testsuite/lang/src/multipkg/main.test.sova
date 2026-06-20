@@ -1,0 +1,20 @@
+package langsuite/multipkg on test
+
+import "langsuite/multipkg/mathx"
+
+test "imported function" {
+    assert mathx.square(5) == 25
+}
+
+test "imported function with bigger arg" {
+    assert mathx.square(12) == 144
+}
+
+test "imported constant" {
+    assert mathx.PI == 3.14
+}
+
+test "imported fn in arithmetic" {
+    let r = mathx.square(3) + mathx.square(4)
+    assert r == 25
+}
