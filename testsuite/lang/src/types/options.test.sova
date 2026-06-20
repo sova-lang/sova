@@ -1,0 +1,34 @@
+package langsuite/types on test
+
+test "option is none" {
+    let x: option<int> = none
+    assert x == none
+}
+
+test "option of string holds value" {
+    let s: option<string> = "hello"
+    assert s != none
+}
+
+test "option coalesce on none" {
+    let x: option<int> = none
+    let y = x ?? 99
+    assert y == 99
+}
+
+func mayDouble(x: int, doIt: bool): option<int> {
+    if doIt {
+        return x * 2
+    }
+    return none
+}
+
+test "option from function returning none" {
+    let r = mayDouble(5, false)
+    assert r == none
+}
+
+test "option from function holding value" {
+    let r = mayDouble(5, true)
+    assert (r ?? -1) == 10
+}

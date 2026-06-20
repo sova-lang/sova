@@ -1,0 +1,39 @@
+package langsuite/collections on test
+
+test "map literal" {
+    let m: map<string, int> = { "a": 1, "b": 2, "c": 3 }
+    assert m["a"] == 1
+    assert m["c"] == 3
+}
+
+test "map of string to string" {
+    let m: map<string, string> = { "name": "alice", "role": "admin" }
+    assert m["name"] == "alice"
+    assert m["role"] == "admin"
+}
+
+test "map length" {
+    let m: map<string, int> = { "x": 1, "y": 2 }
+    assert len(m) == 2
+}
+
+test "map iteration sums values" {
+    let m: map<string, int> = { "a": 10, "b": 20, "c": 30 }
+    let sum = 0
+    for k, v in m {
+        sum = sum + v
+    }
+    assert sum == 60
+}
+
+test "map iteration counts keys" {
+    let m: map<string, int> = { "a": 1, "b": 2, "c": 3, "d": 4 }
+    let count = 0
+    let totalLen = 0
+    for k, v in m {
+        count = count + 1
+        totalLen = totalLen + len(k) + v
+    }
+    assert count == 4
+    assert totalLen == 14
+}

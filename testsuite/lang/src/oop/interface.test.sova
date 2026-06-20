@@ -1,0 +1,42 @@
+package langsuite/oop on test
+
+interface Greeter {
+    func greet(): string
+}
+
+type EnglishGreeter implements Greeter {
+    func greet(): string {
+        return "Hello"
+    }
+}
+
+type GermanGreeter implements Greeter {
+    func greet(): string {
+        return "Hallo"
+    }
+}
+
+test "interface dispatch english" {
+    let g: Greeter = new EnglishGreeter()
+    assert g.greet() == "Hello"
+}
+
+test "interface dispatch german" {
+    let g: Greeter = new GermanGreeter()
+    assert g.greet() == "Hallo"
+}
+
+func shout(g: Greeter): string {
+    return g.greet() + "!"
+}
+
+test "interface as param" {
+    let r = shout(new EnglishGreeter())
+    assert r == "Hello!"
+}
+
+test "interface polymorphism in array" {
+    let greeters: []Greeter = [new EnglishGreeter(), new GermanGreeter()]
+    assert greeters[0].greet() == "Hello"
+    assert greeters[1].greet() == "Hallo"
+}

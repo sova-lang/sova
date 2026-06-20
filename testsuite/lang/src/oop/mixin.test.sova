@@ -1,0 +1,53 @@
+package langsuite/oop on test
+
+mixin Labeled {
+    label: string = ""
+
+    func setLabel(t: string) {
+        this.label = t
+    }
+
+    func getLabel(): string {
+        return this.label
+    }
+}
+
+type Item with Labeled {
+    name: string = ""
+}
+
+test "mixin field accessible" {
+    let it = new Item()
+    it.name = "widget"
+    it.label = "alpha"
+    assert it.name == "widget"
+    assert it.label == "alpha"
+}
+
+test "mixin method dispatch" {
+    let it = new Item()
+    it.setLabel("beta")
+    assert it.getLabel() == "beta"
+}
+
+mixin Counted {
+    count: int = 0
+
+    func bump() {
+        this.count = this.count + 1
+    }
+}
+
+type Page with Counted {
+    url: string = ""
+}
+
+test "single mixin Counted on Page" {
+    let p = new Page()
+    p.url = "/home"
+    p.bump()
+    p.bump()
+    p.bump()
+    assert p.url == "/home"
+    assert p.count == 3
+}

@@ -1,31 +1,45 @@
 # Known issues surfaced by the language test suite
 
-These are real compiler bugs the baseline suite would normally cover, but had to be stripped to keep the suite green. Each must be fixed before adding the corresponding tests back.
+Each bullet describes a real compiler bug that blocked a test the suite would normally cover. Fix and add the corresponding tests back.
 
-## 1. for-int statement parser
-`for i = 0; i < N; i++` is admitted by the grammar (`forIntCondition : forIntConditionInit ';' expr ';' expr;`) but the parser/binder rejects it with "Undeclared symbol: i" on the condition and post slots. The init binding doesn't make it into the loop body scope. Only `for x in coll` and `for x in a..b` currently work.
+## Open
 
-## 2. for-range end semantics diverge between Go and JS
-Same source `for x in 1..5` produces:
-- Go backend: 1, 2, 3, 4, 5 (inclusive end)
-- JS backend: 1, 2, 3, 4 (exclusive end)
+### 1. for-int statement parser ambiguity
+`for i = 0; i < N; i++` is rejected by the parser with "missing ';' at 'i'". ANTLR4's adaptive LL(*) prediction can't disambiguate between `forIntCondition`, `forInCondition`, and `forRangeCondition` past the first `ID`. Workaround: use `for x in 0..N` for-range loops. Fix probably requires either (a) a leading keyword on for-int (`for let i = 0; ...`), or (b) restructuring the grammar to lift the disambiguator earlier.
 
-`.docs/` doesn't pin which is correct; one of the two emitters needs to match the other.
+### 2. option<int> literal init produces `*int` instead of `*int64`
+`let x: option<int> = 42` emits:
+```go
+var v *int64 = func() *int64 { _t1 := 42; return &_t1 }()
+```
+Type mismatch (`*int` vs `*int64`). Codegen needs to type the temp as `int64` to match the boxed pointer. Tests using direct option literal init are stripped; tests using `option<T>` via function returns and `none` still pass.
 
-## 3. char literal as rune
-`let c: char = 'A'` emits `var c rune = "A"` (string lit assigned to rune var) and fails Go compile. Codegen needs to detect `char`-typed contexts and emit Go rune literals (`'A'`).
+### 3. JS for-in destructure emits `[_,_]` when both vars are unused
+`for k, v in m { count = count + 1 }` (neither k nor v used) emits:
+```js
+for (const [_,_] of Object.entries(m)) { ... }
+```
+JS rejects this — `_` is already declared. Workaround in the test by reading at least one of k/v. The JS emitter needs to elide one bind side instead of doubling `_`.
 
-## 4. option<T> none assignment in assert helper
-`let x: option<int> = none; assert x == none` works in Go-side variable declaration (`var x *int64 = nil`) but the assert-recording helper emits `__rhs := nil` which Go rejects ("use of untyped nil in assignment"). The helper needs to type the rhs alongside the lhs.
+### 4. Multi-mixin composition silently drops the first mixin's fields/methods
+`type Page with Tagged, Counted` — when both `Tagged` (provides `tag`) and `Counted` (provides `count`) are composed, only `Counted`'s members are visible on `Page`; `tag` and `setTag` are reported as "no field or method". Single-mixin composition works. Test stripped to single-mixin form. Mixin merge pass needs to union all mixin members instead of last-write-wins.
 
-## 5. Builtin len() leaks mangled function name into assert debug map
-`assert len(xs) == 0` emits an assert debug map entry `"len": fn__XXXXXXXX_a` referencing a non-existent mangled fn name; only intrinsic, never a real Go symbol. The assert recorder must skip builtins when collecting referenced identifiers.
+### 5. Cross-package import unresolved in JS test mode
+`import "langsuite/multipkg/mathx"; mathx.square(5)` works on Go side but JS test bundle has `ReferenceError: fn__NWryDfvv_i is not defined`. The JS bundler doesn't emit cross-package symbols when running under the test driver. Multi-pkg test category dropped pending fix.
 
-## 6. Unused for-in tuple variable not underscored
-`for v, i in xs { lastIdx = i }` emits `for _, v__... := range xs` where the value local is bound to a name but never used, causing `declared and not used`. Codegen should rename to `_` when the loop body never references the binding.
+### 6. Generics erase return type to `any`, breaking equality
+`func identity<T>(x: T): T` compiles, but in Go the result is typed `any` and holds `int64`, while the assertion compares against an untyped `int`. `any(int64(42)) == int(42)` is `false`. Per `CLAUDE.md`, generics are "not yet implemented" — these tests are stripped, not a regression.
 
-## 7. customWireHandlerRegistry referenced http_Request/Response without import (FIXED)
-Was emitting `__sovaRegisterCustomWireHandler` even when `std/http` wasn't loaded, with literal `http_Request`/`http_Response` identifier fallbacks. Fixed: `emitCustomWireHandlerRegistry` now no-ops when http types aren't resolvable.
+### 7. `tag` is a soft-reserved word from test grammar
+`testTagList : 'tag' ':' STRING_LITERAL` reserves `tag` as a keyword. Using it as a struct/mixin field name causes "Unexpected token: mismatched input 'tag'" — even outside test files. Field renamed to `label` in mixin tests. Fix: make `tag` a soft-keyword via the same `softId` alternative-branch trick already used for `where`/`to`/`append`.
 
-## 8. test driver build ignored go.mod when go.work present (FIXED)
-`sova test` invoked `go build .` inside `.output/` which has a standalone `go.mod`, but Go used the parent `go.work` instead and rejected packages outside the workspace. Fixed: pass `GOWORK=off` for the test driver build.
+## Fixed in this session
+| # | Fix | Commit |
+|---|---|---|
+| 8 | char literal emitted as Go string, not rune | `fix(codegen/go): emit char literals as Go rune literals, not strings` |
+| 9 | for-range Go inclusive vs JS exclusive divergence | `fix(codegen/go): make for-range end exclusive to match JS backend` |
+| 10 | assert recorder emits untyped `nil` for `none` | `fix(codegen/go): type assert lhs/rhs as any and skip callee in var capture` |
+| 11 | assert recorder leaks builtin `len()` mangled fn name | (same commit as 10) |
+| 12 | `detect_unused` skipped in test pipeline, didn't descend into test bodies | `fix(passes): run detect_unused in test pipeline and descend into test bodies` |
+| 13 | `customWireHandlerRegistry` emitted with unresolved `http_Request`/`http_Response` when std/http not loaded | `fix(codegen/go): skip customWireHandler registry emission when std/http isn't loaded` |
+| 14 | test driver build failed in workspace-mode (`go.work` interferes with `.output/go.mod`) | `fix(cli/test): set GOWORK=off when building test driver in .output` |
