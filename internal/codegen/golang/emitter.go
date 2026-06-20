@@ -3238,8 +3238,14 @@ func lookupHttpStructName(ctx *codegen.EmitContext, name string) string {
 }
 
 func emitCustomWireHandlerRegistry(ctx *codegen.EmitContext, block *jen.Group) {
-	reqName := lookupHttpStructName(ctx, "Request")
-	resName := lookupHttpStructName(ctx, "Response")
+	reqSym := findTypeSymbolAcrossPkgs(ctx, nil, "std/http", "Request")
+	resSym := findTypeSymbolAcrossPkgs(ctx, nil, "std/http", "Response")
+	if reqSym == 0 || resSym == 0 {
+		return
+	}
+
+	reqName := symName(ctx, reqSym)
+	resName := symName(ctx, resSym)
 
 	block.Add(jen.Var().Id("__sovaCustomWireHandlers").Op("=").Map(jen.String()).Func().Params(
 		jen.Qual("net/http", "ResponseWriter"),
