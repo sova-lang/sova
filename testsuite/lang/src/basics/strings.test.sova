@@ -1,0 +1,22 @@
+package langsuite/basics on test
+
+test "concat" {
+    let s = "hello, " + "world"
+    assert s == "hello, world"
+}
+
+test "concat with int" {
+    let n = 42
+    let s = "n=" + n
+    assert s == "n=42"
+}
+
+test "string equality" {
+    assert "abc" == "abc"
+    assert "abc" != "xyz"
+}
+
+test "empty string" {
+    let s = ""
+    assert s == ""
+}

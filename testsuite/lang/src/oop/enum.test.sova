@@ -1,0 +1,37 @@
+package langsuite/oop on test
+
+enum Color(value: string) {
+    Red("red"),
+    Green("green"),
+    Blue("blue")
+}
+
+test "enum case access" {
+    let c = Color.Red
+    assert c.value == "red"
+}
+
+test "enum case comparison" {
+    let a = Color.Green
+    let b = Color.Green
+    assert a == b
+}
+
+test "enum cases distinct" {
+    let a = Color.Red
+    let b = Color.Blue
+    assert a != b
+}
+
+enum Direction(dx: int, dy: int) {
+    North(0, -1),
+    South(0, 1),
+    East(1, 0),
+    West(-1, 0)
+}
+
+test "enum multi-arg" {
+    let d = Direction.North
+    assert d.dx == 0
+    assert d.dy == -1
+}

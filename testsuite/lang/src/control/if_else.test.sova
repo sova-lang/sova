@@ -1,0 +1,50 @@
+package langsuite/control on test
+
+test "if then" {
+    let x = 5
+    let y = 0
+    if x > 0 {
+        y = 1
+    }
+    assert y == 1
+}
+
+test "if else" {
+    let x = -5
+    let label = ""
+    if x > 0 {
+        label = "pos"
+    } else {
+        label = "nonpos"
+    }
+    assert label == "nonpos"
+}
+
+test "if elseif else" {
+    let x = 0
+    let label = ""
+    if x > 0 {
+        label = "pos"
+    } else if x < 0 {
+        label = "neg"
+    } else {
+        label = "zero"
+    }
+    assert label == "zero"
+}
+
+test "nested if" {
+    let x = 5
+    let y = 10
+    let label = ""
+    if x > 0 {
+        if y > 0 {
+            label = "++"
+        } else {
+            label = "+-"
+        }
+    } else {
+        label = "-?"
+    }
+    assert label == "++"
+}

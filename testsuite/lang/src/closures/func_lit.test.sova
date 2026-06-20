@@ -1,0 +1,24 @@
+package langsuite/closures on test
+
+test "anonymous func" {
+    let add = func(a: int, b: int): int {
+        return a + b
+    }
+    assert add(2, 3) == 5
+}
+
+test "closure captures local" {
+    let base = 100
+    let bump = func(x: int): int {
+        return base + x
+    }
+    assert bump(5) == 105
+}
+
+test "func returned from func" {
+    let makeAdder = func(n: int): func(int): int {
+        return func(x: int): int { return x + n }
+    }
+    let add10 = makeAdder(10)
+    assert add10(5) == 15
+}

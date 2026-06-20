@@ -1,0 +1,26 @@
+package langsuite/control on test
+
+test "ternary then" {
+    let x = 5
+    let label = x > 0 ? "pos" : "neg"
+    assert label == "pos"
+}
+
+test "ternary else" {
+    let x = -5
+    let label = x > 0 ? "pos" : "neg"
+    assert label == "neg"
+}
+
+test "ternary nested" {
+    let x = 0
+    let label = x > 0 ? "pos" : (x < 0 ? "neg" : "zero")
+    assert label == "zero"
+}
+
+test "ternary in expression" {
+    let x = 10
+    let y = 20
+    let max = x > y ? x : y
+    assert max == 20
+}

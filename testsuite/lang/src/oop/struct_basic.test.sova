@@ -1,0 +1,48 @@
+package langsuite/oop on test
+
+type Point {
+    x: int = 0
+    y: int = 0
+}
+
+test "field defaults" {
+    let p = new Point()
+    assert p.x == 0
+    assert p.y == 0
+}
+
+type Box {
+    w: int = 0
+    h: int = 0
+
+    func area(): int {
+        return this.w * this.h
+    }
+}
+
+test "method call" {
+    let b = new Box()
+    b.w = 4
+    b.h = 5
+    assert b.area() == 20
+}
+
+type Counter {
+    n: int = 0
+
+    func bump() {
+        this.n = this.n + 1
+    }
+
+    func value(): int {
+        return this.n
+    }
+}
+
+test "mutating method" {
+    let c = new Counter()
+    c.bump()
+    c.bump()
+    c.bump()
+    assert c.value() == 3
+}

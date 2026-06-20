@@ -1,0 +1,29 @@
+package langsuite/oop on test
+
+type Vec {
+    x: int = 0
+    y: int = 0
+    z: int = 0
+
+    new(x: int, y: int, z: int) {
+        this.x = x
+        this.y = y
+        this.z = z
+    }
+
+    func sum(): int {
+        return this.x + this.y + this.z
+    }
+}
+
+test "explicit ctor" {
+    let v = new Vec(1, 2, 3)
+    assert v.sum() == 6
+}
+
+test "ctor independent instances" {
+    let a = new Vec(1, 1, 1)
+    let b = new Vec(10, 10, 10)
+    assert a.sum() == 3
+    assert b.sum() == 30
+}

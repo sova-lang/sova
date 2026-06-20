@@ -1,0 +1,39 @@
+package langsuite/collections on test
+
+test "literal" {
+    let xs = [1, 2, 3, 4, 5]
+    assert xs[0] == 1
+    assert xs[4] == 5
+}
+
+test "indexing" {
+    let xs = [10, 20, 30]
+    assert xs[1] == 20
+}
+
+test "empty array" {
+    let xs: []int = []
+    let n = len(xs)
+    assert n == 0
+}
+
+test "array length" {
+    let xs = [1, 2, 3, 4, 5]
+    let n = len(xs)
+    assert n == 5
+}
+
+test "array of strings" {
+    let names = ["alice", "bob", "carol"]
+    assert names[0] == "alice"
+    assert names[2] == "carol"
+}
+
+test "iterate sum" {
+    let xs = [10, 20, 30, 40]
+    let sum = 0
+    for x in xs {
+        sum = sum + x
+    }
+    assert sum == 100
+}

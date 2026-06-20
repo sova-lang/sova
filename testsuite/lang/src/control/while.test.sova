@@ -1,0 +1,29 @@
+package langsuite/control on test
+
+test "while basic" {
+    let n = 0
+    while n < 5 {
+        n = n + 1
+    }
+    assert n == 5
+}
+
+test "while never enters" {
+    let n = 100
+    let entered = false
+    while n < 0 {
+        entered = true
+    }
+    assert entered == false
+}
+
+test "while with accumulation" {
+    let xs = [1, 2, 3, 4, 5]
+    let i = 0
+    let sum = 0
+    while i < 5 {
+        sum = sum + xs[i]
+        i = i + 1
+    }
+    assert sum == 15
+}

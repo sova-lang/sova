@@ -1,0 +1,22 @@
+package langsuite/basics on test
+
+test "int literal" {
+    let x: int = 42
+    assert x == 42
+}
+
+test "float literal" {
+    let x: float = 3.5
+    assert x == 3.5
+}
+
+test "string literal" {
+    let s: string = "hello"
+    assert s == "hello"
+}
+
+test "bool literals" {
+    assert true == true
+    assert false == false
+    assert true != false
+}
