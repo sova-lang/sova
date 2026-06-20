@@ -13,14 +13,12 @@ test "indexing" {
 
 test "empty array" {
     let xs: []int = []
-    let n = len(xs)
-    assert n == 0
+    assert len(xs) == 0
 }
 
 test "array length" {
     let xs = [1, 2, 3, 4, 5]
-    let n = len(xs)
-    assert n == 5
+    assert len(xs) == 5
 }
 
 test "array of strings" {

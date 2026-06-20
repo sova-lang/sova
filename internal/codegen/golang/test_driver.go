@@ -403,8 +403,8 @@ func (e *CodeEmitter) emitAssertStmt(ctx *codegen.EmitContext, pkg *ir.PackageCo
 			rhs := e.buildExpr(ctx, pkg, f, bin.Right)
 			cond := e.buildExpr(ctx, pkg, f, s.Expr)
 			return jen.Func().Params().Block(
-				jen.Id("__lhs").Op(":=").Add(lhs),
-				jen.Id("__rhs").Op(":=").Add(rhs),
+				jen.Var().Id("__lhs").Any().Op("=").Add(lhs),
+				jen.Var().Id("__rhs").Any().Op("=").Add(rhs),
 				jen.Id("_").Op("=").Id("__lhs"),
 				jen.Id("_").Op("=").Id("__rhs"),
 				jen.If(jen.Op("!").Parens(cond)).Block(
@@ -485,7 +485,6 @@ func collectAssertVars(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.F
 		case *ir.FieldAccessExpr:
 			walk(x.Expr)
 		case *ir.FuncCallExpr:
-			walk(x.Callee)
 			for _, a := range x.Args {
 				walk(a.Expr)
 			}

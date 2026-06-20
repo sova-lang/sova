@@ -31,3 +31,8 @@ test "char inequality" {
     let b: char = 'b'
     assert a != b
 }
+
+test "none literal in option" {
+    let x: option<int> = none
+    assert x == none
+}
