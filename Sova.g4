@@ -11,7 +11,7 @@ packagePath : pkgIdent ('/' pkgIdent)*;
 pkgIdent : softId | SIDE_FRONTEND | SIDE_BACKEND | SIDE_SHARED | SIDE_SYNTH;
 
 // softId admits both real identifiers AND the synth-only soft-reserved keywords (`where`, `to`, `append`) wherever an identifier is grammatically expected. The synth grammar's parser rules still expect these as literal tokens in their own positions (`emit append to ID`, `for ... where ...`) — the alternative-branch trick lets user code freely use the same words as function/field/method/variable names without colliding with the synth keywords. See Faithbook BUGS.md #20 for the motivation.
-softId : ID | 'where' | 'to' | 'append';
+softId : ID | 'where' | 'to' | 'append' | 'tag';
 
 sideDecl : 'on' side;
 side : SIDE_FRONTEND

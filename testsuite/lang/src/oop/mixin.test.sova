@@ -40,6 +40,28 @@ mixin Counted {
 
 type Page with Counted {
     url: string = ""
+
+    func tag(s: string): string {
+        return "tag:" + s
+    }
+}
+
+test "method named tag (was soft-reserved)" {
+    let p = new Page()
+    assert p.tag("hello") == "tag:hello"
+}
+
+type Bookmark {
+    tag: string = ""
+    title: string = ""
+}
+
+test "field named tag (was soft-reserved)" {
+    let b = new Bookmark()
+    b.tag = "fav"
+    b.title = "Home"
+    assert b.tag == "fav"
+    assert b.title == "Home"
 }
 
 test "single mixin Counted on Page" {
