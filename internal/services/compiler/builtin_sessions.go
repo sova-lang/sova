@@ -48,7 +48,7 @@ func buildSessionsPackage(c *CompilerContext) {
 
 	sessionTyp := t.StructOf("sessions", "Session", sessionFields)
 	sessionStructTy, _ := t.GetByID(sessionTyp)
-	sessionStructTy.StructFields = sessionFields
+	sessionStructTy.Struct.Fields = sessionFields
 
 	mkParam := func(name string, typ ir.TypID) *ir.FuncParam {
 		return &ir.FuncParam{
@@ -67,7 +67,7 @@ func buildSessionsPackage(c *CompilerContext) {
 
 	_ = mkParamDefault
 
-	sessionStructTy.StructMethods = []ir.StructMethodInfo{
+	sessionStructTy.Struct.Methods = []ir.StructMethodInfo{
 		{Name: "authenticate", FuncTyp: t.FuncOf([]*ir.FuncParam{mkParam("user", anyTyp), mkParam("claims", claimsMap)}, noneTyp)},
 		{Name: "logout", FuncTyp: t.FuncOf(nil, noneTyp)},
 		{Name: "addRoles", FuncTyp: t.FuncOf([]*ir.FuncParam{mkParam("roles", stringSlice)}, noneTyp)},
@@ -89,10 +89,10 @@ func buildSessionsPackage(c *CompilerContext) {
 
 	broadcastTyp := t.StructOf("sessions", "Broadcast", broadcastFields)
 	broadcastStructTy, _ := t.GetByID(broadcastTyp)
-	broadcastStructTy.StructFields = broadcastFields
+	broadcastStructTy.Struct.Fields = broadcastFields
 
 	predicateTyp := t.FuncOf([]*ir.FuncParam{mkParam("s", sessionTyp)}, boolTyp)
-	broadcastStructTy.StructMethods = []ir.StructMethodInfo{
+	broadcastStructTy.Struct.Methods = []ir.StructMethodInfo{
 		{Name: "toRoom", FuncTyp: t.FuncOf([]*ir.FuncParam{mkParam("room", stringTyp)}, broadcastTyp)},
 		{Name: "filter", FuncTyp: t.FuncOf([]*ir.FuncParam{mkParam("predicate", predicateTyp)}, broadcastTyp)},
 	}

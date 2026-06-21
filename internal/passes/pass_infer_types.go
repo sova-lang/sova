@@ -57,7 +57,7 @@ func (p *PassInferTypes) preComputeStructCtors(pc *PassContext, stmts []ir.Stmt)
 			ctorInfos = append(ctorInfos, ir.StructCtorInfo{Sym: ctor.Sym, FuncTyp: funcTyp})
 		}
 
-		structTy.StructCtors = ctorInfos
+		structTy.Struct.Ctors = ctorInfos
 	}
 }
 
@@ -169,7 +169,7 @@ func (p *PassInferTypes) preComputeStructMethods(pc *PassContext, stmts []ir.Stm
 			methodInfos = append(methodInfos, ir.StructMethodInfo{Name: fn.Name.Name, Sym: fn.Name.Sym, FuncTyp: funcTyp, IsShared: method.IsShared})
 		}
 
-		structTy.StructMethods = methodInfos
+		structTy.Struct.Methods = methodInfos
 	}
 }
 
@@ -206,7 +206,7 @@ func (p *PassInferTypes) preComputeStructFields(pc *PassContext, stmts []ir.Stmt
 
 		structTyp := pc.Types.StructOf(pc.Pkg.Path.String(), td.Name.Name, fields)
 		if structTy, ok := pc.Types.GetByID(structTyp); ok {
-			structTy.StructFields = fields
+			structTy.Struct.Fields = fields
 		}
 
 		if td.Name.Sym != 0 {
@@ -709,14 +709,14 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 
 			structTyp := pc.Types.StructOf(pc.Pkg.Path.String(), st.Name.Name, fields)
 			if structTy, ok := pc.Types.GetByID(structTyp); ok {
-				structTy.StructFields = fields
+				structTy.Struct.Fields = fields
 				if st.IsExtern {
 					structTy.IsExtern = true
 					structTy.ExternModule = st.ExternModule
 				}
 
 				if mentionsComposable(st.MixedIn) {
-					structTy.IsComposable = true
+					structTy.Struct.IsComposable = true
 				}
 
 				if len(st.TypeParams) > 0 {
@@ -819,16 +819,16 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					continue
 				}
 
-				for _, fld := range embedTy.StructFields {
+				for _, fld := range embedTy.Struct.Fields {
 					promoted := fld
 					promoted.IsPromoted = true
 					promoted.PromotedFromExtern = embedTy.IsExtern
 					if structTy, ok := pc.Types.GetByID(structTyp); ok {
-						structTy.StructFields = append(structTy.StructFields, promoted)
+						structTy.Struct.Fields = append(structTy.Struct.Fields, promoted)
 					}
 				}
 
-				for _, m := range embedTy.StructMethods {
+				for _, m := range embedTy.Struct.Methods {
 					promoted := m
 					promoted.IsPromoted = true
 					promoted.PromotedFromExtern = embedTy.IsExtern
@@ -837,8 +837,8 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 			}
 
 			if structTy, ok := pc.Types.GetByID(structTyp); ok {
-				structTy.StructCtors = ctorInfos
-				structTy.StructMethods = methodInfos
+				structTy.Struct.Ctors = ctorInfos
+				structTy.Struct.Methods = methodInfos
 			}
 
 			for _, method := range st.Methods {
@@ -891,7 +891,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 
 			if len(castInfos) > 0 {
 				if structTy, ok := pc.Types.GetByID(structTyp); ok {
-					structTy.StructCasts = castInfos
+					structTy.Struct.Casts = castInfos
 				}
 			}
 
@@ -1001,9 +1001,9 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 			}
 
 			if structTy, ok := pc.Types.GetByID(structTyp); ok {
-				structTy.StructCtors = ctorInfos
-				structTy.StructMethods = methodInfos
-				structTy.StructImplements = implementsList
+				structTy.Struct.Ctors = ctorInfos
+				structTy.Struct.Methods = methodInfos
+				structTy.Struct.Implements = implementsList
 			}
 
 		case *ir.EnumDeclStmt:
@@ -1156,7 +1156,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				}
 
 				found := false
-				for _, sf := range ty.StructFields {
+				for _, sf := range ty.Struct.Fields {
 					if sf.Name == fld.Name {
 						cur = sf.Type
 						found = true
@@ -1165,7 +1165,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				}
 
 				if !found {
-					pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("type %s has no field '%s'", ty.StructName, fld.Name))
+					pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("type %s has no field '%s'", ty.Struct.Name, fld.Name))
 					cur = pc.Types.TypError()
 					break
 				}
@@ -2089,7 +2089,7 @@ func (p *PassInferTypes) synthesizeComposableCallType(pc *PassContext, x *ir.Com
 	}
 
 	ty, ok := tt.GetByID(sym.Typ)
-	if !ok || ty.Kind != ir.TK_Struct || !ty.IsComposable {
+	if !ok || ty.Kind != ir.TK_Struct || !ty.Struct.IsComposable {
 		pc.Diag.Report(diag.ErrTypeMismatch, x.Span(), "composable type", sym.Name)
 		x.SetType(tt.TypError())
 		return tt.TypError()
@@ -2105,10 +2105,10 @@ func (p *PassInferTypes) synthesizeComposableCallType(pc *PassContext, x *ir.Com
 		argTypes[i] = p.synthesizeTypeFromExpr(pc, arg.Expr)
 	}
 
-	if len(x.Args) > 0 || len(ty.StructCtors) > 0 {
+	if len(x.Args) > 0 || len(ty.Struct.Ctors) > 0 {
 		matchedSym := ir.SymID(0)
 		var matchedArgs []ir.FuncCallArg
-		for _, ci := range ty.StructCtors {
+		for _, ci := range ty.Struct.Ctors {
 			ftDef, ok := tt.GetByID(ci.FuncTyp)
 			if !ok {
 				continue
@@ -2195,7 +2195,7 @@ func (p *PassInferTypes) maybeInsertComposableCast(pc *PassContext, child ir.Exp
 		return nil
 	}
 
-	if ty, ok := pc.Types.GetByID(childTyp); ok && ty.Kind == ir.TK_Struct && ty.IsComposable {
+	if ty, ok := pc.Types.GetByID(childTyp); ok && ty.Kind == ir.TK_Struct && ty.Struct.IsComposable {
 		return nil
 	}
 
@@ -2224,11 +2224,11 @@ func (p *PassInferTypes) maybeInsertComposableCast(pc *PassContext, child ir.Exp
 				}
 
 				ty, ok := pc.Types.GetByID(sym.Typ)
-				if !ok || ty.Kind != ir.TK_Struct || !ty.IsComposable {
+				if !ok || ty.Kind != ir.TK_Struct || !ty.Struct.IsComposable {
 					continue
 				}
 
-				for _, ci := range ty.StructCasts {
+				for _, ci := range ty.Struct.Casts {
 					if ci.SourceTyp == childTyp {
 						matches = append(matches, match{Sym: ci.Sym, FuncTyp: ci.FuncTyp, Target: sym.Typ})
 					}
@@ -2296,11 +2296,11 @@ func (p *PassInferTypes) rewriteComposableCalleeToCtor(pc *PassContext, x *ir.Fu
 	}
 
 	ty, ok := pc.Types.GetByID(sym.Typ)
-	if !ok || ty.Kind != ir.TK_Struct || !ty.IsComposable {
+	if !ok || ty.Kind != ir.TK_Struct || !ty.Struct.IsComposable {
 		return
 	}
 
-	for _, ci := range ty.StructCtors {
+	for _, ci := range ty.Struct.Ctors {
 		ftDef, ok := pc.Types.GetByID(ci.FuncTyp)
 		if !ok {
 			continue
@@ -2394,7 +2394,7 @@ func isTypeAssignable(tt *ir.TypeTable, dst, src ir.TypID) (bool, string) {
 
 	if dstTy, _ := tt.GetByID(dst); dstTy != nil && dstTy.Kind == ir.TK_Interface {
 		if srcTy, _ := tt.GetByID(src); srcTy != nil && srcTy.Kind == ir.TK_Struct {
-			for _, impl := range srcTy.StructImplements {
+			for _, impl := range srcTy.Struct.Implements {
 				if impl == dst {
 					return true, "struct implements interface"
 				}
@@ -2679,7 +2679,7 @@ func renderTypeForDiag(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) st
 
 		return head + ": " + renderTypeForDiag(tt, ty.ReturnType, seen)
 	case ir.TK_Struct:
-		return qualifyTypeName(ty.PackagePath, ty.StructName)
+		return qualifyTypeName(ty.PackagePath, ty.Struct.Name)
 	case ir.TK_Enum:
 		return qualifyTypeName(ty.PackagePath, ty.Enum.Name)
 	case ir.TK_Interface:
@@ -2726,7 +2726,7 @@ func typeKeyDisplay(ty *ir.Type) string {
 
 		return "func(...)"
 	case ir.TK_Struct:
-		return qualifyTypeName(ty.PackagePath, ty.StructName)
+		return qualifyTypeName(ty.PackagePath, ty.Struct.Name)
 	case ir.TK_Enum:
 		return qualifyTypeName(ty.PackagePath, ty.Enum.Name)
 	case ir.TK_Interface:
@@ -3029,7 +3029,7 @@ func isHandleWrapperCast(tt *ir.TypeTable, srcTy, dstTy ir.TypID) bool {
 			return false
 		}
 
-		for _, sf := range info.StructFields {
+		for _, sf := range info.Struct.Fields {
 			if sf.Name == "handle" && sf.Type == tt.PrimAny() {
 				return true
 			}
@@ -3161,7 +3161,7 @@ func tryInsertCast(tt *ir.TypeTable, targetTyp, sourceTyp ir.TypID, arg ir.Expr)
 		return arg, false
 	}
 
-	for _, ci := range ty.StructCasts {
+	for _, ci := range ty.Struct.Casts {
 		if ci.SourceTyp == sourceTyp {
 			return wrapCastCall(tt, ci, arg, targetTyp), true
 		}
@@ -3487,7 +3487,7 @@ func findIterableNext(pc *PassContext, ty *ir.Type) (ir.SymID, ir.TypID) {
 		return 0, 0
 	}
 
-	for _, m := range ty.StructMethods {
+	for _, m := range ty.Struct.Methods {
 		if m.Name != "next" || m.Sym == 0 {
 			continue
 		}
@@ -3520,7 +3520,7 @@ func (p *PassInferTypes) synthesizeBinaryExprType(pc *PassContext, x *ir.BinaryE
 
 	if leftTy, ok := tt.GetByID(l); ok && leftTy.Kind == ir.TK_Struct {
 		if opName, isOp := operatorMethodName(x.Op); isOp {
-			for _, m := range leftTy.StructMethods {
+			for _, m := range leftTy.Struct.Methods {
 				if m.Name == opName {
 					if fnTy, ok := tt.GetByID(m.FuncTyp); ok && fnTy.Kind == ir.TK_Function {
 						x.SetType(fnTy.ReturnType)
@@ -3746,11 +3746,11 @@ func (p *PassInferTypes) synthesizeFieldAccessExprType(pc *PassContext, x *ir.Fi
 
 		case ir.TK_Struct:
 			found := false
-			for _, sf := range ty.StructFields {
+			for _, sf := range ty.Struct.Fields {
 				if sf.Name == fld.Name {
 					found = true
 					if sf.Private && !fieldAccessIsThroughThis(pc, x.Expr) {
-						pc.Diag.Report(diag.ErrPrivateFieldAccess, fld.Span, fld.Name, ty.StructName, fld.Name)
+						pc.Diag.Report(diag.ErrPrivateFieldAccess, fld.Span, fld.Name, ty.Struct.Name, fld.Name)
 					}
 
 					cur = sf.Type
@@ -3760,7 +3760,7 @@ func (p *PassInferTypes) synthesizeFieldAccessExprType(pc *PassContext, x *ir.Fi
 
 			if !found {
 				if x.MethodSym != 0 {
-					for _, m := range ty.StructMethods {
+					for _, m := range ty.Struct.Methods {
 						if m.Sym == x.MethodSym {
 							found = true
 							cur = m.FuncTyp
@@ -3770,7 +3770,7 @@ func (p *PassInferTypes) synthesizeFieldAccessExprType(pc *PassContext, x *ir.Fi
 				}
 
 				if !found {
-					for _, m := range ty.StructMethods {
+					for _, m := range ty.Struct.Methods {
 						if m.Name == fld.Name {
 							found = true
 							cur = m.FuncTyp
@@ -3781,7 +3781,7 @@ func (p *PassInferTypes) synthesizeFieldAccessExprType(pc *PassContext, x *ir.Fi
 			}
 
 			if !found {
-				pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("type %s has no field or method '%s'", ty.StructName, fld.Name))
+				pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("type %s has no field or method '%s'", ty.Struct.Name, fld.Name))
 				x.SetType(tt.TypError())
 				return tt.TypError()
 			}
@@ -3876,7 +3876,7 @@ func (p *PassInferTypes) synthesizeFuncCallExprType(pc *PassContext, x *ir.FuncC
 		methodName := fa.Fields[len(fa.Fields)-1].Name
 		if ty, ok := tt.GetByID(recvTy); ok && ty.Kind == ir.TK_Struct {
 			var candidates []ir.SymID
-			for _, m := range ty.StructMethods {
+			for _, m := range ty.Struct.Methods {
 				if m.Name == methodName && m.Sym != 0 {
 					candidates = append(candidates, m.Sym)
 				}
@@ -4109,7 +4109,7 @@ func (p *PassInferTypes) synthesizeNewExprType(pc *PassContext, x *ir.NewExpr) i
 		matchedSym := ir.SymID(0)
 		var matchedArgs []ir.FuncCallArg
 		bestScore := -1
-		for _, ci := range ty.StructCtors {
+		for _, ci := range ty.Struct.Ctors {
 			ftDef, ok := tt.GetByID(ci.FuncTyp)
 			if !ok {
 				continue
@@ -4144,7 +4144,7 @@ func (p *PassInferTypes) synthesizeNewExprType(pc *PassContext, x *ir.NewExpr) i
 		} else {
 			x.Args = matchedArgs
 			if len(typeArgSub) > 0 {
-				for i, ci := range ty.StructCtors {
+				for i, ci := range ty.Struct.Ctors {
 					if ci.Sym != matchedSym {
 						continue
 					}

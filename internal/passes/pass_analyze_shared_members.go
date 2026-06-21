@@ -531,8 +531,8 @@ func formatTypeShort(pc *PassContext, t ir.TypID) string {
 	case ir.TK_Map:
 		return "map<" + formatTypeShort(pc, ty.KeyType) + ", " + formatTypeShort(pc, ty.ValueType) + ">"
 	case ir.TK_Struct:
-		if ty.StructName != "" {
-			return ty.StructName
+		if ty.Struct.Name != "" {
+			return ty.Struct.Name
 		}
 
 		return "struct"

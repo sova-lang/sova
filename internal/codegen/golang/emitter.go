@@ -950,7 +950,7 @@ func (e *CodeEmitter) buildPostfixUnaryExpr(ctx *codegen.EmitContext, pkg *ir.Pa
 func (e *CodeEmitter) buildBinaryExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.BinaryExpr) *jen.Statement {
 		if leftTy, ok := ctx.Types.GetByID(x.Left.GetType()); ok && leftTy.Kind == ir.TK_Struct {
 			if methodName, isOp := opOverloadName(x.Op); isOp {
-				for _, m := range leftTy.StructMethods {
+				for _, m := range leftTy.Struct.Methods {
 					if m.Name == methodName && m.Sym != 0 {
 						left := e.buildExpr(ctx, pkg, f, x.Left)
 						right := e.buildExpr(ctx, pkg, f, x.Right)
@@ -1188,7 +1188,7 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 			ty, ok := ctx.Types.GetByID(curType)
 			if ok && ty.Kind == ir.TK_Struct {
 				found := false
-				for _, sf := range ty.StructFields {
+				for _, sf := range ty.Struct.Fields {
 					if sf.Name == fld.Name {
 						var fieldName string
 						switch {
@@ -1196,7 +1196,7 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 							fieldName = fld.Name
 						case sf.IsPromoted && sf.PromotedFromExtern:
 							fieldName = fld.Name
-						case ty.StructName == "__Session":
+						case ty.Struct.Name == "__Session":
 							fieldName = sessionFieldNameToGo(fld.Name)
 						default:
 							fieldName = goExportedName(fld.Name)
@@ -1212,18 +1212,18 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 				if !found {
 					var chosen *ir.StructMethodInfo
 					if x.MethodSym != 0 {
-						for i := range ty.StructMethods {
-							if ty.StructMethods[i].Sym == x.MethodSym {
-								chosen = &ty.StructMethods[i]
+						for i := range ty.Struct.Methods {
+							if ty.Struct.Methods[i].Sym == x.MethodSym {
+								chosen = &ty.Struct.Methods[i]
 								break
 							}
 						}
 					}
 
 					if chosen == nil {
-						for i := range ty.StructMethods {
-							if ty.StructMethods[i].Name == fld.Name {
-								chosen = &ty.StructMethods[i]
+						for i := range ty.Struct.Methods {
+							if ty.Struct.Methods[i].Name == fld.Name {
+								chosen = &ty.Struct.Methods[i]
 								break
 							}
 						}
@@ -1834,7 +1834,7 @@ func fieldAssignmentTargetType(ctx *codegen.EmitContext, pkg *ir.PackageContext,
 		}
 
 		found := false
-		for _, sf := range ty.StructFields {
+		for _, sf := range ty.Struct.Fields {
 			if sf.Name == fld.Name {
 				cur = sf.Type
 				found = true
@@ -1865,7 +1865,7 @@ func isReactiveFieldOf(ctx *codegen.EmitContext, pkg *ir.PackageContext, receive
 		return false
 	}
 
-	for _, f := range ty.StructFields {
+	for _, f := range ty.Struct.Fields {
 		if f.Name == fieldName {
 			return f.IsReactive
 		}
@@ -2346,10 +2346,10 @@ func typeToGoWithContext(ctx *codegen.EmitContext, pkg *ir.PackageContext, tt *i
 		case ir.TK_Struct:
 			if ty.IsExtern {
 				if ty.ExternValue {
-					return jen.Qual(ty.ExternModule, ty.StructName)
+					return jen.Qual(ty.ExternModule, ty.Struct.Name)
 				}
 
-				return jen.Op("*").Qual(ty.ExternModule, ty.StructName)
+				return jen.Op("*").Qual(ty.ExternModule, ty.Struct.Name)
 			}
 
 			if ctx != nil && ctx.Cache != nil {
@@ -2366,9 +2366,9 @@ func typeToGoWithContext(ctx *codegen.EmitContext, pkg *ir.PackageContext, tt *i
 				}
 			}
 
-			structName := ty.StructName
+			structName := ty.Struct.Name
 			if ctx != nil {
-				if sym := findTypeSymbolAcrossPkgs(ctx, pkg, ty.PackagePath, ty.StructName); sym != 0 {
+				if sym := findTypeSymbolAcrossPkgs(ctx, pkg, ty.PackagePath, ty.Struct.Name); sym != 0 {
 					structName = symName(ctx, sym)
 				}
 			}
@@ -4337,7 +4337,7 @@ func lookupRawHttpStructName(ctx *codegen.EmitContext, pkg *ir.PackageContext, r
 		return fallback
 	}
 
-	sym := findTypeSymbolAcrossPkgs(ctx, pkg, ty.PackagePath, ty.StructName)
+	sym := findTypeSymbolAcrossPkgs(ctx, pkg, ty.PackagePath, ty.Struct.Name)
 	if sym == 0 {
 		return fallback
 	}
@@ -4615,9 +4615,9 @@ func typedResponseKind(ctx *codegen.EmitContext, fn *ir.FuncDeclStmt) string {
 		return ""
 	}
 
-	switch ty.StructName {
+	switch ty.Struct.Name {
 	case "Redirect", "Html", "File", "Status":
-		return ty.StructName
+		return ty.Struct.Name
 	}
 
 	return ""
@@ -5307,7 +5307,7 @@ func (e *CodeEmitter) emitTypeDeclStmt(ctx *codegen.EmitContext, pkg *ir.Package
 		}
 
 		if embedTy.IsExtern {
-			structFields = append(structFields, jen.Qual(embedTy.ExternModule, embedTy.StructName))
+			structFields = append(structFields, jen.Qual(embedTy.ExternModule, embedTy.Struct.Name))
 		} else {
 			structFields = append(structFields, jen.Id(symName(ctx, ref.Sym)))
 		}

@@ -262,7 +262,7 @@ func findMemberSym(c *compiler.CompilerContext, receiverTyp ir.TypID, name strin
 	filterShared := consumerSide != ir.SideShared && declSide != ir.SideShared && consumerSide != declSide
 	switch ty.Kind {
 	case ir.TK_Struct:
-		for _, m := range ty.StructMethods {
+		for _, m := range ty.Struct.Methods {
 			if filterShared && !m.IsShared {
 				continue
 			}

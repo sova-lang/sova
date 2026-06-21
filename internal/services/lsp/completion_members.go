@@ -402,7 +402,7 @@ func typeMemberCompletions(c *compiler.CompilerContext, typ ir.TypID, consumerSi
 	var out []protocol.CompletionItem
 	switch ty.Kind {
 	case ir.TK_Struct:
-		for _, f := range ty.StructFields {
+		for _, f := range ty.Struct.Fields {
 			if filterShared && !f.IsShared {
 				continue
 			}
@@ -414,7 +414,7 @@ func typeMemberCompletions(c *compiler.CompilerContext, typ ir.TypID, consumerSi
 			})
 		}
 
-		for _, m := range ty.StructMethods {
+		for _, m := range ty.Struct.Methods {
 			if filterShared && !m.IsShared {
 				continue
 			}

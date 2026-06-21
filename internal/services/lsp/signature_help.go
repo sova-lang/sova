@@ -543,7 +543,7 @@ func resolveQualifiedCallee(c *compiler.CompilerContext, file *ir.File, recvText
 		return nil
 	}
 
-	for _, m := range ty.StructMethods {
+	for _, m := range ty.Struct.Methods {
 		if m.Name == methodName {
 			if m.Sym != 0 {
 				ms, _ := lookupSymbol(c, m.Sym)
@@ -592,7 +592,7 @@ func lookupMethodOnType(c *compiler.CompilerContext, typID ir.TypID, methodName 
 		return nil
 	}
 
-	for _, m := range ty.StructMethods {
+	for _, m := range ty.Struct.Methods {
 		if m.Name != methodName {
 			continue
 		}

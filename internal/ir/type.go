@@ -52,13 +52,7 @@ type Type struct {
 
 	PackagePath string
 
-	StructName       string
-	StructFields     []StructFieldInfo
-	StructCtors      []StructCtorInfo
-	StructMethods    []StructMethodInfo
-	StructImplements []TypID
-	StructCasts      []StructCastInfo
-
+	Struct    StructInfo
 	Interface InterfaceInfo
 
 	IsExtern     bool
@@ -66,10 +60,18 @@ type Type struct {
 	ExternSide   SideKind
 	ExternValue  bool
 
-	IsComposable bool
-
 	ParamName  string
 	TypeParams []string
+}
+
+type StructInfo struct {
+	Name         string
+	Fields       []StructFieldInfo
+	Ctors        []StructCtorInfo
+	Methods      []StructMethodInfo
+	Implements   []TypID
+	Casts        []StructCastInfo
+	IsComposable bool
 }
 
 type InterfaceInfo struct {
@@ -253,10 +255,12 @@ func EnumType(name string, cases []EnumCaseInfo, fields []EnumFieldInfo, isNumer
 
 func StructType(name string, fields []StructFieldInfo) *Type {
 	ty := &Type{
-		ID:           0,
-		Kind:         TK_Struct,
-		StructName:   name,
-		StructFields: fields,
+		ID:   0,
+		Kind: TK_Struct,
+		Struct: StructInfo{
+			Name:   name,
+			Fields: fields,
+		},
 	}
 
 	ty.Key = generateTypeKey(ty)
@@ -541,7 +545,7 @@ func generateTypeKey(typ *Type) TypeKey {
 	case TK_Enum:
 		return TypeKey(fmt.Sprintf("enum:%s:%s", typ.PackagePath, typ.Enum.Name))
 	case TK_Struct:
-		return TypeKey(fmt.Sprintf("struct:%s:%s", typ.PackagePath, typ.StructName))
+		return TypeKey(fmt.Sprintf("struct:%s:%s", typ.PackagePath, typ.Struct.Name))
 	case TK_Interface:
 		return TypeKey(fmt.Sprintf("interface:%s:%s", typ.PackagePath, typ.Interface.Name))
 	default:

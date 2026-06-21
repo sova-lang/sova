@@ -960,7 +960,7 @@ func (e *CodeEmitter) emitTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 		}
 
 		if embedTy.IsExtern {
-			parentClass = embedTy.StructName
+			parentClass = embedTy.Struct.Name
 		} else {
 			parentClass = symName(ctx, ref.Sym)
 		}
@@ -1748,9 +1748,9 @@ func stubTypedResponseKind(ctx *codegen.EmitContext, s *ir.FuncDeclStmt) string 
 		return ""
 	}
 
-	switch ty.StructName {
+	switch ty.Struct.Name {
 	case "Redirect", "Html", "File", "Status":
-		return ty.StructName
+		return ty.Struct.Name
 	}
 
 	return ""

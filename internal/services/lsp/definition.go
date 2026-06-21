@@ -211,7 +211,7 @@ func typeDeclarationSpan(c *compiler.CompilerContext, typ ir.TypID) diag.TextSpa
 	var name string
 	switch ty.Kind {
 	case ir.TK_Struct:
-		name = ty.StructName
+		name = ty.Struct.Name
 	case ir.TK_Enum:
 		name = ty.Enum.Name
 	case ir.TK_Interface:

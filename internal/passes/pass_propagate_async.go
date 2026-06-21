@@ -479,9 +479,9 @@ func (p *PassPropagateAsync) upgradeSymTypeToAsync(pc *PassContext, pkg *ir.Pack
 			continue
 		}
 
-		for i := range ty.StructMethods {
-			if ty.StructMethods[i].Sym == sym {
-				ty.StructMethods[i].FuncTyp = newTyp
+		for i := range ty.Struct.Methods {
+			if ty.Struct.Methods[i].Sym == sym {
+				ty.Struct.Methods[i].FuncTyp = newTyp
 			}
 		}
 	}
@@ -971,7 +971,7 @@ func (p *PassPropagateAsync) calleeIsAsync(pc *PassContext, pkg *ir.PackageConte
 		recvTy, ok := pc.Types.GetByID(fa.Expr.GetType())
 		if ok && recvTy.Kind == ir.TK_Struct {
 			leaf := fa.Fields[len(fa.Fields)-1].Name
-			for _, m := range recvTy.StructMethods {
+			for _, m := range recvTy.Struct.Methods {
 				if m.Name != leaf {
 					continue
 				}

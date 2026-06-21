@@ -662,13 +662,13 @@ func fieldTypeOnStruct(pkg *ir.PackageContext, recvTyp ir.TypID, fieldName strin
 	}
 
 	if ty.Kind == ir.TK_Struct {
-		for _, f := range ty.StructFields {
+		for _, f := range ty.Struct.Fields {
 			if f.Name == fieldName {
 				return f.Type
 			}
 		}
 
-		for _, m := range ty.StructMethods {
+		for _, m := range ty.Struct.Methods {
 			if m.Name == fieldName {
 				return m.FuncTyp
 			}

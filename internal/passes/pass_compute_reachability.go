@@ -192,14 +192,14 @@ func (p *PassComputeReachability) markOwningType(pc *PassContext, sym ir.SymID) 
 		}
 
 		if ty.Kind == ir.TK_Struct {
-			for _, c := range ty.StructCtors {
+			for _, c := range ty.Struct.Ctors {
 				if c.Sym == sym {
 					p.markTypeID(pc, ty.ID)
 					return
 				}
 			}
 
-			for _, m := range ty.StructMethods {
+			for _, m := range ty.Struct.Methods {
 				if m.Sym == sym {
 					p.markTypeID(pc, ty.ID)
 					return
@@ -224,7 +224,7 @@ func (p *PassComputeReachability) markTypeID(pc *PassContext, typID ir.TypID) bo
 	case ir.TK_Struct, ir.TK_Enum:
 		for _, pkg := range pc.Pkgs {
 			for sym, s := range pkg.Syms.ByID() {
-				if s != nil && s.Typ == typID && s.Name == ty.StructName {
+				if s != nil && s.Typ == typID && s.Name == ty.Struct.Name {
 					if p.markSym(pc, sym) {
 						changed = true
 					}

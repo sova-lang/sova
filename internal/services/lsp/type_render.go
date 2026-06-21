@@ -90,7 +90,7 @@ func formatTypeInner(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) stri
 
 		return head + ": " + formatTypeInner(tt, ty.ReturnType, seen)
 	case ir.TK_Struct:
-		return qualifyName(ty.PackagePath, ty.StructName)
+		return qualifyName(ty.PackagePath, ty.Struct.Name)
 	case ir.TK_Enum:
 		return qualifyName(ty.PackagePath, ty.Enum.Name)
 	case ir.TK_Interface:

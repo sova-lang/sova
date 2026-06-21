@@ -729,9 +729,9 @@ func (p *PassAnalyzeWire) attachFrontendWireMethods(pc *PassContext, frontendWir
 
 		fnTyp := pc.Types.AsyncFuncOf(params, retTyp)
 
-		sessionStruct.StructMethods = append(sessionStruct.StructMethods, ir.StructMethodInfo{Name: methodName, FuncTyp: fnTyp, Sym: fn.Name.Sym})
+		sessionStruct.Struct.Methods = append(sessionStruct.Struct.Methods, ir.StructMethodInfo{Name: methodName, FuncTyp: fnTyp, Sym: fn.Name.Sym})
 		if broadcastStruct != nil && !hasStructMethod(broadcastStruct, methodName) {
-			broadcastStruct.StructMethods = append(broadcastStruct.StructMethods, ir.StructMethodInfo{Name: methodName, FuncTyp: fnTyp, Sym: fn.Name.Sym})
+			broadcastStruct.Struct.Methods = append(broadcastStruct.Struct.Methods, ir.StructMethodInfo{Name: methodName, FuncTyp: fnTyp, Sym: fn.Name.Sym})
 		}
 	}
 }
@@ -741,7 +741,7 @@ func hasStructMethod(st *ir.Type, name string) bool {
 		return false
 	}
 
-	for _, m := range st.StructMethods {
+	for _, m := range st.Struct.Methods {
 		if m.Name == name {
 			return true
 		}

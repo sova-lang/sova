@@ -34,7 +34,7 @@ func (p *PassAnalyzeComposables) Run(pc *PassContext) error {
 			}
 
 			if typ, ok := pc.Types.GetByID(sym.Typ); ok {
-				typ.IsComposable = true
+				typ.Struct.IsComposable = true
 			}
 		}
 	}

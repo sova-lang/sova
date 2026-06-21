@@ -210,7 +210,7 @@ func isReactiveFieldOfJS(ctx *codegen.EmitContext, pkg *ir.PackageContext, recei
 		return false
 	}
 
-	for _, f := range ty.StructFields {
+	for _, f := range ty.Struct.Fields {
 		if f.Name == fieldName {
 			return f.IsReactive
 		}

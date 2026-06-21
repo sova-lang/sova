@@ -85,11 +85,11 @@ func implementersOfInterface(c *compiler.CompilerContext, snap *Snapshot, ifaceT
 			continue
 		}
 
-		if !sliceContainsTypID(ty.StructImplements, ifaceTyp) {
+		if !sliceContainsTypID(ty.Struct.Implements, ifaceTyp) {
 			continue
 		}
 
-		if span, ok := findTypeDeclSpanByName(c, ty.StructName, ty.PackagePath); ok {
+		if span, ok := findTypeDeclSpanByName(c, ty.Struct.Name, ty.PackagePath); ok {
 			u := uriForSpan(c, snap, span)
 			if u == "" {
 				continue
@@ -109,11 +109,11 @@ func methodImplementationsFor(c *compiler.CompilerContext, snap *Snapshot, iface
 			continue
 		}
 
-		if !sliceContainsTypID(ty.StructImplements, ifaceTyp) {
+		if !sliceContainsTypID(ty.Struct.Implements, ifaceTyp) {
 			continue
 		}
 
-		if span, ok := findMethodSpanOnType(c, ty.StructName, ty.PackagePath, methodName); ok {
+		if span, ok := findMethodSpanOnType(c, ty.Struct.Name, ty.PackagePath, methodName); ok {
 			u := uriForSpan(c, snap, span)
 			if u == "" {
 				continue

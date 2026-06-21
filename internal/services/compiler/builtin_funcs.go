@@ -56,7 +56,7 @@ func ensureErrorType(c *CompilerContext) ir.TypID {
 
 	typ := t.StructOf("", "error", fields)
 	if structTy, ok := t.GetByID(typ); ok {
-		structTy.StructFields = fields
+		structTy.Struct.Fields = fields
 	}
 
 	c.Cache[ErrorTypeCacheKey] = typ

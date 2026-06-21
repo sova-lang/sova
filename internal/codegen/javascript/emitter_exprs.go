@@ -134,7 +134,7 @@ func (e *CodeEmitter) buildExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext
 func (e *CodeEmitter) buildBinaryExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.BinaryExpr) *jsgen.Statement {
 	if leftTy, ok := ctx.Types.GetByID(x.Left.GetType()); ok && leftTy.Kind == ir.TK_Struct {
 		if methodName, isOp := jsOpOverloadName(x.Op); isOp {
-			for _, m := range leftTy.StructMethods {
+			for _, m := range leftTy.Struct.Methods {
 				if m.Name == methodName && m.Sym != 0 {
 					left := e.buildExpr(ctx, pkg, f, x.Left)
 					right := e.buildExpr(ctx, pkg, f, x.Right)
@@ -286,7 +286,7 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 				}
 			} else if ok && ty.Kind == ir.TK_Struct {
 				found := false
-				for _, sf := range ty.StructFields {
+				for _, sf := range ty.Struct.Fields {
 					if sf.Name == field.Name {
 						base = base.Dot(field.Name)
 						curType = sf.Type
@@ -300,7 +300,7 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 					methodFuncTyp := ir.TypID(0)
 					if x.MethodSym != 0 {
 						methodSym = x.MethodSym
-						for _, m := range ty.StructMethods {
+						for _, m := range ty.Struct.Methods {
 							if m.Sym == x.MethodSym {
 								methodFuncTyp = m.FuncTyp
 								break
@@ -309,7 +309,7 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 					}
 
 					if methodSym == 0 {
-						for _, m := range ty.StructMethods {
+						for _, m := range ty.Struct.Methods {
 							if m.Name == field.Name {
 								methodSym = m.Sym
 								methodFuncTyp = m.FuncTyp
@@ -689,7 +689,7 @@ func jsHandleWrapperTarget(ctx *codegen.EmitContext, typID ir.TypID) (mangled, j
 	}
 
 	hasHandle := false
-	for _, sf := range ty.StructFields {
+	for _, sf := range ty.Struct.Fields {
 		if sf.Name == "handle" && sf.Type == ctx.Types.PrimAny() {
 			hasHandle = true
 			break
@@ -707,12 +707,12 @@ func jsHandleWrapperTarget(ctx *codegen.EmitContext, typID ir.TypID) (mangled, j
 			}
 
 			for sym, s := range p.Syms.ByID() {
-				if s == nil || s.Typ != typID || s.Name != ty.StructName {
+				if s == nil || s.Typ != typID || s.Name != ty.Struct.Name {
 					continue
 				}
 
 				if name, found := ctx.Names.GetMangledName(sym); found {
-					return name, ty.StructName, true
+					return name, ty.Struct.Name, true
 				}
 			}
 		}
@@ -878,7 +878,7 @@ func jsTypeLabel(ctx *codegen.EmitContext, typID ir.TypID) string {
 	case ir.TK_Map:
 		return "map"
 	case ir.TK_Struct:
-		return ty.StructName
+		return ty.Struct.Name
 	case ir.TK_Enum:
 		return ty.Enum.Name
 	}
