@@ -247,7 +247,7 @@ func (p *PassComputeReachability) markTypeID(pc *PassContext, typID ir.TypID) bo
 		}
 
 	case ir.TK_Function:
-		for _, p2 := range ty.ParamTypes {
+		for _, p2 := range ty.Func.Params {
 			if p2 != nil && p2.Type != nil {
 				if p.markTypeID(pc, p2.Type.Typ) {
 					changed = true
@@ -255,7 +255,7 @@ func (p *PassComputeReachability) markTypeID(pc *PassContext, typID ir.TypID) bo
 			}
 		}
 
-		if p.markTypeID(pc, ty.ReturnType) {
+		if p.markTypeID(pc, ty.Func.ReturnType) {
 			changed = true
 		}
 

@@ -495,8 +495,8 @@ func (e *CodeEmitter) buildComposableCallExpr(ctx *codegen.EmitContext, pkg *ir.
 		for i, arg := range x.Args {
 			if arg.Expr != nil {
 				args[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
-			} else if ctorFunc != nil && i < len(ctorFunc.ParamTypes) && ctorFunc.ParamTypes[i].Default != nil {
-				args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.ParamTypes[i].Default)
+			} else if ctorFunc != nil && i < len(ctorFunc.Func.Params) && ctorFunc.Func.Params[i].Default != nil {
+				args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.Func.Params[i].Default)
 			} else {
 				args[i] = jsgen.Null()
 			}
@@ -580,8 +580,8 @@ func (e *CodeEmitter) buildNewExpr(ctx *codegen.EmitContext, pkg *ir.PackageCont
 		for i, arg := range x.Args {
 			if arg.Expr != nil {
 				args[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
-			} else if ctorFunc != nil && i < len(ctorFunc.ParamTypes) && ctorFunc.ParamTypes[i].Default != nil {
-				args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.ParamTypes[i].Default)
+			} else if ctorFunc != nil && i < len(ctorFunc.Func.Params) && ctorFunc.Func.Params[i].Default != nil {
+				args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.Func.Params[i].Default)
 			} else {
 				args[i] = jsgen.Null()
 			}

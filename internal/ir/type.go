@@ -44,9 +44,7 @@ type Type struct {
 
 	Fields []TupleField
 
-	ParamTypes []*FuncParam
-	ReturnType TypID
-	IsAsync    bool
+	Func FuncInfo
 
 	Enum EnumInfo
 
@@ -85,6 +83,12 @@ type EnumInfo struct {
 	Fields    []EnumFieldInfo
 	Methods   []EnumMethodInfo
 	IsNumeric bool
+}
+
+type FuncInfo struct {
+	Params     []*FuncParam
+	ReturnType TypID
+	IsAsync    bool
 }
 
 type InterfaceSigInfo struct {
@@ -214,10 +218,12 @@ type TupleField struct {
 
 func FuncType(paramTypes []*FuncParam, returnType TypID) *Type {
 	ty := &Type{
-		ID:         0,
-		Kind:       TK_Function,
-		ParamTypes: paramTypes,
-		ReturnType: returnType,
+		ID:   0,
+		Kind: TK_Function,
+		Func: FuncInfo{
+			Params:     paramTypes,
+			ReturnType: returnType,
+		},
 	}
 
 	ty.Key = generateTypeKey(ty)
@@ -226,11 +232,13 @@ func FuncType(paramTypes []*FuncParam, returnType TypID) *Type {
 
 func AsyncFuncType(paramTypes []*FuncParam, returnType TypID) *Type {
 	ty := &Type{
-		ID:         0,
-		Kind:       TK_Function,
-		ParamTypes: paramTypes,
-		ReturnType: returnType,
-		IsAsync:    true,
+		ID:   0,
+		Kind: TK_Function,
+		Func: FuncInfo{
+			Params:     paramTypes,
+			ReturnType: returnType,
+			IsAsync:    true,
+		},
 	}
 
 	ty.Key = generateTypeKey(ty)
@@ -484,8 +492,8 @@ func (t *TypeTable) GetFunctionSignatureKey(funcTyp TypID) string {
 		return ""
 	}
 
-	params := make([]string, len(typ.ParamTypes))
-	for i, param := range typ.ParamTypes {
+	params := make([]string, len(typ.Func.Params))
+	for i, param := range typ.Func.Params {
 		params[i] = fmt.Sprintf("%d", param.Type.Typ)
 	}
 
@@ -526,8 +534,8 @@ func generateTypeKey(typ *Type) TypeKey {
 
 		return TypeKey(fmt.Sprintf("tuple:%s", strings.Join(fields, ",")))
 	case TK_Function:
-		params := make([]string, len(typ.ParamTypes))
-		for i, param := range typ.ParamTypes {
+		params := make([]string, len(typ.Func.Params))
+		for i, param := range typ.Func.Params {
 			variadicStr := ""
 			if param.IsVariadic {
 				variadicStr = "..."
@@ -537,11 +545,11 @@ func generateTypeKey(typ *Type) TypeKey {
 		}
 
 		asyncPrefix := ""
-		if typ.IsAsync {
+		if typ.Func.IsAsync {
 			asyncPrefix = "async:"
 		}
 
-		return TypeKey(fmt.Sprintf("%sfunc:(%s)->%d", asyncPrefix, strings.Join(params, ","), typ.ReturnType))
+		return TypeKey(fmt.Sprintf("%sfunc:(%s)->%d", asyncPrefix, strings.Join(params, ","), typ.Func.ReturnType))
 	case TK_Enum:
 		return TypeKey(fmt.Sprintf("enum:%s:%s", typ.PackagePath, typ.Enum.Name))
 	case TK_Struct:

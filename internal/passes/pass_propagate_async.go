@@ -471,7 +471,7 @@ func (p *PassPropagateAsync) upgradeSymTypeToAsync(pc *PassContext, pkg *ir.Pack
 		return
 	}
 
-	newTyp := pc.Types.AsyncFuncOf(ft.ParamTypes, ft.ReturnType)
+	newTyp := pc.Types.AsyncFuncOf(ft.Func.Params, ft.Func.ReturnType)
 	pkg.Syms.SetType(sym, newTyp)
 
 	for _, ty := range pc.Types.All() {
@@ -976,7 +976,7 @@ func (p *PassPropagateAsync) calleeIsAsync(pc *PassContext, pkg *ir.PackageConte
 					continue
 				}
 
-				if mt, ok := pc.Types.GetByID(m.FuncTyp); ok && mt.IsAsync {
+				if mt, ok := pc.Types.GetByID(m.FuncTyp); ok && mt.Func.IsAsync {
 					call.IsAsync = true
 					return true
 				}
@@ -988,7 +988,7 @@ func (p *PassPropagateAsync) calleeIsAsync(pc *PassContext, pkg *ir.PackageConte
 
 	sym := p.calleeSym(call.Callee)
 	if sym == 0 {
-		if ft, ok := pc.Types.GetByID(call.Callee.GetType()); ok && ft.Kind == ir.TK_Function && ft.IsAsync {
+		if ft, ok := pc.Types.GetByID(call.Callee.GetType()); ok && ft.Kind == ir.TK_Function && ft.Func.IsAsync {
 			call.IsAsync = true
 			return true
 		}
@@ -1007,11 +1007,11 @@ func (p *PassPropagateAsync) calleeIsAsync(pc *PassContext, pkg *ir.PackageConte
 			return false
 		}
 
-		if ft.IsAsync {
+		if ft.Func.IsAsync {
 			call.IsAsync = true
 		}
 
-		return ft.IsAsync
+		return ft.Func.IsAsync
 	}
 
 	return false

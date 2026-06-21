@@ -158,8 +158,8 @@ func buildCallHierarchyItem(c *compiler.CompilerContext, snap *Snapshot, symID i
 	detail := ""
 	if fnTy, ok := c.TypeUniverse.GetByID(sym.Typ); ok && fnTy.Kind == ir.TK_Function {
 		detail = "func " + sym.Name + "(" + funcTypeParamList(c.TypeUniverse, fnTy) + ")"
-		if fnTy.ReturnType != 0 {
-			detail += ": " + formatType(c.TypeUniverse, fnTy.ReturnType)
+		if fnTy.Func.ReturnType != 0 {
+			detail += ": " + formatType(c.TypeUniverse, fnTy.Func.ReturnType)
 		}
 	}
 

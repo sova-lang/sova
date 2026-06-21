@@ -600,8 +600,8 @@ func builtinIdentifiers(c *compiler.CompilerContext, pkg *ir.PackageContext) []p
 		detail := name
 		if fnTy, ok := c.TypeUniverse.GetByID(sym.Typ); ok && fnTy.Kind == ir.TK_Function {
 			detail = "func " + name + "(" + funcTypeParamList(c.TypeUniverse, fnTy) + ")"
-			if fnTy.ReturnType != 0 {
-				detail += ": " + formatType(c.TypeUniverse, fnTy.ReturnType)
+			if fnTy.Func.ReturnType != 0 {
+				detail += ": " + formatType(c.TypeUniverse, fnTy.Func.ReturnType)
 			}
 		}
 

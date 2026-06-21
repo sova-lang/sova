@@ -99,7 +99,7 @@ func (p *PassMangle) mangleFunctionName(pc *PassContext, sym *ir.Symbol) string 
 	}
 
 	sigSuffix := ""
-	for i, param := range funcType.ParamTypes {
+	for i, param := range funcType.Func.Params {
 		if i > 0 {
 			sigSuffix += "_"
 		}

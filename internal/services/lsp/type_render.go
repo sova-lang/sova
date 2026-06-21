@@ -69,7 +69,7 @@ func formatTypeInner(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) stri
 		return "chan<" + formatTypeInner(tt, ty.ElemType, seen) + ">"
 	case ir.TK_Function:
 		var parts []string
-		for _, p := range ty.ParamTypes {
+		for _, p := range ty.Func.Params {
 			label := ""
 			if p.Name.Name != "" {
 				label = p.Name.Name + ": "
@@ -79,16 +79,16 @@ func formatTypeInner(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) stri
 		}
 
 		prefix := "func"
-		if ty.IsAsync {
+		if ty.Func.IsAsync {
 			prefix = "async func"
 		}
 
 		head := prefix + "(" + strings.Join(parts, ", ") + ")"
-		if ty.ReturnType == 0 || ty.ReturnType == tt.TypNone() {
+		if ty.Func.ReturnType == 0 || ty.Func.ReturnType == tt.TypNone() {
 			return head
 		}
 
-		return head + ": " + formatTypeInner(tt, ty.ReturnType, seen)
+		return head + ": " + formatTypeInner(tt, ty.Func.ReturnType, seen)
 	case ir.TK_Struct:
 		return qualifyName(ty.PackagePath, ty.Struct.Name)
 	case ir.TK_Enum:

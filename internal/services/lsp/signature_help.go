@@ -353,9 +353,9 @@ func calleeSymbolFor(e ir.Expr) ir.SymID {
 }
 
 func renderSignature(c *compiler.CompilerContext, sym *ir.Symbol, fnTy *ir.Type) (string, []string) {
-	paramLabels := make([]string, len(fnTy.ParamTypes))
-	parts := make([]string, len(fnTy.ParamTypes))
-	for i, p := range fnTy.ParamTypes {
+	paramLabels := make([]string, len(fnTy.Func.Params))
+	parts := make([]string, len(fnTy.Func.Params))
+	for i, p := range fnTy.Func.Params {
 		label := ""
 		if p.Name.Name != "" {
 			label = p.Name.Name + ": "
@@ -371,13 +371,13 @@ func renderSignature(c *compiler.CompilerContext, sym *ir.Symbol, fnTy *ir.Type)
 	}
 
 	head := "func"
-	if fnTy.IsAsync {
+	if fnTy.Func.IsAsync {
 		head = "async func"
 	}
 
 	label := head + " " + sym.Name + "(" + strings.Join(parts, ", ") + ")"
-	if fnTy.ReturnType != 0 {
-		label += ": " + formatType(c.TypeUniverse, fnTy.ReturnType)
+	if fnTy.Func.ReturnType != 0 {
+		label += ": " + formatType(c.TypeUniverse, fnTy.Func.ReturnType)
 	}
 
 	return label, paramLabels

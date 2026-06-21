@@ -807,7 +807,7 @@ func (p *PassAnalyzeWire) upgradeWiredSymType(pc *PassContext, pkg *ir.PackageCo
 		return
 	}
 
-	innerRet := ft.ReturnType
+	innerRet := ft.Func.ReturnType
 	if innerRet == 0 {
 		innerRet = pc.Types.TypNone()
 	}
@@ -816,7 +816,7 @@ func (p *PassAnalyzeWire) upgradeWiredSymType(pc *PassContext, pkg *ir.PackageCo
 		ir.TupleField{Name: "value", Type: innerRet},
 		ir.TupleField{Name: "state", Type: wireStateTyp},
 	)
-	newFuncTyp := pc.Types.AsyncFuncOf(ft.ParamTypes, tupleTyp)
+	newFuncTyp := pc.Types.AsyncFuncOf(ft.Func.Params, tupleTyp)
 	pkg.Syms.SetType(fn.Name.Sym, newFuncTyp)
 }
 
@@ -1186,7 +1186,7 @@ func (p *PassAnalyzeWire) upgradeSymTypeToAsync(pc *PassContext, pkg *ir.Package
 		return
 	}
 
-	newTyp := pc.Types.AsyncFuncOf(ft.ParamTypes, ft.ReturnType)
+	newTyp := pc.Types.AsyncFuncOf(ft.Func.Params, ft.Func.ReturnType)
 	pkg.Syms.SetType(sym, newTyp)
 }
 

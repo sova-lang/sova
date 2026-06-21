@@ -457,7 +457,7 @@ func isTransferableType(pc *PassContext, t ir.TypID) bool {
 	case ir.TK_TypeParam:
 		return true
 	case ir.TK_Function:
-		for _, p := range ty.ParamTypes {
+		for _, p := range ty.Func.Params {
 			if p == nil || p.Type == nil {
 				continue
 			}
@@ -467,8 +467,8 @@ func isTransferableType(pc *PassContext, t ir.TypID) bool {
 			}
 		}
 
-		if ty.ReturnType != 0 {
-			return isTransferableType(pc, ty.ReturnType)
+		if ty.Func.ReturnType != 0 {
+			return isTransferableType(pc, ty.Func.ReturnType)
 		}
 
 		return true

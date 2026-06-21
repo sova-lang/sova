@@ -2114,7 +2114,7 @@ func (p *PassInferTypes) synthesizeComposableCallType(pc *PassContext, x *ir.Com
 				continue
 			}
 
-			resolved, ok := resolveCallArgs(tt, ftDef.ParamTypes, x.Args, argTypes)
+			resolved, ok := resolveCallArgs(tt, ftDef.Func.Params, x.Args, argTypes)
 			if !ok {
 				continue
 			}
@@ -2306,7 +2306,7 @@ func (p *PassInferTypes) rewriteComposableCalleeToCtor(pc *PassContext, x *ir.Fu
 			continue
 		}
 
-		resolved, ok := resolveCallArgs(pc.Types, ftDef.ParamTypes, x.Args, argTypes)
+		resolved, ok := resolveCallArgs(pc.Types, ftDef.Func.Params, x.Args, argTypes)
 		if !ok {
 			continue
 		}
@@ -2404,11 +2404,11 @@ func isTypeAssignable(tt *ir.TypeTable, dst, src ir.TypID) (bool, string) {
 
 	if dstTy, _ := tt.GetByID(dst); dstTy != nil && dstTy.Kind == ir.TK_Function {
 		if srcTy, _ := tt.GetByID(src); srcTy != nil && srcTy.Kind == ir.TK_Function {
-			if len(dstTy.ParamTypes) == len(srcTy.ParamTypes) {
+			if len(dstTy.Func.Params) == len(srcTy.Func.Params) {
 				allOK := true
-				for i := range dstTy.ParamTypes {
-					dp := dstTy.ParamTypes[i]
-					sp := srcTy.ParamTypes[i]
+				for i := range dstTy.Func.Params {
+					dp := dstTy.Func.Params[i]
+					sp := srcTy.Func.Params[i]
 					if dp == nil || sp == nil || dp.Type == nil || sp.Type == nil {
 						allOK = false
 						break
@@ -2421,7 +2421,7 @@ func isTypeAssignable(tt *ir.TypeTable, dst, src ir.TypID) (bool, string) {
 				}
 
 				if allOK {
-					if ok, _ := isTypeAssignable(tt, dstTy.ReturnType, srcTy.ReturnType); ok {
+					if ok, _ := isTypeAssignable(tt, dstTy.Func.ReturnType, srcTy.Func.ReturnType); ok {
 						return true, "function type compatible (param contravariant, return covariant under type-param erasure)"
 					}
 				}
@@ -2449,7 +2449,7 @@ func isTypeAssignable(tt *ir.TypeTable, dst, src ir.TypID) (bool, string) {
 }
 
 func assertFunctionParameterCompatibility(pc *PassContext, tt *ir.TypeTable, funcType *ir.Type, argTypes []ir.TypID, args []ir.FuncCallArg) (bool, string) {
-	paramCount := len(funcType.ParamTypes)
+	paramCount := len(funcType.Func.Params)
 	argCount := len(argTypes)
 
 	if paramCount == 0 && argCount == 0 {
@@ -2457,7 +2457,7 @@ func assertFunctionParameterCompatibility(pc *PassContext, tt *ir.TypeTable, fun
 	}
 
 	requiredParamCount := 0
-	for _, param := range funcType.ParamTypes {
+	for _, param := range funcType.Func.Params {
 		if param.Default == nil && !param.IsVariadic {
 			requiredParamCount++
 		}
@@ -2465,7 +2465,7 @@ func assertFunctionParameterCompatibility(pc *PassContext, tt *ir.TypeTable, fun
 
 	isVariadic := false
 	if paramCount > 0 {
-		lastParam := funcType.ParamTypes[paramCount-1]
+		lastParam := funcType.Func.Params[paramCount-1]
 		isVariadic = lastParam.IsVariadic
 	}
 
@@ -2479,10 +2479,10 @@ func assertFunctionParameterCompatibility(pc *PassContext, tt *ir.TypeTable, fun
 		}
 	} else {
 		nonVariadicRequired := requiredParamCount
-		if funcType.ParamTypes[paramCount-1].IsVariadic {
+		if funcType.Func.Params[paramCount-1].IsVariadic {
 			nonVariadicRequired = paramCount - 1
 			for i := 0; i < paramCount-1; i++ {
-				if funcType.ParamTypes[i].Default != nil {
+				if funcType.Func.Params[i].Default != nil {
 					nonVariadicRequired--
 				}
 			}
@@ -2493,7 +2493,7 @@ func assertFunctionParameterCompatibility(pc *PassContext, tt *ir.TypeTable, fun
 		}
 	}
 
-	for i, param := range funcType.ParamTypes {
+	for i, param := range funcType.Func.Params {
 		if isVariadic && i == paramCount-1 {
 			variadicType := param.Type
 			for j := i; j < argCount; j++ {
@@ -2572,19 +2572,19 @@ func tsStructEqual(tt *ir.TypeTable, a, b ir.TypID) bool {
 
 		return true
 	case ir.TK_Function:
-		if len(ta.ParamTypes) != len(tb.ParamTypes) {
+		if len(ta.Func.Params) != len(tb.Func.Params) {
 			return false
 		}
 
-		for i := range ta.ParamTypes {
-			pa := ta.ParamTypes[i]
-			pb := tb.ParamTypes[i]
+		for i := range ta.Func.Params {
+			pa := ta.Func.Params[i]
+			pb := tb.Func.Params[i]
 			if pa.Type != pb.Type || pa.IsVariadic != pb.IsVariadic {
 				return false
 			}
 		}
 
-		if ta.ReturnType != tb.ReturnType {
+		if ta.Func.ReturnType != tb.Func.ReturnType {
 			return false
 		}
 
@@ -2653,8 +2653,8 @@ func renderTypeForDiag(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) st
 	case ir.TK_Chan:
 		return "chan<" + renderTypeForDiag(tt, ty.ElemType, seen) + ">"
 	case ir.TK_Function:
-		parts := make([]string, 0, len(ty.ParamTypes))
-		for _, p := range ty.ParamTypes {
+		parts := make([]string, 0, len(ty.Func.Params))
+		for _, p := range ty.Func.Params {
 			label := ""
 			if p.Name.Name != "" {
 				label = p.Name.Name + ": "
@@ -2668,16 +2668,16 @@ func renderTypeForDiag(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) st
 		}
 
 		prefix := "func"
-		if ty.IsAsync {
+		if ty.Func.IsAsync {
 			prefix = "async func"
 		}
 
 		head := prefix + "(" + strings.Join(parts, ", ") + ")"
-		if ty.ReturnType == 0 || ty.ReturnType == tt.TypNone() {
+		if ty.Func.ReturnType == 0 || ty.Func.ReturnType == tt.TypNone() {
 			return head
 		}
 
-		return head + ": " + renderTypeForDiag(tt, ty.ReturnType, seen)
+		return head + ": " + renderTypeForDiag(tt, ty.Func.ReturnType, seen)
 	case ir.TK_Struct:
 		return qualifyTypeName(ty.PackagePath, ty.Struct.Name)
 	case ir.TK_Enum:
@@ -2720,7 +2720,7 @@ func typeKeyDisplay(ty *ir.Type) string {
 	case ir.TK_PrimitiveNone:
 		return "none"
 	case ir.TK_Function:
-		if ty.IsAsync {
+		if ty.Func.IsAsync {
 			return "async func(...)"
 		}
 
@@ -2790,11 +2790,11 @@ func (p *PassInferTypes) resolveOverload(pc *PassContext, candidates []ir.SymID,
 			continue
 		}
 
-		paramCount := len(funcType.ParamTypes)
+		paramCount := len(funcType.Func.Params)
 		argCount := len(argTypes)
 
 		requiredParams := 0
-		for _, param := range funcType.ParamTypes {
+		for _, param := range funcType.Func.Params {
 			if param.Default == nil && !param.IsVariadic {
 				requiredParams++
 			}
@@ -2808,7 +2808,7 @@ func (p *PassInferTypes) resolveOverload(pc *PassContext, candidates []ir.SymID,
 		compatible := true
 
 		for i := 0; i < argCount && i < paramCount; i++ {
-			paramType := funcType.ParamTypes[i].Type.Typ
+			paramType := funcType.Func.Params[i].Type.Typ
 			argType := argTypes[i]
 
 			if paramType == argType {
@@ -3389,21 +3389,21 @@ func typePatternMatches(tt *ir.TypeTable, pattern, concrete ir.TypID, sub map[st
 
 		return true
 	case ir.TK_Function:
-		if len(pTy.ParamTypes) != len(cTy.ParamTypes) {
+		if len(pTy.Func.Params) != len(cTy.Func.Params) {
 			return false
 		}
 
-		for i := range pTy.ParamTypes {
-			if pTy.ParamTypes[i].Type == nil || cTy.ParamTypes[i].Type == nil {
+		for i := range pTy.Func.Params {
+			if pTy.Func.Params[i].Type == nil || cTy.Func.Params[i].Type == nil {
 				continue
 			}
 
-			if !typePatternMatches(tt, pTy.ParamTypes[i].Type.Typ, cTy.ParamTypes[i].Type.Typ, sub) {
+			if !typePatternMatches(tt, pTy.Func.Params[i].Type.Typ, cTy.Func.Params[i].Type.Typ, sub) {
 				return false
 			}
 		}
 
-		return typePatternMatches(tt, pTy.ReturnType, cTy.ReturnType, sub)
+		return typePatternMatches(tt, pTy.Func.ReturnType, cTy.Func.ReturnType, sub)
 	}
 
 	return pattern == concrete
@@ -3497,11 +3497,11 @@ func findIterableNext(pc *PassContext, ty *ir.Type) (ir.SymID, ir.TypID) {
 			continue
 		}
 
-		if len(fnTy.ParamTypes) != 0 {
+		if len(fnTy.Func.Params) != 0 {
 			continue
 		}
 
-		retTy, ok := pc.Types.GetByID(fnTy.ReturnType)
+		retTy, ok := pc.Types.GetByID(fnTy.Func.ReturnType)
 		if !ok || retTy.Kind != ir.TK_Option {
 			continue
 		}
@@ -3523,8 +3523,8 @@ func (p *PassInferTypes) synthesizeBinaryExprType(pc *PassContext, x *ir.BinaryE
 			for _, m := range leftTy.Struct.Methods {
 				if m.Name == opName {
 					if fnTy, ok := tt.GetByID(m.FuncTyp); ok && fnTy.Kind == ir.TK_Function {
-						x.SetType(fnTy.ReturnType)
-						return fnTy.ReturnType
+						x.SetType(fnTy.Func.ReturnType)
+						return fnTy.Func.ReturnType
 					}
 				}
 			}
@@ -3917,14 +3917,14 @@ func (p *PassInferTypes) synthesizeFuncCallExprType(pc *PassContext, x *ir.FuncC
 
 	var argTypes []ir.TypID
 	if hasNamedArgs {
-		argTypes = make([]ir.TypID, len(funcTyDef.ParamTypes))
-		reorderedArgs := make([]ir.FuncCallArg, len(funcTyDef.ParamTypes))
+		argTypes = make([]ir.TypID, len(funcTyDef.Func.Params))
+		reorderedArgs := make([]ir.FuncCallArg, len(funcTyDef.Func.Params))
 		positionalIndex := 0
 		used := make([]bool, len(x.Args))
 
 		for i, arg := range x.Args {
 			if arg.Name == "" {
-				if positionalIndex >= len(funcTyDef.ParamTypes) {
+				if positionalIndex >= len(funcTyDef.Func.Params) {
 					pc.Diag.Report(diag.ErrFuncParamMismatch, x.Span(), typeKeyDisplay(funcTyDef), "too many positional arguments")
 					x.SetType(tt.TypError())
 					return tt.TypError()
@@ -3942,7 +3942,7 @@ func (p *PassInferTypes) synthesizeFuncCallExprType(pc *PassContext, x *ir.FuncC
 			}
 
 			paramIndex := -1
-			for pi, param := range funcTyDef.ParamTypes {
+			for pi, param := range funcTyDef.Func.Params {
 				if param.Name.Name == arg.Name {
 					paramIndex = pi
 					break
@@ -3977,8 +3977,8 @@ func (p *PassInferTypes) synthesizeFuncCallExprType(pc *PassContext, x *ir.FuncC
 		argTypes = make([]ir.TypID, len(x.Args))
 		for i, arg := range x.Args {
 			argTypes[i] = p.synthesizeTypeFromExpr(pc, arg.Expr)
-			if i < len(funcTyDef.ParamTypes) && funcTyDef.ParamTypes[i] != nil && funcTyDef.ParamTypes[i].Type != nil {
-				p.applyLiteralTypeHint(pc, arg.Expr, funcTyDef.ParamTypes[i].Type.Typ)
+			if i < len(funcTyDef.Func.Params) && funcTyDef.Func.Params[i] != nil && funcTyDef.Func.Params[i].Type != nil {
+				p.applyLiteralTypeHint(pc, arg.Expr, funcTyDef.Func.Params[i].Type.Typ)
 				argTypes[i] = arg.Expr.GetType()
 			}
 		}
@@ -3990,9 +3990,9 @@ func (p *PassInferTypes) synthesizeFuncCallExprType(pc *PassContext, x *ir.FuncC
 		return tt.TypError()
 	}
 
-	returnType := funcTyDef.ReturnType
+	returnType := funcTyDef.Func.ReturnType
 	if retTy, ok := tt.GetByID(returnType); ok && retTy.Kind == ir.TK_TypeParam {
-		if sub := inferTypeParamSubstitution(tt, funcTyDef.ParamTypes, argTypes); sub != nil {
+		if sub := inferTypeParamSubstitution(tt, funcTyDef.Func.Params, argTypes); sub != nil {
 			returnType = substituteType(tt, returnType, sub)
 		}
 	}
@@ -4115,7 +4115,7 @@ func (p *PassInferTypes) synthesizeNewExprType(pc *PassContext, x *ir.NewExpr) i
 				continue
 			}
 
-			params := substituteFuncParams(tt, ftDef.ParamTypes, typeArgSub)
+			params := substituteFuncParams(tt, ftDef.Func.Params, typeArgSub)
 			resolved, ok := resolveCallArgs(tt, params, x.Args, argTypes)
 			if !ok {
 				continue
@@ -4151,11 +4151,11 @@ func (p *PassInferTypes) synthesizeNewExprType(pc *PassContext, x *ir.NewExpr) i
 
 					if ftDef, ok := tt.GetByID(ci.FuncTyp); ok {
 						for j := range x.Args {
-							if x.Args[j].Expr == nil || j >= len(ftDef.ParamTypes) || ftDef.ParamTypes[j] == nil || ftDef.ParamTypes[j].Type == nil {
+							if x.Args[j].Expr == nil || j >= len(ftDef.Func.Params) || ftDef.Func.Params[j] == nil || ftDef.Func.Params[j].Type == nil {
 								continue
 							}
 
-							erased := eraseTypeParams(tt, ftDef.ParamTypes[j].Type.Typ)
+							erased := eraseTypeParams(tt, ftDef.Func.Params[j].Type.Typ)
 							applyCodegenLiteralHint(tt, x.Args[j].Expr, erased)
 						}
 					}

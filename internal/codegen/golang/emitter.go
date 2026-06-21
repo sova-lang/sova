@@ -1361,25 +1361,25 @@ func (e *CodeEmitter) buildFuncCallExpr(ctx *codegen.EmitContext, pkg *ir.Packag
 
 	var args []jen.Code
 	if funcTypeDef != nil && funcTypeDef.Kind == ir.TK_Function {
-		paramCount := len(funcTypeDef.ParamTypes)
+		paramCount := len(funcTypeDef.Func.Params)
 		args = make([]jen.Code, paramCount)
 
 		for i := 0; i < paramCount; i++ {
 			if i < len(x.Args) && x.Args[i].Expr != nil {
-				if wrapped := tryWrapErasedLambdaArg(ctx, pkg, f, e, funcTypeDef.ParamTypes[i], x.Args[i].Expr); wrapped != nil {
+				if wrapped := tryWrapErasedLambdaArg(ctx, pkg, f, e, funcTypeDef.Func.Params[i], x.Args[i].Expr); wrapped != nil {
 					args[i] = wrapped
-				} else if wrapped := tryWrapErasedSliceArg(ctx, pkg, f, e, funcTypeDef.ParamTypes[i], x.Args[i].Expr); wrapped != nil {
+				} else if wrapped := tryWrapErasedSliceArg(ctx, pkg, f, e, funcTypeDef.Func.Params[i], x.Args[i].Expr); wrapped != nil {
 					args[i] = wrapped
 				} else {
 					var emitted jen.Code = e.buildExpr(ctx, pkg, f, x.Args[i].Expr)
-					if funcTypeDef.ParamTypes[i] != nil && funcTypeDef.ParamTypes[i].Type != nil && typeContainsTypeParam(ctx.Types, funcTypeDef.ParamTypes[i].Type.Typ) {
+					if funcTypeDef.Func.Params[i] != nil && funcTypeDef.Func.Params[i].Type != nil && typeContainsTypeParam(ctx.Types, funcTypeDef.Func.Params[i].Type.Typ) {
 						emitted = wrapPrimitiveForAny(ctx, x.Args[i].Expr, emitted)
 					}
 
 					args[i] = emitted
 				}
-			} else if funcTypeDef.ParamTypes[i].Default != nil {
-				args[i] = e.buildExpr(ctx, pkg, f, funcTypeDef.ParamTypes[i].Default)
+			} else if funcTypeDef.Func.Params[i].Default != nil {
+				args[i] = e.buildExpr(ctx, pkg, f, funcTypeDef.Func.Params[i].Default)
 			} else {
 				args[i] = jen.Null()
 			}
@@ -1404,7 +1404,7 @@ func needsGenericReturnAssertion(ctx *codegen.EmitContext, funcTypeDef *ir.Type,
 		return false
 	}
 
-	retTy, ok := ctx.Types.GetByID(funcTypeDef.ReturnType)
+	retTy, ok := ctx.Types.GetByID(funcTypeDef.Func.ReturnType)
 	if !ok || retTy.Kind != ir.TK_TypeParam {
 		return false
 	}
@@ -1537,8 +1537,8 @@ func (e *CodeEmitter) buildNewExpr(ctx *codegen.EmitContext, pkg *ir.PackageCont
 		for i, arg := range x.Args {
 			if arg.Expr != nil {
 				var paramFp *ir.FuncParam
-				if ctorFunc != nil && i < len(ctorFunc.ParamTypes) {
-					paramFp = ctorFunc.ParamTypes[i]
+				if ctorFunc != nil && i < len(ctorFunc.Func.Params) {
+					paramFp = ctorFunc.Func.Params[i]
 				}
 
 				if wrapped := tryWrapErasedLambdaArg(ctx, pkg, f, e, paramFp, arg.Expr); wrapped != nil {
@@ -1553,8 +1553,8 @@ func (e *CodeEmitter) buildNewExpr(ctx *codegen.EmitContext, pkg *ir.PackageCont
 
 					args[i] = emitted
 				}
-			} else if ctorFunc != nil && i < len(ctorFunc.ParamTypes) && ctorFunc.ParamTypes[i].Default != nil {
-				args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.ParamTypes[i].Default)
+			} else if ctorFunc != nil && i < len(ctorFunc.Func.Params) && ctorFunc.Func.Params[i].Default != nil {
+				args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.Func.Params[i].Default)
 			} else {
 				args[i] = jen.Nil()
 			}
@@ -1592,8 +1592,8 @@ func (e *CodeEmitter) buildComposableCall(ctx *codegen.EmitContext, pkg *ir.Pack
 		for i, arg := range x.Args {
 			if arg.Expr != nil {
 				args[i] = e.buildExpr(ctx, pkg, f, arg.Expr)
-			} else if ctorFunc != nil && i < len(ctorFunc.ParamTypes) && ctorFunc.ParamTypes[i].Default != nil {
-				args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.ParamTypes[i].Default)
+			} else if ctorFunc != nil && i < len(ctorFunc.Func.Params) && ctorFunc.Func.Params[i].Default != nil {
+				args[i] = e.buildExpr(ctx, pkg, f, ctorFunc.Func.Params[i].Default)
 			} else {
 				args[i] = jen.Nil()
 			}
@@ -2313,16 +2313,16 @@ func typeToGoWithContext(ctx *codegen.EmitContext, pkg *ir.PackageContext, tt *i
 		case ir.TK_Tuple:
 			return jen.Index().Any()
 		case ir.TK_Function:
-			params := make([]jen.Code, len(ty.ParamTypes))
-			for i, param := range ty.ParamTypes {
+			params := make([]jen.Code, len(ty.Func.Params))
+			for i, param := range ty.Func.Params {
 				params[i] = typeToGoWithContext(ctx, pkg, tt, param.Type.Typ)
 			}
 
-			if ty.ReturnType == 0 || ty.ReturnType == tt.TypNone() {
+			if ty.Func.ReturnType == 0 || ty.Func.ReturnType == tt.TypNone() {
 				return jen.Func().Params(params...)
 			}
 
-			returnType := typeToGoWithContext(ctx, pkg, tt, ty.ReturnType)
+			returnType := typeToGoWithContext(ctx, pkg, tt, ty.Func.ReturnType)
 			return jen.Func().Params(params...).Add(returnType)
 		case ir.TK_Enum:
 
@@ -4734,7 +4734,7 @@ func typeContainsTypeParam(tt *ir.TypeTable, typID ir.TypID) bool {
 		}
 
 	case ir.TK_Function:
-		for _, p := range ty.ParamTypes {
+		for _, p := range ty.Func.Params {
 			if p == nil || p.Type == nil {
 				continue
 			}
@@ -4744,7 +4744,7 @@ func typeContainsTypeParam(tt *ir.TypeTable, typID ir.TypID) bool {
 			}
 		}
 
-		return typeContainsTypeParam(tt, ty.ReturnType)
+		return typeContainsTypeParam(tt, ty.Func.ReturnType)
 	}
 
 	return false
@@ -4769,7 +4769,7 @@ func tryWrapErasedLambdaArg(ctx *codegen.EmitContext, pkg *ir.PackageContext, f 
 		return nil
 	}
 
-	if len(lit.Params) != len(paramTy.ParamTypes) {
+	if len(lit.Params) != len(paramTy.Func.Params) {
 		return nil
 	}
 
@@ -4794,7 +4794,7 @@ func tryWrapErasedLambdaArg(ctx *codegen.EmitContext, pkg *ir.PackageContext, f 
 	wrapper := jen.Func().Params(wrapperParams...)
 	hasReturn := lit.ReturnType != nil && lit.ReturnType.Typ != 0 && lit.ReturnType.Typ != ctx.Types.TypNone()
 	if hasReturn {
-		retGoTy := typeToGoWithContext(ctx, pkg, ctx.Types, paramTy.ReturnType)
+		retGoTy := typeToGoWithContext(ctx, pkg, ctx.Types, paramTy.Func.ReturnType)
 		wrapper = wrapper.Add(retGoTy).Block(jen.Return(jen.Parens(inner).Call(innerArgs...)))
 	} else {
 		wrapper = wrapper.Block(jen.Parens(inner).Call(innerArgs...))

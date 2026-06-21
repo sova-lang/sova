@@ -423,8 +423,8 @@ func typeMemberCompletions(c *compiler.CompilerContext, typ ir.TypID, consumerSi
 			detail := label
 			if fnTy, ok := c.TypeUniverse.GetByID(m.FuncTyp); ok {
 				detail = "func " + label + "(" + funcTypeParamList(c.TypeUniverse, fnTy) + ")"
-				if fnTy.ReturnType != 0 {
-					detail += ": " + formatType(c.TypeUniverse, fnTy.ReturnType)
+				if fnTy.Func.ReturnType != 0 {
+					detail += ": " + formatType(c.TypeUniverse, fnTy.Func.ReturnType)
 				}
 			}
 
@@ -465,8 +465,8 @@ func typeMemberCompletions(c *compiler.CompilerContext, typ ir.TypID, consumerSi
 			detail := "func " + m.Name
 			if fnTy, ok := c.TypeUniverse.GetByID(m.FuncTyp); ok {
 				detail += "(" + funcTypeParamList(c.TypeUniverse, fnTy) + ")"
-				if fnTy.ReturnType != 0 {
-					detail += ": " + formatType(c.TypeUniverse, fnTy.ReturnType)
+				if fnTy.Func.ReturnType != 0 {
+					detail += ": " + formatType(c.TypeUniverse, fnTy.Func.ReturnType)
 				}
 			}
 
@@ -649,8 +649,8 @@ func formatTypeFromRef(tr *ir.TypeRef) string {
 }
 
 func funcTypeParamList(tt *ir.TypeTable, fn *ir.Type) string {
-	parts := make([]string, len(fn.ParamTypes))
-	for i, p := range fn.ParamTypes {
+	parts := make([]string, len(fn.Func.Params))
+	for i, p := range fn.Func.Params {
 		label := ""
 		if p.Name.Name != "" {
 			label = p.Name.Name + ": "

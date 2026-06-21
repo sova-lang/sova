@@ -516,7 +516,7 @@ func formatSymbolSignature(tt *ir.TypeTable, sym *ir.Symbol) string {
 		}
 
 		if typeStr != "" {
-			if ty, ok := tt.GetByID(sym.Typ); ok && ty.Kind == ir.TK_Function && ty.IsAsync {
+			if ty, ok := tt.GetByID(sym.Typ); ok && ty.Kind == ir.TK_Function && ty.Func.IsAsync {
 				prefix = "async func"
 			}
 
