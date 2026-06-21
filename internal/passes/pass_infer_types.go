@@ -3990,8 +3990,75 @@ func (p *PassInferTypes) synthesizeFuncCallExprType(pc *PassContext, x *ir.FuncC
 		return tt.TypError()
 	}
 
-	x.SetType(funcTyDef.ReturnType)
-	return funcTyDef.ReturnType
+	returnType := funcTyDef.ReturnType
+	if retTy, ok := tt.GetByID(returnType); ok && retTy.Kind == ir.TK_TypeParam {
+		if sub := inferTypeParamSubstitution(tt, funcTyDef.ParamTypes, argTypes); sub != nil {
+			returnType = substituteType(tt, returnType, sub)
+		}
+	}
+
+	x.SetType(returnType)
+	return returnType
+}
+
+func inferTypeParamSubstitution(tt *ir.TypeTable, params []*ir.FuncParam, argTypes []ir.TypID) map[string]ir.TypID {
+	sub := map[string]ir.TypID{}
+	for i, p := range params {
+		if p == nil || p.Type == nil || i >= len(argTypes) || argTypes[i] == 0 {
+			continue
+		}
+
+		matchTypeParam(tt, p.Type.Typ, argTypes[i], sub)
+	}
+
+	if len(sub) == 0 {
+		return nil
+	}
+
+	return sub
+}
+
+func matchTypeParam(tt *ir.TypeTable, paramTy, argTy ir.TypID, sub map[string]ir.TypID) {
+	if paramTy == 0 || argTy == 0 {
+		return
+	}
+
+	pTy, ok := tt.GetByID(paramTy)
+	if !ok {
+		return
+	}
+
+	switch pTy.Kind {
+	case ir.TK_TypeParam:
+		if existing, hit := sub[pTy.ParamName]; !hit || existing == 0 {
+			sub[pTy.ParamName] = argTy
+		}
+
+	case ir.TK_Slice, ir.TK_Array, ir.TK_Option, ir.TK_Chan:
+		aTy, ok := tt.GetByID(argTy)
+		if !ok {
+			return
+		}
+
+		matchTypeParam(tt, pTy.ElemType, aTy.ElemType, sub)
+	case ir.TK_Map:
+		aTy, ok := tt.GetByID(argTy)
+		if !ok {
+			return
+		}
+
+		matchTypeParam(tt, pTy.KeyType, aTy.KeyType, sub)
+		matchTypeParam(tt, pTy.ValueType, aTy.ValueType, sub)
+	case ir.TK_Tuple:
+		aTy, ok := tt.GetByID(argTy)
+		if !ok || len(aTy.Fields) != len(pTy.Fields) {
+			return
+		}
+
+		for i := range pTy.Fields {
+			matchTypeParam(tt, pTy.Fields[i].Type, aTy.Fields[i].Type, sub)
+		}
+	}
 }
 
 func (p *PassInferTypes) synthesizeNewExprType(pc *PassContext, x *ir.NewExpr) ir.TypID {

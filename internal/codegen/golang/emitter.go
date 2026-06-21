@@ -1391,7 +1391,30 @@ func (e *CodeEmitter) buildFuncCallExpr(ctx *codegen.EmitContext, pkg *ir.Packag
 		}
 	}
 
-	return callee.Call(args...)
+	call := callee.Call(args...)
+	if needsGenericReturnAssertion(ctx, funcTypeDef, x.GetType()) {
+		return call.Assert(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType()))
+	}
+
+	return call
+}
+
+func needsGenericReturnAssertion(ctx *codegen.EmitContext, funcTypeDef *ir.Type, callTy ir.TypID) bool {
+	if funcTypeDef == nil || callTy == 0 {
+		return false
+	}
+
+	retTy, ok := ctx.Types.GetByID(funcTypeDef.ReturnType)
+	if !ok || retTy.Kind != ir.TK_TypeParam {
+		return false
+	}
+
+	callTyDef, ok := ctx.Types.GetByID(callTy)
+	if !ok {
+		return false
+	}
+
+	return callTyDef.Kind != ir.TK_TypeParam && callTyDef.Kind != ir.TK_PrimitiveAny
 }
 
 func (e *CodeEmitter) buildFuncLitExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.FuncLitExpr) *jen.Statement {

@@ -1,0 +1,43 @@
+package langsuite/generics on test
+
+func identity<T>(x: T): T {
+    return x
+}
+
+test "generic identity int" {
+    let r = identity(42)
+    assert r == 42
+}
+
+test "generic identity string" {
+    let r = identity("hello")
+    assert r == "hello"
+}
+
+test "generic identity bool" {
+    let r = identity(true)
+    assert r == true
+}
+
+func pickSecond<A, B>(a: A, b: B): B {
+    return b
+}
+
+test "generic two type params picks second" {
+    let r = pickSecond(1, "chosen")
+    assert r == "chosen"
+}
+
+test "generic two type params swapped" {
+    let r = pickSecond("ignored", 99)
+    assert r == 99
+}
+
+func max3<T>(a: T, b: T, c: T): T {
+    return a
+}
+
+test "generic three args same type" {
+    let r = max3(10, 20, 30)
+    assert r == 10
+}
