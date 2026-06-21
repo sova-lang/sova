@@ -666,8 +666,8 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 			if ifaceTy, ok := pc.Types.GetByID(ifaceTyp); ok {
 				ifaceTy.Interface.Methods = sigs
 				if st.IsExtern {
-					ifaceTy.IsExtern = true
-					ifaceTy.ExternModule = st.ExternModule
+					ifaceTy.Extern.IsExtern = true
+					ifaceTy.Extern.Module = st.ExternModule
 				}
 			}
 
@@ -711,8 +711,8 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 			if structTy, ok := pc.Types.GetByID(structTyp); ok {
 				structTy.Struct.Fields = fields
 				if st.IsExtern {
-					structTy.IsExtern = true
-					structTy.ExternModule = st.ExternModule
+					structTy.Extern.IsExtern = true
+					structTy.Extern.Module = st.ExternModule
 				}
 
 				if mentionsComposable(st.MixedIn) {
@@ -822,7 +822,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				for _, fld := range embedTy.Struct.Fields {
 					promoted := fld
 					promoted.IsPromoted = true
-					promoted.PromotedFromExtern = embedTy.IsExtern
+					promoted.PromotedFromExtern = embedTy.Extern.IsExtern
 					if structTy, ok := pc.Types.GetByID(structTyp); ok {
 						structTy.Struct.Fields = append(structTy.Struct.Fields, promoted)
 					}
@@ -831,7 +831,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				for _, m := range embedTy.Struct.Methods {
 					promoted := m
 					promoted.IsPromoted = true
-					promoted.PromotedFromExtern = embedTy.IsExtern
+					promoted.PromotedFromExtern = embedTy.Extern.IsExtern
 					methodInfos = append(methodInfos, promoted)
 				}
 			}

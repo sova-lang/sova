@@ -959,7 +959,7 @@ func (e *CodeEmitter) emitTypeDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 			break
 		}
 
-		if embedTy.IsExtern {
+		if embedTy.Extern.IsExtern {
 			parentClass = embedTy.Struct.Name
 		} else {
 			parentClass = symName(ctx, ref.Sym)

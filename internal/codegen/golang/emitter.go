@@ -1192,7 +1192,7 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 					if sf.Name == fld.Name {
 						var fieldName string
 						switch {
-						case ty.IsExtern:
+						case ty.Extern.IsExtern:
 							fieldName = fld.Name
 						case sf.IsPromoted && sf.PromotedFromExtern:
 							fieldName = fld.Name
@@ -1232,7 +1232,7 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 					if chosen != nil {
 						m := chosen
 						switch {
-						case ty.IsExtern:
+						case ty.Extern.IsExtern:
 							cur = jen.Add(cur).Dot(fld.Name)
 						case m.IsPromoted && m.PromotedFromExtern:
 							cur = jen.Add(cur).Dot(fld.Name)
@@ -2344,12 +2344,12 @@ func typeToGoWithContext(ctx *codegen.EmitContext, pkg *ir.PackageContext, tt *i
 		case ir.TK_Chan:
 			return jen.Chan().Add(typeToGoWithContext(ctx, pkg, tt, ty.ElemType))
 		case ir.TK_Struct:
-			if ty.IsExtern {
-				if ty.ExternValue {
-					return jen.Qual(ty.ExternModule, ty.Struct.Name)
+			if ty.Extern.IsExtern {
+				if ty.Extern.IsValue {
+					return jen.Qual(ty.Extern.Module, ty.Struct.Name)
 				}
 
-				return jen.Op("*").Qual(ty.ExternModule, ty.Struct.Name)
+				return jen.Op("*").Qual(ty.Extern.Module, ty.Struct.Name)
 			}
 
 			if ctx != nil && ctx.Cache != nil {
@@ -2375,8 +2375,8 @@ func typeToGoWithContext(ctx *codegen.EmitContext, pkg *ir.PackageContext, tt *i
 
 			return jen.Op("*").Id(structName)
 		case ir.TK_Interface:
-			if ty.IsExtern {
-				return jen.Qual(ty.ExternModule, ty.Interface.Name)
+			if ty.Extern.IsExtern {
+				return jen.Qual(ty.Extern.Module, ty.Interface.Name)
 			}
 
 			ifaceName := ty.Interface.Name
@@ -5306,8 +5306,8 @@ func (e *CodeEmitter) emitTypeDeclStmt(ctx *codegen.EmitContext, pkg *ir.Package
 			continue
 		}
 
-		if embedTy.IsExtern {
-			structFields = append(structFields, jen.Qual(embedTy.ExternModule, embedTy.Struct.Name))
+		if embedTy.Extern.IsExtern {
+			structFields = append(structFields, jen.Qual(embedTy.Extern.Module, embedTy.Struct.Name))
 		} else {
 			structFields = append(structFields, jen.Id(symName(ctx, ref.Sym)))
 		}

@@ -53,13 +53,17 @@ type Type struct {
 	Struct    StructInfo
 	Interface InterfaceInfo
 
-	IsExtern     bool
-	ExternModule string
-	ExternSide   SideKind
-	ExternValue  bool
+	Extern ExternInfo
 
 	ParamName  string
 	TypeParams []string
+}
+
+type ExternInfo struct {
+	IsExtern bool
+	Module   string
+	Side     SideKind
+	IsValue  bool
 }
 
 type StructInfo struct {

@@ -66,7 +66,7 @@ func (e *CodeEmitter) buildTypeDescriptorJSLiteral(ctx *codegen.EmitContext, typ
 
 		return fmt.Sprintf(`{kind:"tuple",elems:[%s]}`, strings.Join(parts, ","))
 	case ir.TK_Struct:
-		if ty.IsExtern {
+		if ty.Extern.IsExtern {
 			return `{kind:"any"}`
 		}
 

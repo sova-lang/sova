@@ -84,7 +84,7 @@ func (p *PassAnalyzeExterns) stampExternValue(pc *PassContext, sym ir.SymID) {
 	}
 
 	if typ, ok := pc.Types.GetByID(s.Typ); ok {
-		typ.ExternValue = true
+		typ.Extern.IsValue = true
 	}
 }
 
@@ -99,7 +99,7 @@ func (p *PassAnalyzeExterns) stampExternSide(pc *PassContext, sym ir.SymID, side
 	}
 
 	if typ, ok := pc.Types.GetByID(s.Typ); ok {
-		typ.ExternSide = side
+		typ.Extern.Side = side
 	}
 }
 
@@ -145,15 +145,15 @@ func (p *PassAnalyzeExterns) checkTypeRef(pc *PassContext, tr *ir.TypeRef, fileS
 	}
 
 	typ, ok := pc.Types.GetByID(tr.Typ)
-	if !ok || !typ.IsExtern {
+	if !ok || !typ.Extern.IsExtern {
 		return
 	}
 
-	if typ.ExternSide == ir.SideShared || typ.ExternSide == 0 || typ.ExternSide == fileSide {
+	if typ.Extern.Side == ir.SideShared || typ.Extern.Side == 0 || typ.Extern.Side == fileSide {
 		return
 	}
 
-	pc.Diag.Report(diag.ErrExternTypeWrongSide, tr.Span(), tr.CustomName, sideLabel(typ.ExternSide), sideLabel(fileSide))
+	pc.Diag.Report(diag.ErrExternTypeWrongSide, tr.Span(), tr.CustomName, sideLabel(typ.Extern.Side), sideLabel(fileSide))
 }
 
 func sideLabel(s ir.SideKind) string {
