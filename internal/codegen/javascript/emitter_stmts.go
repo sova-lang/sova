@@ -1229,13 +1229,13 @@ func (e *CodeEmitter) emitEnumDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 	enumName := symName(ctx, s.Name.Sym)
 	enumTyp, _ := ctx.Types.GetByID(typeOfSym(pkg, s.Name.Sym))
 
-	if enumTyp != nil && enumTyp.IsNumeric {
+	if enumTyp != nil && enumTyp.Enum.IsNumeric {
 
 		var sb strings.Builder
 		sb.WriteString("Object.freeze({\n")
-		for i, c := range enumTyp.EnumCases {
+		for i, c := range enumTyp.Enum.Cases {
 			sb.WriteString(fmt.Sprintf("  %s: %d", c.Name, c.Value))
-			if i < len(enumTyp.EnumCases)-1 {
+			if i < len(enumTyp.Enum.Cases)-1 {
 				sb.WriteString(",")
 			}
 
@@ -1250,14 +1250,14 @@ func (e *CodeEmitter) emitEnumDecl(ctx *codegen.EmitContext, pkg *ir.PackageCont
 		sb.WriteString(fmt.Sprintf("class %s {\n", enumName))
 
 		constructorParams := "__ordinal, __name"
-		for _, fld := range enumTyp.EnumFields {
+		for _, fld := range enumTyp.Enum.Fields {
 			constructorParams += ", " + fld.Name
 		}
 
 		sb.WriteString(fmt.Sprintf("  constructor(%s) {\n", constructorParams))
 		sb.WriteString("    this.__ordinal = __ordinal;\n")
 		sb.WriteString("    this.__name = __name;\n")
-		for _, fld := range enumTyp.EnumFields {
+		for _, fld := range enumTyp.Enum.Fields {
 			sb.WriteString(fmt.Sprintf("    this.%s = %s;\n", fld.Name, fld.Name))
 		}
 

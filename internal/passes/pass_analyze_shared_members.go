@@ -537,8 +537,8 @@ func formatTypeShort(pc *PassContext, t ir.TypID) string {
 
 		return "struct"
 	case ir.TK_Enum:
-		if ty.EnumName != "" {
-			return ty.EnumName
+		if ty.Enum.Name != "" {
+			return ty.Enum.Name
 		}
 
 		return "enum"

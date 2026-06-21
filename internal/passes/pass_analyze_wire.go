@@ -779,8 +779,8 @@ func (p *PassAnalyzeWire) ensureWireState(pc *PassContext) ir.TypID {
 
 	typ := pc.Types.EnumOf("", "WireState", cases, nil, true)
 	if enumTy, ok := pc.Types.GetByID(typ); ok {
-		enumTy.EnumCases = cases
-		enumTy.IsNumeric = true
+		enumTy.Enum.Cases = cases
+		enumTy.Enum.IsNumeric = true
 	}
 
 	pc.Cache[WireStateCacheKey] = typ

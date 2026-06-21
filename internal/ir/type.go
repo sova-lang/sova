@@ -48,11 +48,7 @@ type Type struct {
 	ReturnType TypID
 	IsAsync    bool
 
-	EnumName    string
-	EnumCases   []EnumCaseInfo
-	EnumFields  []EnumFieldInfo
-	EnumMethods []EnumMethodInfo
-	IsNumeric   bool
+	Enum EnumInfo
 
 	PackagePath string
 
@@ -79,6 +75,14 @@ type Type struct {
 type InterfaceInfo struct {
 	Name    string
 	Methods []InterfaceSigInfo
+}
+
+type EnumInfo struct {
+	Name      string
+	Cases     []EnumCaseInfo
+	Fields    []EnumFieldInfo
+	Methods   []EnumMethodInfo
+	IsNumeric bool
 }
 
 type InterfaceSigInfo struct {
@@ -233,12 +237,14 @@ func AsyncFuncType(paramTypes []*FuncParam, returnType TypID) *Type {
 
 func EnumType(name string, cases []EnumCaseInfo, fields []EnumFieldInfo, isNumeric bool) *Type {
 	ty := &Type{
-		ID:         0,
-		Kind:       TK_Enum,
-		EnumName:   name,
-		EnumCases:  cases,
-		EnumFields: fields,
-		IsNumeric:  isNumeric,
+		ID:   0,
+		Kind: TK_Enum,
+		Enum: EnumInfo{
+			Name:      name,
+			Cases:     cases,
+			Fields:    fields,
+			IsNumeric: isNumeric,
+		},
 	}
 
 	ty.Key = generateTypeKey(ty)
@@ -533,7 +539,7 @@ func generateTypeKey(typ *Type) TypeKey {
 
 		return TypeKey(fmt.Sprintf("%sfunc:(%s)->%d", asyncPrefix, strings.Join(params, ","), typ.ReturnType))
 	case TK_Enum:
-		return TypeKey(fmt.Sprintf("enum:%s:%s", typ.PackagePath, typ.EnumName))
+		return TypeKey(fmt.Sprintf("enum:%s:%s", typ.PackagePath, typ.Enum.Name))
 	case TK_Struct:
 		return TypeKey(fmt.Sprintf("struct:%s:%s", typ.PackagePath, typ.StructName))
 	case TK_Interface:

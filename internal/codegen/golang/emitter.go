@@ -1269,11 +1269,11 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 			if ok && ty.Kind == ir.TK_Enum {
 
 				isCaseAccess := false
-				for _, c := range ty.EnumCases {
+				for _, c := range ty.Enum.Cases {
 					if c.Name == fld.Name {
 						isCaseAccess = true
 
-						enumName := symName(ctx, getEnumSymbol(ctx, pkg, ty.EnumName))
+						enumName := symName(ctx, getEnumSymbol(ctx, pkg, ty.Enum.Name))
 						cur = jen.Id(enumName + fld.Name)
 						break
 					}
@@ -1282,12 +1282,12 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 				if !isCaseAccess {
 
 					isMethod := false
-					for _, method := range ty.EnumMethods {
+					for _, method := range ty.Enum.Methods {
 						if method.Name == fld.Name {
 							isMethod = true
 							curType = method.Type
 
-							methodSym := getMethodSymbol(ctx, pkg, ty.EnumName, fld.Name)
+							methodSym := getMethodSymbol(ctx, pkg, ty.Enum.Name, fld.Name)
 							if methodSym != 0 {
 								cur = jen.Add(cur).Dot(symName(ctx, methodSym))
 							} else {
@@ -1301,7 +1301,7 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 					if !isMethod {
 						cur = jen.Add(cur).Dot(fld.Name)
 
-						for _, field := range ty.EnumFields {
+						for _, field := range ty.Enum.Fields {
 							if field.Name == fld.Name {
 								curType = field.Type
 								break
@@ -2326,15 +2326,15 @@ func typeToGoWithContext(ctx *codegen.EmitContext, pkg *ir.PackageContext, tt *i
 			return jen.Func().Params(params...).Add(returnType)
 		case ir.TK_Enum:
 
-			enumName := ty.EnumName
+			enumName := ty.Enum.Name
 			if ctx != nil && pkg != nil {
-				enumSym := getEnumSymbol(ctx, pkg, ty.EnumName)
+				enumSym := getEnumSymbol(ctx, pkg, ty.Enum.Name)
 				if enumSym != 0 {
 					enumName = symName(ctx, enumSym)
 				}
 			}
 
-			if ty.IsNumeric {
+			if ty.Enum.IsNumeric {
 				return jen.Id(enumName)
 			}
 
@@ -5542,14 +5542,14 @@ func (e *CodeEmitter) emitEnumDeclStmt(ctx *codegen.EmitContext, pkg *ir.Package
 	enumName := symName(ctx, s.Name.Sym)
 	enumTyp, _ := ctx.Types.GetByID(typeOfSym(pkg, s.Name.Sym))
 
-	if enumTyp != nil && enumTyp.IsNumeric {
+	if enumTyp != nil && enumTyp.Enum.IsNumeric {
 		e.withStmt(block, func() jen.Code {
 			return jen.Type().Id(enumName).Int64()
 		})
 
 		e.withStmt(block, func() jen.Code {
 			return jen.Const().DefsFunc(func(g *jen.Group) {
-				for _, c := range enumTyp.EnumCases {
+				for _, c := range enumTyp.Enum.Cases {
 					g.Id(enumName + c.Name).Id(enumName).Op("=").Id(enumName).Call(jen.Lit(c.Value))
 				}
 			})
@@ -5568,7 +5568,7 @@ func (e *CodeEmitter) emitEnumDeclStmt(ctx *codegen.EmitContext, pkg *ir.Package
 			jen.Id("__name").String(),
 		}
 
-		for _, fld := range enumTyp.EnumFields {
+		for _, fld := range enumTyp.Enum.Fields {
 			fields = append(fields,
 				jen.Id(fld.Name).Add(typeToGoWithContext(ctx, pkg, ctx.Types, fld.Type)))
 		}

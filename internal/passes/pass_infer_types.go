@@ -103,9 +103,9 @@ func (p *PassInferTypes) preComputeEnumCases(pc *PassContext, stmts []ir.Stmt) {
 
 		enumTyp := pc.Types.EnumOf(pc.Pkg.Path.String(), ed.Name.Name, caseInfos, enumFields, isNumeric)
 		if enumTy, ok := pc.Types.GetByID(enumTyp); ok {
-			enumTy.EnumCases = caseInfos
-			enumTy.EnumFields = enumFields
-			enumTy.IsNumeric = isNumeric
+			enumTy.Enum.Cases = caseInfos
+			enumTy.Enum.Fields = enumFields
+			enumTy.Enum.IsNumeric = isNumeric
 		}
 
 		pc.Pkg.Syms.SetType(ed.Name.Sym, enumTyp)
@@ -1067,9 +1067,9 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 
 			enumTyp := pc.Types.EnumOf(pc.Pkg.Path.String(), st.Name.Name, caseInfos, enumFields, isNumeric)
 			if enumTy, ok := pc.Types.GetByID(enumTyp); ok {
-				enumTy.EnumCases = caseInfos
-				enumTy.EnumFields = enumFields
-				enumTy.IsNumeric = isNumeric
+				enumTy.Enum.Cases = caseInfos
+				enumTy.Enum.Fields = enumFields
+				enumTy.Enum.IsNumeric = isNumeric
 			}
 
 			pc.Pkg.Syms.SetType(st.Name.Sym, enumTyp)
@@ -1129,7 +1129,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 			}
 
 			if enumTy, ok := pc.Types.GetByID(enumTyp); ok {
-				enumTy.EnumMethods = enumMethods
+				enumTy.Enum.Methods = enumMethods
 			}
 
 		case *ir.ExprStmt:
@@ -2681,7 +2681,7 @@ func renderTypeForDiag(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) st
 	case ir.TK_Struct:
 		return qualifyTypeName(ty.PackagePath, ty.StructName)
 	case ir.TK_Enum:
-		return qualifyTypeName(ty.PackagePath, ty.EnumName)
+		return qualifyTypeName(ty.PackagePath, ty.Enum.Name)
 	case ir.TK_Interface:
 		return qualifyTypeName(ty.PackagePath, ty.Interface.Name)
 	case ir.TK_TypeParam:
@@ -2728,7 +2728,7 @@ func typeKeyDisplay(ty *ir.Type) string {
 	case ir.TK_Struct:
 		return qualifyTypeName(ty.PackagePath, ty.StructName)
 	case ir.TK_Enum:
-		return qualifyTypeName(ty.PackagePath, ty.EnumName)
+		return qualifyTypeName(ty.PackagePath, ty.Enum.Name)
 	case ir.TK_Interface:
 		return qualifyTypeName(ty.PackagePath, ty.Interface.Name)
 	case ir.TK_Tuple:
@@ -3804,7 +3804,7 @@ func (p *PassInferTypes) synthesizeFieldAccessExprType(pc *PassContext, x *ir.Fi
 
 		case ir.TK_Enum:
 			foundCase := false
-			for _, c := range ty.EnumCases {
+			for _, c := range ty.Enum.Cases {
 				if c.Name == fld.Name {
 					foundCase = true
 					break
@@ -3813,7 +3813,7 @@ func (p *PassInferTypes) synthesizeFieldAccessExprType(pc *PassContext, x *ir.Fi
 
 			if !foundCase {
 				foundField := false
-				for _, f := range ty.EnumFields {
+				for _, f := range ty.Enum.Fields {
 					if f.Name == fld.Name {
 						foundField = true
 						cur = f.Type
@@ -3823,7 +3823,7 @@ func (p *PassInferTypes) synthesizeFieldAccessExprType(pc *PassContext, x *ir.Fi
 
 				if !foundField {
 					foundMethod := false
-					for _, m := range ty.EnumMethods {
+					for _, m := range ty.Enum.Methods {
 						if m.Name == fld.Name {
 							foundMethod = true
 							cur = m.Type
@@ -3832,7 +3832,7 @@ func (p *PassInferTypes) synthesizeFieldAccessExprType(pc *PassContext, x *ir.Fi
 					}
 
 					if !foundMethod {
-						pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("enum %s has no case, field, or method named '%s'", ty.EnumName, fld.Name))
+						pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("enum %s has no case, field, or method named '%s'", ty.Enum.Name, fld.Name))
 						x.SetType(tt.TypError())
 						return tt.TypError()
 					}

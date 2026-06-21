@@ -286,7 +286,7 @@ func findMemberSym(c *compiler.CompilerContext, receiverTyp ir.TypID, name strin
 		}
 
 	case ir.TK_Enum:
-		for _, m := range ty.EnumMethods {
+		for _, m := range ty.Enum.Methods {
 			if m.Name != name {
 				continue
 			}
@@ -354,7 +354,7 @@ func findEnumMethodSym(c *compiler.CompilerContext, ty *ir.Type, name string) *i
 
 			for _, st := range f.Hir.Statements {
 				e, ok := st.(*ir.EnumDeclStmt)
-				if !ok || e.Name.Name != ty.EnumName {
+				if !ok || e.Name.Name != ty.Enum.Name {
 					continue
 				}
 

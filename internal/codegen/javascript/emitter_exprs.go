@@ -237,11 +237,11 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 			if ok && ty.Kind == ir.TK_Enum {
 
 				isCaseAccess := false
-				for _, c := range ty.EnumCases {
+				for _, c := range ty.Enum.Cases {
 					if c.Name == field.Name {
 						isCaseAccess = true
-						enumName := symName(ctx, getEnumSymbol(ctx, pkg, ty.EnumName))
-						if ty.IsNumeric {
+						enumName := symName(ctx, getEnumSymbol(ctx, pkg, ty.Enum.Name))
+						if ty.Enum.IsNumeric {
 
 							base = jsgen.Id(enumName).Dot(field.Name)
 						} else {
@@ -256,11 +256,11 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 				if !isCaseAccess {
 
 					foundMethod := false
-					for _, m := range ty.EnumMethods {
+					for _, m := range ty.Enum.Methods {
 						if m.Name == field.Name {
 							foundMethod = true
 
-							methodSym := getMethodSymbol(ctx, pkg, ty.EnumName, field.Name)
+							methodSym := getMethodSymbol(ctx, pkg, ty.Enum.Name, field.Name)
 							if methodSym != 0 {
 								base = base.Dot(symName(ctx, methodSym))
 							} else {
@@ -276,7 +276,7 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 					if !foundMethod {
 						base = base.Dot(field.Name)
 
-						for _, fld := range ty.EnumFields {
+						for _, fld := range ty.Enum.Fields {
 							if fld.Name == field.Name {
 								curType = fld.Type
 								break
@@ -880,7 +880,7 @@ func jsTypeLabel(ctx *codegen.EmitContext, typID ir.TypID) string {
 	case ir.TK_Struct:
 		return ty.StructName
 	case ir.TK_Enum:
-		return ty.EnumName
+		return ty.Enum.Name
 	}
 
 	return string(ty.Key)

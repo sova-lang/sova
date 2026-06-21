@@ -444,15 +444,15 @@ func typeMemberCompletions(c *compiler.CompilerContext, typ ir.TypID, consumerSi
 		}
 
 	case ir.TK_Enum:
-		for _, ec := range ty.EnumCases {
+		for _, ec := range ty.Enum.Cases {
 			out = append(out, protocol.CompletionItem{
 				Label:  ec.Name,
 				Kind:   protocol.CompletionItemKindEnumMember,
-				Detail: ty.EnumName + "." + ec.Name,
+				Detail: ty.Enum.Name + "." + ec.Name,
 			})
 		}
 
-		for _, m := range ty.EnumMethods {
+		for _, m := range ty.Enum.Methods {
 			out = append(out, protocol.CompletionItem{
 				Label:  m.Name,
 				Kind:   protocol.CompletionItemKindMethod,
