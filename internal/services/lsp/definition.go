@@ -215,7 +215,7 @@ func typeDeclarationSpan(c *compiler.CompilerContext, typ ir.TypID) diag.TextSpa
 	case ir.TK_Enum:
 		name = ty.EnumName
 	case ir.TK_Interface:
-		name = ty.InterfaceName
+		name = ty.Interface.Name
 	default:
 		return diag.TextSpan{}
 	}

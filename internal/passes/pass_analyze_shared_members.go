@@ -545,8 +545,8 @@ func formatTypeShort(pc *PassContext, t ir.TypID) string {
 	case ir.TK_Function:
 		return "func"
 	case ir.TK_Interface:
-		if ty.InterfaceName != "" {
-			return ty.InterfaceName
+		if ty.Interface.Name != "" {
+			return ty.Interface.Name
 		}
 
 		return "interface"

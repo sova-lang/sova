@@ -461,7 +461,7 @@ func typeMemberCompletions(c *compiler.CompilerContext, typ ir.TypID, consumerSi
 		}
 
 	case ir.TK_Interface:
-		for _, m := range ty.InterfaceMethods {
+		for _, m := range ty.Interface.Methods {
 			detail := "func " + m.Name
 			if fnTy, ok := c.TypeUniverse.GetByID(m.FuncTyp); ok {
 				detail += "(" + funcTypeParamList(c.TypeUniverse, fnTy) + ")"

@@ -63,8 +63,7 @@ type Type struct {
 	StructImplements []TypID
 	StructCasts      []StructCastInfo
 
-	InterfaceName    string
-	InterfaceMethods []InterfaceSigInfo
+	Interface InterfaceInfo
 
 	IsExtern     bool
 	ExternModule string
@@ -75,6 +74,11 @@ type Type struct {
 
 	ParamName  string
 	TypeParams []string
+}
+
+type InterfaceInfo struct {
+	Name    string
+	Methods []InterfaceSigInfo
 }
 
 type InterfaceSigInfo struct {
@@ -439,7 +443,7 @@ func (t *TypeTable) StructOf(pkgPath, name string, fields []StructFieldInfo) Typ
 }
 
 func (t *TypeTable) InterfaceOf(pkgPath, name string) TypID {
-	typ := &Type{Kind: TK_Interface, InterfaceName: name, PackagePath: pkgPath}
+	typ := &Type{Kind: TK_Interface, Interface: InterfaceInfo{Name: name}, PackagePath: pkgPath}
 
 	typ.Key = generateTypeKey(typ)
 	return t.DeclareType(typ)
@@ -533,7 +537,7 @@ func generateTypeKey(typ *Type) TypeKey {
 	case TK_Struct:
 		return TypeKey(fmt.Sprintf("struct:%s:%s", typ.PackagePath, typ.StructName))
 	case TK_Interface:
-		return TypeKey(fmt.Sprintf("interface:%s:%s", typ.PackagePath, typ.InterfaceName))
+		return TypeKey(fmt.Sprintf("interface:%s:%s", typ.PackagePath, typ.Interface.Name))
 	default:
 		panic(fmt.Sprintf("unknown type kind: %d", typ.Kind))
 	}

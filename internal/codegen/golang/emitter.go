@@ -1255,7 +1255,7 @@ func (e *CodeEmitter) buildFieldAccessExpr(ctx *codegen.EmitContext, pkg *ir.Pac
 			}
 
 			if ok && ty.Kind == ir.TK_Interface {
-				for _, m := range ty.InterfaceMethods {
+				for _, m := range ty.Interface.Methods {
 					if m.Name == fld.Name {
 						curType = m.FuncTyp
 						break
@@ -2376,12 +2376,12 @@ func typeToGoWithContext(ctx *codegen.EmitContext, pkg *ir.PackageContext, tt *i
 			return jen.Op("*").Id(structName)
 		case ir.TK_Interface:
 			if ty.IsExtern {
-				return jen.Qual(ty.ExternModule, ty.InterfaceName)
+				return jen.Qual(ty.ExternModule, ty.Interface.Name)
 			}
 
-			ifaceName := ty.InterfaceName
+			ifaceName := ty.Interface.Name
 			if ctx != nil {
-				if sym := findTypeSymbolAcrossPkgs(ctx, pkg, ty.PackagePath, ty.InterfaceName); sym != 0 {
+				if sym := findTypeSymbolAcrossPkgs(ctx, pkg, ty.PackagePath, ty.Interface.Name); sym != 0 {
 					ifaceName = symName(ctx, sym)
 				}
 			}

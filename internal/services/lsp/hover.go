@@ -275,7 +275,7 @@ func findMemberSym(c *compiler.CompilerContext, receiverTyp ir.TypID, name strin
 		}
 
 	case ir.TK_Interface:
-		for _, m := range ty.InterfaceMethods {
+		for _, m := range ty.Interface.Methods {
 			if m.Name != name {
 				continue
 			}
@@ -323,7 +323,7 @@ func findInterfaceMethodSym(c *compiler.CompilerContext, ty *ir.Type, name strin
 
 			for _, st := range f.Hir.Statements {
 				iface, ok := st.(*ir.InterfaceDeclStmt)
-				if !ok || iface.Name.Name != ty.InterfaceName {
+				if !ok || iface.Name.Name != ty.Interface.Name {
 					continue
 				}
 

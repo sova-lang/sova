@@ -664,7 +664,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 			}
 
 			if ifaceTy, ok := pc.Types.GetByID(ifaceTyp); ok {
-				ifaceTy.InterfaceMethods = sigs
+				ifaceTy.Interface.Methods = sigs
 				if st.IsExtern {
 					ifaceTy.IsExtern = true
 					ifaceTy.ExternModule = st.ExternModule
@@ -973,7 +973,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				}
 
 				implementsList = append(implementsList, ifaceSym.Typ)
-				for _, want := range ifaceTy.InterfaceMethods {
+				for _, want := range ifaceTy.Interface.Methods {
 					match := ir.StructMethodInfo{}
 
 					hit := false
@@ -2683,7 +2683,7 @@ func renderTypeForDiag(tt *ir.TypeTable, id ir.TypID, seen map[ir.TypID]bool) st
 	case ir.TK_Enum:
 		return qualifyTypeName(ty.PackagePath, ty.EnumName)
 	case ir.TK_Interface:
-		return qualifyTypeName(ty.PackagePath, ty.InterfaceName)
+		return qualifyTypeName(ty.PackagePath, ty.Interface.Name)
 	case ir.TK_TypeParam:
 		if ty.ParamName != "" {
 			return ty.ParamName
@@ -2730,7 +2730,7 @@ func typeKeyDisplay(ty *ir.Type) string {
 	case ir.TK_Enum:
 		return qualifyTypeName(ty.PackagePath, ty.EnumName)
 	case ir.TK_Interface:
-		return qualifyTypeName(ty.PackagePath, ty.InterfaceName)
+		return qualifyTypeName(ty.PackagePath, ty.Interface.Name)
 	case ir.TK_Tuple:
 		return "tuple"
 	case ir.TK_Slice, ir.TK_Array:
@@ -3788,7 +3788,7 @@ func (p *PassInferTypes) synthesizeFieldAccessExprType(pc *PassContext, x *ir.Fi
 
 		case ir.TK_Interface:
 			found := false
-			for _, m := range ty.InterfaceMethods {
+			for _, m := range ty.Interface.Methods {
 				if m.Name == fld.Name {
 					found = true
 					cur = m.FuncTyp
@@ -3797,7 +3797,7 @@ func (p *PassInferTypes) synthesizeFieldAccessExprType(pc *PassContext, x *ir.Fi
 			}
 
 			if !found {
-				pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("interface %s has no method '%s'", ty.InterfaceName, fld.Name))
+				pc.Diag.Report(diag.ErrTypeNotIndexable, fld.Span, fmt.Sprintf("interface %s has no method '%s'", ty.Interface.Name, fld.Name))
 				x.SetType(tt.TypError())
 				return tt.TypError()
 			}

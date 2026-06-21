@@ -50,7 +50,7 @@ func interfaceTypeForSymbol(c *compiler.CompilerContext, sym *ir.Symbol) (ir.Typ
 			continue
 		}
 
-		if ty.InterfaceName == sym.Name {
+		if ty.Interface.Name == sym.Name {
 			return id, true
 		}
 	}
@@ -68,7 +68,7 @@ func interfaceMethodForSymbol(c *compiler.CompilerContext, sym *ir.Symbol) (stri
 			continue
 		}
 
-		for _, m := range ty.InterfaceMethods {
+		for _, m := range ty.Interface.Methods {
 			if m.Name == sym.Name {
 				return sym.Name, id, true
 			}
