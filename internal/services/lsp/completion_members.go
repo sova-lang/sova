@@ -97,140 +97,19 @@ func findExprTypeEndingAt(file *ir.File, line, col int) ir.TypID {
 	}
 
 	var best ir.Expr
-	visit := func(e ir.Expr) {
-		if ir.IsNilExpr(e) {
-			return
+	ir.WalkStmts(file.Statements, func(n ir.Node) ir.WalkAction {
+		e, ok := n.(ir.Expr)
+		if !ok {
+			return ir.WalkContinue
 		}
 
 		sp := e.Span()
 		if sp.EndLn == line && sp.EndCol == col {
 			best = e
 		}
-	}
 
-	var walkE func(e ir.Expr)
-	var walkS func(s ir.Stmt)
-	walkE = func(e ir.Expr) {
-		if ir.IsNilExpr(e) {
-			return
-		}
-
-		visit(e)
-		switch n := e.(type) {
-		case *ir.FuncCallExpr:
-			walkE(n.Callee)
-			for _, a := range n.Args {
-				walkE(a.Expr)
-			}
-
-		case *ir.FieldAccessExpr:
-			walkE(n.Expr)
-		case *ir.IndexExpr:
-			walkE(n.Expr)
-			walkE(n.Index)
-		case *ir.BinaryExpr:
-			walkE(n.Left)
-			walkE(n.Right)
-		case *ir.UnaryExpr:
-			walkE(n.Expr)
-		case *ir.PrefixUnaryExpr:
-			walkE(n.Expr)
-		case *ir.PostfixUnaryExpr:
-			walkE(n.Expr)
-		case *ir.GroupedExpr:
-			walkE(n.Expr)
-		case *ir.TenaryExpr:
-			walkE(n.Cond)
-			walkE(n.Then)
-			walkE(n.Else)
-		case *ir.AssignmentExpr:
-			walkE(n.Right)
-		case *ir.NewExpr:
-			for _, a := range n.Args {
-				walkE(a.Expr)
-			}
-
-		case *ir.CoalesceExpr:
-			walkE(n.Left)
-			walkE(n.Default)
-		case *ir.AsExpr:
-			walkE(n.Expr)
-		}
-	}
-
-	walkS = func(s ir.Stmt) {
-		if ir.IsNilStmt(s) {
-			return
-		}
-
-		switch n := s.(type) {
-		case *ir.BlockStmt:
-			for _, ss := range n.Stmts {
-				walkS(ss)
-			}
-
-		case *ir.VarDeclStmt:
-			walkE(n.Init)
-		case *ir.ExprStmt:
-			walkE(n.Expr)
-		case *ir.FieldAssignmentStmt:
-			walkE(n.Value)
-		case *ir.MultiAssignmentStmt:
-			walkE(n.Value)
-		case *ir.ReturnStmt:
-			for _, r := range n.Results {
-				walkE(r)
-			}
-
-		case *ir.IfStmt:
-			walkE(n.Cond)
-			for _, ss := range ir.BlockStmts(n.Then) {
-				walkS(ss)
-			}
-
-			for _, eb := range n.ElseIfs {
-				walkE(eb.Cond)
-				for _, ss := range ir.BlockStmts(eb.Then) {
-					walkS(ss)
-				}
-			}
-
-			for _, ss := range ir.BlockStmts(n.Else) {
-				walkS(ss)
-			}
-
-		case *ir.ForStmt:
-			for _, ss := range ir.BlockStmts(n.Body) {
-				walkS(ss)
-			}
-
-		case *ir.WhileStmt:
-			walkE(n.Cond)
-			for _, ss := range ir.BlockStmts(n.Body) {
-				walkS(ss)
-			}
-
-		case *ir.FuncDeclStmt:
-			for _, ss := range ir.BlockStmts(n.Body) {
-				walkS(ss)
-			}
-
-		case *ir.TypeDeclStmt:
-			for _, ctor := range n.Ctors {
-				for _, ss := range ir.BlockStmts(ctor.Body) {
-					walkS(ss)
-				}
-			}
-
-			for _, m := range n.Methods {
-				walkS(m.Func)
-			}
-		}
-	}
-
-	for _, st := range file.Statements {
-		walkS(st)
-	}
+		return ir.WalkContinue
+	})
 
 	if best == nil {
 		return 0
