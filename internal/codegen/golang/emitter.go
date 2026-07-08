@@ -4150,7 +4150,9 @@ func (e *CodeEmitter) emitDevOnlyBoot(ctx *codegen.EmitContext, g *jen.Group) {
 
 func (e *CodeEmitter) emitWireServerBoot(ctx *codegen.EmitContext, g *jen.Group) {
 	g.Id("__mux").Op(":=").Qual("net/http", "NewServeMux").Call()
-	g.Id("__sovaApplyCustomWireHandlers").Call(jen.Id("__mux"))
+	if findTypeSymbolAcrossPkgs(ctx, nil, "std/http", "Request") != 0 && findTypeSymbolAcrossPkgs(ctx, nil, "std/http", "Response") != 0 {
+		g.Id("__sovaApplyCustomWireHandlers").Call(jen.Id("__mux"))
+	}
 	for _, fn := range e.wiredFuncs {
 		fnRef := fn
 		handlerName := symName(ctx, fnRef.Name.Sym) + "__wireHandler"

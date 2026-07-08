@@ -1683,9 +1683,9 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 	}
 
 	typedKind := stubTypedResponseKind(ctx, s)
-	fetchOpts := "credentials: 'include', headers: __headers"
+	redirectOpt := ""
 	if typedKind == "Redirect" {
-		fetchOpts += ", redirect: 'manual'"
+		redirectOpt = ", redirect: 'manual'"
 	}
 
 	if len(bodyBound) > 0 {
@@ -1695,10 +1695,12 @@ func (e *CodeEmitter) emitWiredStub(ctx *codegen.EmitContext, pkg *ir.PackageCon
 			sb.WriteString(fmt.Sprintf("  __body[%q] = %s;\n", b.bindKey, b.mangled))
 		}
 
-		sb.WriteString(fmt.Sprintf("  const __res = await fetch(__url, { method: %q, %s, body: JSON.stringify(__body) });\n", method, fetchOpts))
+		sb.WriteString(fmt.Sprintf("  const __opts = { method: %q, credentials: 'include', headers: __headers%s, body: JSON.stringify(__body) };\n", method, redirectOpt))
 	} else {
-		sb.WriteString(fmt.Sprintf("  const __res = await fetch(__url, { method: %q, %s });\n", method, fetchOpts))
+		sb.WriteString(fmt.Sprintf("  const __opts = { method: %q, credentials: 'include', headers: __headers%s };\n", method, redirectOpt))
 	}
+
+	sb.WriteString(fmt.Sprintf("  const __res = await __sovaWireCall({ fnName: %q, method: %q, url: __url, opts: __opts });\n", orig, method))
 
 	switch typedKind {
 	case "Redirect":
@@ -1843,7 +1845,8 @@ func (e *CodeEmitter) emitWiredVarStub(ctx *codegen.EmitContext, pkg *ir.Package
 	sb.WriteString(fmt.Sprintf("async function %s() {\n", funcName))
 	sb.WriteString("  const __base = (typeof process !== 'undefined' && process.env && process.env.WIRE_BACKEND) || window.WIRE_BACKEND || window.location.origin || '';\n")
 	sb.WriteString(fmt.Sprintf("  const __url = __base + `%s`;\n", rawPath))
-	sb.WriteString(fmt.Sprintf("  const __res = await fetch(__url, { method: %q, credentials: 'include' });\n", method))
+	sb.WriteString(fmt.Sprintf("  const __opts = { method: %q, credentials: 'include', headers: {} };\n", method))
+	sb.WriteString(fmt.Sprintf("  const __res = await __sovaWireCall({ fnName: %q, method: %q, url: __url, opts: __opts });\n", orig, method))
 	sb.WriteString("  if (!__res.ok) { return [null, __res.status === 401 ? 1 : __res.status === 403 ? 2 : __res.status === 404 ? 3 : 4]; }\n")
 	sb.WriteString("  const __data = await __res.json();\n")
 	sb.WriteString(fmt.Sprintf("  return [__sovaReify(__data.value, %s), __data.state];\n", varDesc))
