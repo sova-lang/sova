@@ -2,10 +2,7 @@
 
 ## Open
 
-### Generics — composite return types still erase to `[]any` / `map[any]any`
-For bare-`T` generic returns like `func identity<T>(x: T): T`, the call site now infers the concrete type and emits a `.(int64)`-style type assertion. But for composite returns like `func pair<T>(a: T, b: T): []T`, the Go fn still returns `[]any`. The call's Sova type is left as `[]any` for correctness — assigning to a typed slice or indexing into the result will go through `any`. To work around, write helper funcs that take the slice and return single elements (handled by the bare-`T` path).
-
-A general fix would convert the result with a per-element cast loop at the call site. Possible but not done — only matters when generics return container types.
+_None currently — all previously-known issues have been fixed._
 
 ## Fixed in this session
 | # | Bug | Commit |
@@ -23,5 +20,8 @@ A general fix would convert the result with a per-element cast loop at the call 
 | 11 | Cross-package import in JS test mode — `compute_reachability` didn't walk `AssertStmt`/`AsSessionStmt`, so referenced symbols got pruned by DCE | `fix(passes): walk AssertStmt and AsSessionStmt in compute_reachability` |
 | 12 | for-int statement `for let i = 0; i < N; i++` — lexer skipped `;`, so grammar's `';'` literals could never match. Switched separator to `,` and wired through resolve_names/infer_types/Go codegen | `fix(grammar): use ',' for for-int separators (lexer skips ';') + wire through passes` |
 | 13 | Generic function returning bare `T` — call site typed result as `any`, breaking comparison with concrete literals. Now infers T → concrete and emits `.(T)` type assertion | `fix(generics): infer T at call site + emit type assertion for bare T returns` |
+| 14 | `option<T>` → `any` widening didn't deref at codegen — extern bodies received `*any` instead of the underlying value, so `x.(string)` always failed | `fix(codegen/go): auto-deref option<T> when widening to any at call sites` |
+| 15 | Generic composite return types (`[]T`, `map<K,V>`, `option<T>`) — Sova call type was left as `[]any` etc.; assignment / indexing broke. Now substitutes composite return types AND emits a per-element cast loop at the call site | `fix(generics): substitute + cast composite return types ([]T, map<K,V>, option<T>)` |
+| 16 | `IndexAssignmentStmt` (`m[k] = v`) didn't clear the unused flag on `k`/`v` — generic function params referenced only via index-assign got emitted as `_` in Go, breaking the body | (same commit as 15) |
 
 For-int form: `for let i = 0, i < N, i++ { ... }` — commas, and `let` required.
