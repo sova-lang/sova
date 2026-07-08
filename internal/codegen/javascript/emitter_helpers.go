@@ -50,8 +50,18 @@ func (e *CodeEmitter) buildTypeDescriptorJSLiteral(ctx *codegen.EmitContext, typ
 	switch ty.Kind {
 	case ir.TK_PrimitiveAny, ir.TK_PrimitiveNone:
 		return `{kind:"any"}`
-	case ir.TK_PrimitiveInt, ir.TK_PrimitiveFloat, ir.TK_PrimitiveBool, ir.TK_PrimitiveString, ir.TK_PrimitiveChar, ir.TK_PrimitiveByte:
-		return `{kind:"primitive"}`
+	case ir.TK_PrimitiveInt:
+		return `{kind:"primitive",prim:"int"}`
+	case ir.TK_PrimitiveFloat:
+		return `{kind:"primitive",prim:"float"}`
+	case ir.TK_PrimitiveBool:
+		return `{kind:"primitive",prim:"bool"}`
+	case ir.TK_PrimitiveString:
+		return `{kind:"primitive",prim:"string"}`
+	case ir.TK_PrimitiveChar:
+		return `{kind:"primitive",prim:"char"}`
+	case ir.TK_PrimitiveByte:
+		return `{kind:"primitive",prim:"byte"}`
 	case ir.TK_Option:
 		return fmt.Sprintf(`{kind:"option",elem:%s}`, e.buildTypeDescriptorJSLiteral(ctx, ty.ElemType))
 	case ir.TK_Slice, ir.TK_Array:
@@ -77,7 +87,7 @@ func (e *CodeEmitter) buildTypeDescriptorJSLiteral(ctx *codegen.EmitContext, typ
 
 		return fmt.Sprintf(`{kind:"struct",name:%q}`, structName)
 	default:
-		return `{kind:"primitive"}`
+		return `{kind:"any"}`
 	}
 }
 
