@@ -1,0 +1,219 @@
+package std/rpc on frontend
+
+/// std/rpc exposes the frontend-side interception points of Sova's wire
+/// runtime as typed Sova functions, so applications can build auth,
+/// logging, retry, and analytics libraries without reaching for `extern`
+/// at every call site.
+///
+/// Two concerns live here:
+///
+/// 1. **Request lifecycle** — `onBeforeCall` / `onUnauthorized`. Runs
+///    around every wired-function invocation from the frontend. Typical
+///    use is to attach an `Authorization` header (before) and to refresh
+///    a stale JWT and retry (unauthorized). Handlers form a chain: each
+///    added handler runs in registration order, and either side of the
+///    chain can be cleaned up by calling the returned unregister closure.
+///
+/// 2. **Reactive-var updates** — `onServerVar`. Fires when the backend
+///    broadcasts a change to a `@reactive wire let X` binding. Multiple
+///    listeners per name are supported.
+///
+/// Server-initiated wire calls (`wire(transport: "ws") func`) are already
+/// wired by the compiler at build time — no user-facing hook needed.
+/// Write the wired function in Sova, the client-side handler goes with it.
+///
+/// The package is `on frontend` because these hooks only make sense in
+/// browser code. If you need to reference `WireContext` from a shared
+/// file, wrap the call in an `on frontend` file.
+///
+/// ```sova
+/// import "std/rpc"
+///
+/// func setupAuth() {
+///     rpc.onBeforeCall(func(ctx: rpc.WireContext) {
+///         let token = readTokenCookie()
+///         if token != "" {
+///             rpc.setHeader(ctx, "Authorization", "Bearer " + token)
+///         }
+///     })
+///
+///     rpc.onUnauthorized(func(ctx: rpc.WireContext): bool {
+///         let ok = doRefresh()
+///         if !ok {
+///             rpc.abort(ctx)   // no retry; wire call resolves as state=1
+///             return false
+///         }
+///         return true           // retry with (mutated) headers
+///     })
+/// }
+/// ```
+
+/// WireContext is an opaque handle to an in-flight wire request. The
+/// underlying value is the JS ctx object the runtime passes to hooks —
+/// don't touch `raw` directly, use the accessor functions in this
+/// package (`fnName`, `setHeader`, etc.).
+///
+/// A single ctx is shared across all handlers for a given request AND
+/// across the retry when `onUnauthorized` returns true — mutations
+/// persist. Calling `abort(ctx)` short-circuits the request: no fetch
+/// fires and the wire call resolves with `state=1` (same as a real 401).
+type WireContext {
+    raw: any = none
+}
+
+/// fnName returns the original Sova name of the wired function being
+/// called. Useful for per-endpoint routing decisions (skip auth on
+/// `/api/health`, tag analytics events, etc.).
+///
+/// @param ctx the in-flight request context
+/// @returns the wired function's original name
+func fnName(ctx: WireContext): string {
+    return __ctxFnName(ctx.raw)
+}
+
+/// method returns the HTTP verb (`GET`, `POST`, …) for this call.
+///
+/// @param ctx the in-flight request context
+/// @returns the HTTP method
+func method(ctx: WireContext): string {
+    return __ctxMethod(ctx.raw)
+}
+
+/// url returns the full request URL after path-argument interpolation.
+///
+/// @param ctx the in-flight request context
+/// @returns the request URL
+func url(ctx: WireContext): string {
+    return __ctxUrl(ctx.raw)
+}
+
+/// setHeader adds or replaces a request header on `ctx`. Applies to
+/// the initial call AND to any retry from `onUnauthorized`. Use
+/// canonical casing (`"Authorization"`, not `"authorization"`) — the
+/// browser normalises but Sova doesn't.
+///
+/// @param ctx the in-flight request context
+/// @param name header name (canonical case)
+/// @param value header value
+func setHeader(ctx: WireContext, name: string, value: string) {
+    __ctxSetHeader(ctx.raw, name, value)
+}
+
+/// getHeader returns the current value of a request header, or `""`
+/// when absent.
+///
+/// @param ctx the in-flight request context
+/// @param name header name (canonical case)
+/// @returns the header value, or "" when absent
+func getHeader(ctx: WireContext, name: string): string {
+    return __ctxGetHeader(ctx.raw, name)
+}
+
+/// removeHeader deletes a request header if present. No-op when absent.
+///
+/// @param ctx the in-flight request context
+/// @param name header name (canonical case)
+func removeHeader(ctx: WireContext, name: string) {
+    __ctxRemoveHeader(ctx.raw, name)
+}
+
+/// abort marks the request as short-circuited. When any `onBeforeCall`
+/// handler calls abort, the underlying fetch never fires and the wire
+/// call resolves with `state=1`. No-op inside `onUnauthorized` — retry
+/// / no-retry is signalled by the return value there.
+///
+/// @param ctx the in-flight request context
+func abort(ctx: WireContext) {
+    __ctxAbort(ctx.raw)
+}
+
+/// onBeforeCall registers a handler that runs before every wire request.
+/// Handlers execute in registration order; all receive the same
+/// `WireContext`. Any handler may call `rpc.abort(ctx)` to
+/// short-circuit the request (later handlers in the chain still see the
+/// context but their mutations no longer matter). Handler exceptions
+/// are swallowed — treat this as a fire-and-forget interceptor.
+///
+/// The returned closure removes the handler from the chain when called.
+/// Save it if you need dynamic teardown (e.g., logging that only runs
+/// during a specific screen); ignore it for permanent registrations.
+///
+/// @param handler runs before every request
+/// @returns a callable that unregisters the handler when invoked
+func onBeforeCall(handler: func(WireContext)): func() {
+    return __installBeforeCall(handler)
+}
+
+/// onUnauthorized registers a handler that runs when the server
+/// responded with 401. Handlers execute in registration order — the
+/// first handler to return `true` causes the wire call to retry once
+/// with the (possibly mutated) context. Return `false` to pass control
+/// to the next handler; if all return false the wire call resolves
+/// with `state=1`. Handler exceptions are treated as `false`.
+///
+/// Typical shape: refresh a token, mutate `rpc.setHeader(ctx,
+/// "Authorization", …)`, return true. See the package docstring for an
+/// example.
+///
+/// @param handler runs on 401; return true to retry
+/// @returns a callable that unregisters the handler when invoked
+func onUnauthorized(handler: func(WireContext): bool): func() {
+    return __installOnUnauthorized(handler)
+}
+
+/// onServerVar registers a callback for server-pushed updates to a
+/// reactive wired var (`@reactive wire let X = ...`). Fires every time
+/// the backend broadcasts a change to `name`.
+///
+/// Multiple listeners per name are supported and all fire in
+/// registration order. There is no unregister — reactive-var listeners
+/// live for the lifetime of the page (matches the common "keep the UI
+/// bound to the latest server value" use case).
+///
+/// @param name original name of the wired var
+/// @param callback invoked with the new value on each update
+func onServerVar(name: string, callback: func(any)) {
+    __installOnServerVar(name, callback)
+}
+
+extern {
+    func __installBeforeCall(handler: any): func() = {
+        frontend: "(fn) => globalThis.__sovaAddBeforeCall((raw) => fn({ raw: raw }))"
+    }
+
+    func __installOnUnauthorized(handler: any): func() = {
+        frontend: "(fn) => globalThis.__sovaAddOnUnauthorized((raw) => fn({ raw: raw }))"
+    }
+
+    func __installOnServerVar(name: string, callback: any): any = {
+        frontend: "(n, fn) => { if (typeof __sovaOnWireVar === 'function') __sovaOnWireVar(n, fn); }"
+    }
+
+    func __ctxFnName(raw: any): string = {
+        frontend: "(c) => (c && c.fnName) || ''"
+    }
+
+    func __ctxMethod(raw: any): string = {
+        frontend: "(c) => (c && c.method) || ''"
+    }
+
+    func __ctxUrl(raw: any): string = {
+        frontend: "(c) => (c && c.url) || ''"
+    }
+
+    func __ctxSetHeader(raw: any, name: string, value: string): any = {
+        frontend: "(c, n, v) => { if (c && c.opts && c.opts.headers) c.opts.headers[n] = v; }"
+    }
+
+    func __ctxGetHeader(raw: any, name: string): string = {
+        frontend: "(c, n) => (c && c.opts && c.opts.headers && c.opts.headers[n]) || ''"
+    }
+
+    func __ctxRemoveHeader(raw: any, name: string): any = {
+        frontend: "(c, n) => { if (c && c.opts && c.opts.headers) delete c.opts.headers[n]; }"
+    }
+
+    func __ctxAbort(raw: any): any = {
+        frontend: "(c) => { if (c) c.aborted = true; }"
+    }
+}
