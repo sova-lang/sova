@@ -64,14 +64,15 @@ type Stat {
 /// @returns aggregated Stat; `exists = false` on any failure
 func stat(p: string): Stat {
     let s = new Stat()
-    s.exists = __statExists(p)
-    if !s.exists {
+    let info = __statRaw(p)
+    if !__statInfoValid(info) {
         return s
     }
-    s.isDir = __statIsDir(p)
+    s.exists = true
+    s.isDir = __statInfoIsDir(info)
     s.isFile = !s.isDir
-    s.size = __statSize(p)
-    s.modTime = __statModTime(p)
+    s.size = __statInfoSize(info)
+    s.modTime = __statInfoModTime(info)
     return s
 }
 
@@ -103,30 +104,41 @@ extern {
         backend("os"): "func(p string) bool { info, err := os.Stat(p); if err != nil { return false }; return info.IsDir() }"
     }
 
-    /// __statExists is a stat-cached existence check used by the
-    /// higher-level `stat()` wrapper. Not intended for direct use;
-    /// call `exists(p)` from user code.
-    func __statExists(p: string): bool = {
-        backend("os"): "func(p string) bool { _, err := os.Stat(p); return err == nil }"
+    /// __statRaw calls `os.Stat(p)` once and hands back the raw
+    /// `os.FileInfo` as an opaque `any`. Returns a nil interface
+    /// on any error — missing path, permission denied, broken
+    /// symlink. Callers must gate reads via `__statInfoValid`
+    /// before pulling fields with the getters below. This lets
+    /// `stat()` do a single syscall and read every field from the
+    /// same cached FileInfo.
+    func __statRaw(p: string): any = {
+        backend("os"): "func(p string) any { info, err := os.Stat(p); if err != nil { return nil }; return info }"
     }
 
-    /// __statIsDir is the stat-cached directory check used by
-    /// `stat()`. Prefer `isDir(p)` in user code.
-    func __statIsDir(p: string): bool = {
-        backend("os"): "func(p string) bool { info, err := os.Stat(p); if err != nil { return false }; return info.IsDir() }"
+    /// __statInfoValid reports whether `info` is a live FileInfo
+    /// (i.e., the preceding `__statRaw` succeeded). Cheap — an
+    /// interface nil check, no syscall.
+    func __statInfoValid(info: any): bool = {
+        backend("os"): "func(info any) bool { fi, ok := info.(os.FileInfo); return ok && fi != nil }"
     }
 
-    /// __statSize returns the size of `p` in bytes. Directory sizes
-    /// are unspecified (Go returns the on-disk metadata size, which
-    /// is not the sum of contents). Returns 0 on any error.
-    func __statSize(p: string): int = {
-        backend("os"): "func(p string) int64 { info, err := os.Stat(p); if err != nil { return 0 }; return info.Size() }"
+    /// __statInfoIsDir reads `IsDir` from a `FileInfo` handle that
+    /// was captured by `__statRaw`. Cheap — no syscall, just an
+    /// interface assertion + struct field access.
+    func __statInfoIsDir(info: any): bool = {
+        backend("os"): "func(info any) bool { fi, ok := info.(os.FileInfo); if !ok || fi == nil { return false }; return fi.IsDir() }"
     }
 
-    /// __statModTime returns the last modification time of `p` in
-    /// Unix seconds since epoch. Returns 0 on any error.
-    func __statModTime(p: string): int = {
-        backend("os"): "func(p string) int64 { info, err := os.Stat(p); if err != nil { return 0 }; return info.ModTime().Unix() }"
+    /// __statInfoSize reads `Size` from a `FileInfo` handle that
+    /// was captured by `__statRaw`.
+    func __statInfoSize(info: any): int = {
+        backend("os"): "func(info any) int64 { fi, ok := info.(os.FileInfo); if !ok || fi == nil { return 0 }; return fi.Size() }"
+    }
+
+    /// __statInfoModTime reads the modification time (Unix seconds)
+    /// from a `FileInfo` handle that was captured by `__statRaw`.
+    func __statInfoModTime(info: any): int = {
+        backend("os"): "func(info any) int64 { fi, ok := info.(os.FileInfo); if !ok || fi == nil { return 0 }; return fi.ModTime().Unix() }"
     }
 
     /// size returns the byte size of `p`. Returns 0 for
