@@ -1,0 +1,348 @@
+package std/fs on backend
+
+/// std/fs is the backend-side filesystem API — reading files,
+/// writing files, walking directories. Backend-only because the
+/// browser doesn't have a filesystem in the same sense (there's
+/// only the sandboxed OPFS / File System Access APIs, which don't
+/// map to this surface). Anything the frontend needs from disk has
+/// to travel through a wired handler that reads on the backend and
+/// ships the bytes over.
+///
+/// Path arguments use forward-slash separators (see `std/path`).
+/// On Windows the underlying Go layer converts these to OS-native
+/// paths transparently — user code doesn't do the conversion.
+///
+/// Error handling follows the same "return-a-value, no exceptions"
+/// convention as the rest of the standard library:
+///
+/// - Reads that can fail return `option<string>` / empty `[]byte`.
+/// - Mutations return `bool` — true on success, false on any error.
+/// - Stat-style queries return zero values (0, false, "") when the
+///   file doesn't exist or is inaccessible.
+///
+/// For rich error information at boundary points, call `stat(p)`
+/// first and branch on `.exists` / `.isFile` / `.isDir`, or use
+/// `errno()` immediately after a failed operation to get the OS
+/// error string (best-effort — some paths lose it).
+///
+/// ```sova
+/// import "std/fs"
+/// import "std/path"
+///
+/// let dir = "logs/2026-06-21"
+/// if !fs.exists(dir) {
+///     fs.mkdirAll(dir)
+/// }
+///
+/// let target = path.join([dir, "app.log"])
+/// fs.appendString(target, "boot at t=" + now + "\n")
+///
+/// let all = fs.readString(target) ?? ""
+/// println("current log size: " + all.length)
+/// ```
+
+/// Stat is the aggregated result of a single filesystem query.
+/// Use this when you need more than one property of a path —
+/// calling `exists()` + `isDir()` + `size()` separately hits the
+/// underlying `os.Stat` three times, but `stat()` does it once.
+///
+/// A missing or inaccessible path returns a Stat with `exists =
+/// false` and every other field at its zero value.
+type Stat {
+    exists: bool = false
+    isDir: bool = false
+    isFile: bool = false
+    size: int = 0
+    modTime: int = 0
+}
+
+/// stat returns a Stat describing `p` in one filesystem call.
+/// Broken symlinks, permission errors, and non-existent paths all
+/// collapse to `exists = false`.
+///
+/// @param p path to inspect
+/// @returns aggregated Stat; `exists = false` on any failure
+func stat(p: string): Stat {
+    let s = new Stat()
+    s.exists = __statExists(p)
+    if !s.exists {
+        return s
+    }
+    s.isDir = __statIsDir(p)
+    s.isFile = !s.isDir
+    s.size = __statSize(p)
+    s.modTime = __statModTime(p)
+    return s
+}
+
+extern {
+    /// exists reports whether `p` refers to a real file or
+    /// directory. Returns false on any error (path missing,
+    /// permission denied, broken symlink).
+    ///
+    /// @param p path to test
+    /// @returns true when the path exists and is accessible
+    func exists(p: string): bool = {
+        backend("os"): "func(p string) bool { _, err := os.Stat(p); return err == nil }"
+    }
+
+    /// isFile reports whether `p` exists AND is a regular file
+    /// (not a directory, not a device node, etc.).
+    ///
+    /// @param p path to test
+    /// @returns true when `p` names a regular file
+    func isFile(p: string): bool = {
+        backend("os"): "func(p string) bool { info, err := os.Stat(p); if err != nil { return false }; return info.Mode().IsRegular() }"
+    }
+
+    /// isDir reports whether `p` exists AND is a directory.
+    ///
+    /// @param p path to test
+    /// @returns true when `p` names a directory
+    func isDir(p: string): bool = {
+        backend("os"): "func(p string) bool { info, err := os.Stat(p); if err != nil { return false }; return info.IsDir() }"
+    }
+
+    /// __statExists is a stat-cached existence check used by the
+    /// higher-level `stat()` wrapper. Not intended for direct use;
+    /// call `exists(p)` from user code.
+    func __statExists(p: string): bool = {
+        backend("os"): "func(p string) bool { _, err := os.Stat(p); return err == nil }"
+    }
+
+    /// __statIsDir is the stat-cached directory check used by
+    /// `stat()`. Prefer `isDir(p)` in user code.
+    func __statIsDir(p: string): bool = {
+        backend("os"): "func(p string) bool { info, err := os.Stat(p); if err != nil { return false }; return info.IsDir() }"
+    }
+
+    /// __statSize returns the size of `p` in bytes. Directory sizes
+    /// are unspecified (Go returns the on-disk metadata size, which
+    /// is not the sum of contents). Returns 0 on any error.
+    func __statSize(p: string): int = {
+        backend("os"): "func(p string) int64 { info, err := os.Stat(p); if err != nil { return 0 }; return info.Size() }"
+    }
+
+    /// __statModTime returns the last modification time of `p` in
+    /// Unix seconds since epoch. Returns 0 on any error.
+    func __statModTime(p: string): int = {
+        backend("os"): "func(p string) int64 { info, err := os.Stat(p); if err != nil { return 0 }; return info.ModTime().Unix() }"
+    }
+
+    /// size returns the byte size of `p`. Returns 0 for
+    /// directories, missing paths, and errors. Callers that need
+    /// to distinguish "empty file" from "no file" should stat
+    /// first with `exists`.
+    ///
+    /// @param p file path
+    /// @returns size in bytes; 0 on any failure
+    func size(p: string): int = {
+        backend("os"): "func(p string) int64 { info, err := os.Stat(p); if err != nil { return 0 }; return info.Size() }"
+    }
+
+    /// modTime returns the last-modification time of `p` in Unix
+    /// seconds since epoch. Returns 0 when the path is missing.
+    ///
+    /// @param p file path
+    /// @returns Unix seconds; 0 on any failure
+    func modTime(p: string): int = {
+        backend("os"): "func(p string) int64 { info, err := os.Stat(p); if err != nil { return 0 }; return info.ModTime().Unix() }"
+    }
+
+    /// readString reads the entire contents of `p` as UTF-8 text.
+    /// Returns `none` on any error — file missing, permission
+    /// denied, disk read failure, non-UTF8 sequences are passed
+    /// through as-is (Go's `os.ReadFile` doesn't validate).
+    ///
+    /// @param p file path
+    /// @returns file contents, or `none` on failure
+    func readString(p: string): option<string> = {
+        backend("os"): "func(p string) *string { b, err := os.ReadFile(p); if err != nil { return nil }; s := string(b); return &s }"
+    }
+
+    /// readBytes reads the entire contents of `p` as raw bytes.
+    /// Returns an empty slice on any error — callers can
+    /// distinguish "empty file" from "read failure" by calling
+    /// `exists(p)` first.
+    ///
+    /// @param p file path
+    /// @returns file contents, or `[]` on failure
+    func readBytes(p: string): []byte = {
+        backend("os"): "func(p string) []byte { b, err := os.ReadFile(p); if err != nil { return []byte{} }; return b }"
+    }
+
+    /// writeString creates or truncates `p` and writes `contents`
+    /// as UTF-8 text. Any parent directories must already exist —
+    /// call `mkdirAll(path.dirname(p))` if you're not sure.
+    /// Returns true on success, false on any error.
+    ///
+    /// @param p target file path
+    /// @param contents text to write
+    /// @returns true when the write succeeded
+    func writeString(p: string, contents: string): bool = {
+        backend("os"): "func(p, c string) bool { return os.WriteFile(p, []byte(c), 0o644) == nil }"
+    }
+
+    /// writeBytes creates or truncates `p` and writes `contents`
+    /// as raw bytes. Same parent-directory requirement as
+    /// `writeString`.
+    ///
+    /// @param p target file path
+    /// @param contents bytes to write
+    /// @returns true when the write succeeded
+    func writeBytes(p: string, contents: []byte): bool = {
+        backend("os"): "func(p string, c []byte) bool { return os.WriteFile(p, c, 0o644) == nil }"
+    }
+
+    /// appendString opens `p` for append (creating it if missing)
+    /// and writes `contents` as UTF-8 text. Common shape for log
+    /// files that grow over time.
+    ///
+    /// @param p target file path
+    /// @param contents text to append
+    /// @returns true when the write succeeded
+    func appendString(p: string, contents: string): bool = {
+        backend("os"): "func(p, c string) bool { f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); if err != nil { return false }; defer f.Close(); _, err = f.WriteString(c); return err == nil }"
+    }
+
+    /// appendBytes opens `p` for append (creating it if missing)
+    /// and writes `contents` as raw bytes.
+    ///
+    /// @param p target file path
+    /// @param contents bytes to append
+    /// @returns true when the write succeeded
+    func appendBytes(p: string, contents: []byte): bool = {
+        backend("os"): "func(p string, c []byte) bool { f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); if err != nil { return false }; defer f.Close(); _, err = f.Write(c); return err == nil }"
+    }
+
+    /// remove deletes a single file or an empty directory. To
+    /// delete a non-empty directory tree, use `removeAll`.
+    ///
+    /// @param p path to remove
+    /// @returns true when the deletion succeeded
+    func remove(p: string): bool = {
+        backend("os"): "func(p string) bool { return os.Remove(p) == nil }"
+    }
+
+    /// removeAll deletes `p` and, if it's a directory, everything
+    /// beneath it. Returns true when the tree is gone (including
+    /// the case where it was already missing). Use with care.
+    ///
+    /// @param p path to remove recursively
+    /// @returns true on success
+    func removeAll(p: string): bool = {
+        backend("os"): "func(p string) bool { return os.RemoveAll(p) == nil }"
+    }
+
+    /// rename moves `oldPath` to `newPath`, replacing the target
+    /// if it exists. Atomic within a single filesystem. Fails
+    /// across filesystem boundaries (use `copy` + `remove` for
+    /// cross-device moves).
+    ///
+    /// @param oldPath source path
+    /// @param newPath destination path
+    /// @returns true when the rename succeeded
+    func rename(oldPath: string, newPath: string): bool = {
+        backend("os"): "func(a, b string) bool { return os.Rename(a, b) == nil }"
+    }
+
+    /// __copyImpl copies `src` to `dst` byte-for-byte. `dst` is
+    /// created or truncated. Symlinks in `src` are followed. This
+    /// is the extern-side implementation of the user-facing
+    /// `copy()`.
+    func __copyImpl(src: string, dst: string): bool = {
+        backend: "func(src, dst string) bool { b, err := os.ReadFile(src); if err != nil { return false }; return os.WriteFile(dst, b, 0o644) == nil }"
+    }
+
+    /// mkdir creates a single directory named `p`. Fails if the
+    /// parent directory doesn't already exist. Use `mkdirAll` to
+    /// create nested paths in one call.
+    ///
+    /// @param p directory path
+    /// @returns true when the directory was created (or already existed)
+    func mkdir(p: string): bool = {
+        backend("os"): "func(p string) bool { if err := os.Mkdir(p, 0o755); err == nil { return true }; info, err := os.Stat(p); return err == nil && info.IsDir() }"
+    }
+
+    /// mkdirAll creates `p` and every missing ancestor directory
+    /// along the way, using default permissions. Idempotent — no
+    /// error when the directory already exists.
+    ///
+    /// @param p directory path to create recursively
+    /// @returns true on success
+    func mkdirAll(p: string): bool = {
+        backend("os"): "func(p string) bool { return os.MkdirAll(p, 0o755) == nil }"
+    }
+
+    /// list returns the direct children of directory `p` as
+    /// basenames (no leading path). Order is filesystem-defined
+    /// (typically insertion order on Linux, alphabetical on macOS).
+    /// Empty slice on error — call `isDir(p)` first if you need to
+    /// distinguish "empty directory" from "not a directory".
+    ///
+    /// @param p directory path
+    /// @returns entry basenames, or empty on failure
+    func list(p: string): []string = {
+        backend("os"): "func(p string) []string { entries, err := os.ReadDir(p); if err != nil { return []string{} }; out := make([]string, 0, len(entries)); for _, e := range entries { out = append(out, e.Name()) }; return out }"
+    }
+
+    /// walk returns every regular file beneath directory `p` as a
+    /// full path (prefixed by `p`), recursively. Directories
+    /// themselves are not included in the output — filter by
+    /// `isDir()` after the fact if you want them.
+    ///
+    /// Order is depth-first, entries sorted per directory. Symlinks
+    /// are NOT followed (avoids cycles on graphs like `/proc` or
+    /// user-created loops).
+    ///
+    /// @param p root directory
+    /// @returns full paths of every file underneath, or empty on failure
+    func walk(p: string): []string = {
+        backend("path/filepath"): "func(root string) []string { out := []string{}; filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error { if err != nil { return nil }; if !d.IsDir() { out = append(out, p) }; return nil }); return out }"
+    }
+
+    /// cwd returns the current working directory the process is
+    /// running in. Empty string on any failure.
+    ///
+    /// @returns the process working directory
+    func cwd(): string = {
+        backend("os"): "func() string { d, err := os.Getwd(); if err != nil { return \"\" }; return d }"
+    }
+
+    /// tempDir returns the OS-standard temporary-file directory
+    /// (`/tmp`, `%TEMP%`, `$TMPDIR`, etc). Guaranteed writable by
+    /// the current user.
+    ///
+    /// @returns the OS temp directory
+    func tempDir(): string = {
+        backend("os"): "os.TempDir"
+    }
+
+    /// tempFile creates a fresh empty file inside the OS temp
+    /// directory whose name starts with `prefix` and ends with
+    /// `suffix`, and returns its full path. The file is created
+    /// with 0o600 permissions and left in place — callers are
+    /// responsible for `remove(p)` when done.
+    ///
+    /// @param prefix desired name prefix
+    /// @param suffix desired name suffix (typically an extension)
+    /// @returns the created file path, or `""` on failure
+    func tempFile(prefix: string, suffix: string): string = {
+        backend("os"): "func(prefix, suffix string) string { f, err := os.CreateTemp(\"\", prefix+\"*\"+suffix); if err != nil { return \"\" }; name := f.Name(); f.Close(); return name }"
+    }
+}
+
+/// copy duplicates `src` to `dst` byte-for-byte, creating or
+/// truncating `dst`. Symlinks in `src` are followed. Returns true
+/// on success.
+///
+/// Not atomic — a partial write leaves a truncated `dst` behind.
+/// For safe replacement, write to a sibling temp file first and
+/// `rename` on success.
+///
+/// @param src source file path
+/// @param dst destination file path
+/// @returns true when the copy succeeded
+func copy(src: string, dst: string): bool {
+    return __copyImpl(src, dst)
+}

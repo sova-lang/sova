@@ -1,0 +1,126 @@
+package std/path on shared
+
+/// std/path is pure path-string manipulation - no I/O, no filesystem
+/// contact. Splits, joins, and normalises path strings for both
+/// sides. Uses forward-slash separators everywhere (POSIX-style)
+/// so shared code produces the same paths regardless of host OS.
+///
+/// This is intentionally separate from `std/fs` (backend-only file
+/// system operations). Path manipulation runs on the frontend too:
+/// route paths, cache keys, URL segments. Anything that touches a
+/// real file lives in `std/fs`.
+///
+/// Backend maps to Go's `path` package (not `path/filepath`, which
+/// is OS-aware). Frontend uses inline string operations. Both sides
+/// operate on `/` as the separator; convert to OS-native separators
+/// only when calling out to native APIs.
+///
+/// ```sova
+/// import "std/path"
+///
+/// let full = path.join("data", "users", "42.json")   // "data/users/42.json"
+/// let dir = path.dirname(full)                       // "data/users"
+/// let name = path.basename(full)                     // "42.json"
+/// let stem = path.stem(full)                         // "42"
+/// let ext = path.ext(full)                           // ".json"
+/// ```
+
+extern {
+    /// join concatenates path segments with `/` as the separator,
+    /// collapsing consecutive slashes and normalising `.` / `..`
+    /// components. Empty segments are dropped. Returns "" when no
+    /// non-empty segments remain.
+    ///
+    /// @param parts the segments to combine
+    /// @returns the joined path
+    func join(parts: []string): string = {
+        frontend: "(parts) => { const s = (parts || []).filter(p => p != null && p !== '').join('/'); if (s === '') return '.'; const abs = s.startsWith('/'); const segs = s.split('/').filter(x => x !== '' && x !== '.'); const out = []; for (const seg of segs) { if (seg === '..') { if (out.length > 0 && out[out.length - 1] !== '..') out.pop(); else if (!abs) out.push('..'); } else out.push(seg); } let res = out.join('/'); if (abs) res = '/' + res; if (res === '') res = abs ? '/' : '.'; return res; }",
+        backend("path"): "func(parts []string) string { return path.Join(parts...) }"
+    }
+
+    /// clean normalises `p` by collapsing repeated separators,
+    /// resolving `.` / `..` components, and removing trailing
+    /// slashes. Returns "." for an empty input.
+    ///
+    /// @param p the path to normalise
+    /// @returns the cleaned path
+    func clean(p: string): string = {
+        frontend: "(p) => { if (p == null || p === '') return '.'; const s = String(p); const abs = s.startsWith('/'); const segs = s.split('/').filter(x => x !== '' && x !== '.'); const out = []; for (const seg of segs) { if (seg === '..') { if (out.length > 0 && out[out.length - 1] !== '..') out.pop(); else if (!abs) out.push('..'); } else out.push(seg); } let res = out.join('/'); if (abs) res = '/' + res; if (res === '') res = abs ? '/' : '.'; return res; }",
+        backend("path"): "path.Clean"
+    }
+
+    /// dirname returns everything before the last `/` in `p`, with
+    /// trailing slashes stripped. For a path containing no slashes
+    /// the result is ".". For "/" alone the result is "/".
+    ///
+    /// @param p the path to inspect
+    /// @returns the parent directory portion
+    func dirname(p: string): string = {
+        frontend: "(p) => { const i = String(p).lastIndexOf('/'); if (i < 0) return '.'; if (i === 0) return '/'; return p.slice(0, i); }",
+        backend("path"): "path.Dir"
+    }
+
+    /// basename returns the last `/`-separated component of `p`. If
+    /// `p` ends in a trailing slash, that slash is trimmed first.
+    /// The result is "." for an empty input and "/" for "/" alone.
+    ///
+    /// @param p the path to inspect
+    /// @returns the last component
+    func basename(p: string): string = {
+        frontend: "(p) => { let s = String(p); if (s === '') return '.'; if (s === '/') return '/'; while (s.length > 1 && s.endsWith('/')) s = s.slice(0, -1); const i = s.lastIndexOf('/'); return i < 0 ? s : s.slice(i + 1); }",
+        backend("path"): "path.Base"
+    }
+
+    /// ext returns the file extension of the last path component,
+    /// including the leading dot (".json"). Returns "" when the
+    /// last component has no dot or the dot is the first character
+    /// (".gitignore" → "").
+    ///
+    /// @param p the path to inspect
+    /// @returns the extension, including the leading dot
+    func ext(p: string): string = {
+        frontend: "(p) => { const s = String(p); const base = s.slice(s.lastIndexOf('/') + 1); const i = base.lastIndexOf('.'); return i <= 0 ? '' : base.slice(i); }",
+        backend("path"): "func(p string) string { b := path.Base(p); i := len(b) - 1; for i >= 0 && b[i] != '.' { i-- }; if i <= 0 { return \"\" }; return b[i:] }"
+    }
+
+    /// isAbsolute reports whether `p` begins with `/`. On the backend
+    /// this is delegated to `path.IsAbs` which uses the same POSIX
+    /// convention (drive letters on Windows are not treated as
+    /// absolute here — use `std/fs` primitives for OS-native paths).
+    ///
+    /// @param p the path to inspect
+    /// @returns true when `p` starts with `/`
+    func isAbsolute(p: string): bool = {
+        frontend: "(p) => String(p).startsWith('/')",
+        backend("path"): "path.IsAbs"
+    }
+}
+
+extern {
+    /// stem returns the last path component of `p` with its extension
+    /// removed. Complement to `ext`. For "foo.tar.gz" the stem is
+    /// "foo.tar" (the last dot wins). For a component with no dot,
+    /// the whole basename is returned.
+    ///
+    /// @param p the path to inspect
+    /// @returns the last component's stem
+    func stem(p: string): string = {
+        frontend: "(p) => { const s = String(p); const base = s.slice(s.lastIndexOf('/') + 1); const i = base.lastIndexOf('.'); return i <= 0 ? base : base.slice(0, i); }",
+        backend("path"): "func(p string) string { b := path.Base(p); e := path.Ext(b); if e == \"\" { return b }; return b[:len(b)-len(e)] }"
+    }
+
+    /// withExt returns `p` with its extension replaced by `newExt`.
+    /// `newExt` may be given with or without the leading dot; a
+    /// leading dot is always emitted. If `p` has no existing
+    /// extension, `newExt` is simply appended. Passing `""` strips
+    /// the extension.
+    ///
+    /// @param p the input path
+    /// @param newExt the desired extension (with or without leading `.`)
+    /// @returns the path with the new extension
+    func withExt(p: string, newExt: string): string = {
+        frontend: "(p, newExt) => { const s = String(p); const lastSlash = s.lastIndexOf('/'); const base = s.slice(lastSlash + 1); const dot = base.lastIndexOf('.'); const stemFull = dot <= 0 ? s : s.slice(0, lastSlash + 1 + dot); if (!newExt) return stemFull; return newExt[0] === '.' ? stemFull + newExt : stemFull + '.' + newExt; }",
+        backend("path"): "func(p, newExt string) string { e := path.Ext(p); stemFull := p; if e != \"\" { stemFull = p[:len(p)-len(e)] }; if newExt == \"\" { return stemFull }; if newExt[0] == '.' { return stemFull + newExt }; return stemFull + \".\" + newExt }"
+    }
+
+}

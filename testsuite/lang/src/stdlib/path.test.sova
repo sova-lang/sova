@@ -1,0 +1,72 @@
+package langsuite/stdlib on test
+
+import "std/path"
+
+test "path join simple" {
+    assert path.join(["data", "users", "42.json"]) == "data/users/42.json"
+}
+
+test "path join collapses slashes" {
+    assert path.join(["/a/", "/b/", "c"]) == "/a/b/c"
+}
+
+test "path join drops empty segments" {
+    assert path.join(["a", "", "b"]) == "a/b"
+}
+
+test "path dirname" {
+    assert path.dirname("data/users/42.json") == "data/users"
+}
+
+test "path dirname no slash" {
+    assert path.dirname("hello") == "."
+}
+
+test "path basename" {
+    assert path.basename("data/users/42.json") == "42.json"
+}
+
+test "path ext" {
+    assert path.ext("data/42.json") == ".json"
+}
+
+test "path ext none" {
+    assert path.ext("data/hello") == ""
+}
+
+test "path ext hidden file" {
+    assert path.ext(".gitignore") == ""
+}
+
+test "path stem" {
+    assert path.stem("data/42.json") == "42"
+}
+
+test "path stem no ext" {
+    assert path.stem("data/hello") == "hello"
+}
+
+test "path withExt replace" {
+    assert path.withExt("data/42.json", ".yaml") == "data/42.yaml"
+}
+
+test "path withExt no leading dot" {
+    assert path.withExt("data/42.json", "yaml") == "data/42.yaml"
+}
+
+test "path withExt on extensionless" {
+    assert path.withExt("data/hello", ".txt") == "data/hello.txt"
+}
+
+test "path withExt strip" {
+    assert path.withExt("data/42.json", "") == "data/42"
+}
+
+test "path isAbsolute" {
+    assert path.isAbsolute("/etc/hosts") == true
+    assert path.isAbsolute("etc/hosts") == false
+}
+
+test "path clean" {
+    assert path.clean("a/./b/../c") == "a/c"
+}

@@ -1,0 +1,171 @@
+package langbackend/stdlib on test
+
+import "std/fs"
+import "std/path"
+
+func scratchPath(name: string): string {
+    return path.join([fs.tempDir(), "sova-suite-" + name])
+}
+
+test "write and read back string" {
+    let p = scratchPath("basic-str")
+    fs.remove(p)
+    assert fs.writeString(p, "hello sova")
+    assert fs.exists(p)
+    let got = fs.readString(p) ?? "MISSING"
+    assert got == "hello sova"
+    fs.remove(p)
+}
+
+test "read missing file returns none" {
+    let p = scratchPath("missing")
+    fs.remove(p)
+    let got = fs.readString(p)
+    assert got == none
+}
+
+test "read bytes then write bytes roundtrip" {
+    let p = scratchPath("bytes")
+    fs.remove(p)
+    fs.writeString(p, "ABC")
+    let b = fs.readBytes(p)
+    assert len(b) == 3
+    let p2 = scratchPath("bytes-copy")
+    fs.remove(p2)
+    assert fs.writeBytes(p2, b)
+    let s = fs.readString(p2) ?? ""
+    assert s == "ABC"
+    fs.remove(p)
+    fs.remove(p2)
+}
+
+test "append accumulates" {
+    let p = scratchPath("append")
+    fs.remove(p)
+    fs.appendString(p, "line1\n")
+    fs.appendString(p, "line2\n")
+    let s = fs.readString(p) ?? ""
+    assert s == "line1\nline2\n"
+    fs.remove(p)
+}
+
+test "exists / isFile / isDir" {
+    let p = scratchPath("exists-check")
+    fs.remove(p)
+    assert !fs.exists(p)
+    fs.writeString(p, "x")
+    assert fs.exists(p)
+    assert fs.isFile(p)
+    assert !fs.isDir(p)
+    fs.remove(p)
+    assert !fs.exists(p)
+}
+
+test "stat returns aggregate" {
+    let p = scratchPath("stat")
+    fs.remove(p)
+    fs.writeString(p, "hello")
+    let s = fs.stat(p)
+    assert s.exists
+    assert s.isFile
+    assert !s.isDir
+    assert s.size == 5
+    fs.remove(p)
+}
+
+test "stat of missing" {
+    let p = scratchPath("stat-missing")
+    fs.remove(p)
+    let s = fs.stat(p)
+    assert !s.exists
+    assert !s.isFile
+    assert !s.isDir
+    assert s.size == 0
+}
+
+test "rename moves file" {
+    let a = scratchPath("rename-a")
+    let b = scratchPath("rename-b")
+    fs.remove(a)
+    fs.remove(b)
+    fs.writeString(a, "moving")
+    assert fs.rename(a, b)
+    assert !fs.exists(a)
+    assert fs.exists(b)
+    let got = fs.readString(b) ?? ""
+    assert got == "moving"
+    fs.remove(b)
+}
+
+test "mkdirAll creates nested" {
+    let root = scratchPath("mkdirroot")
+    fs.removeAll(root)
+    let nested = path.join([root, "a", "b", "c"])
+    assert fs.mkdirAll(nested)
+    assert fs.isDir(nested)
+    fs.removeAll(root)
+}
+
+test "list direct children" {
+    let root = scratchPath("listroot")
+    fs.removeAll(root)
+    fs.mkdirAll(root)
+    fs.writeString(path.join([root, "a.txt"]), "1")
+    fs.writeString(path.join([root, "b.txt"]), "2")
+    fs.mkdir(path.join([root, "sub"]))
+    let names = fs.list(root)
+    assert len(names) == 3
+    fs.removeAll(root)
+}
+
+test "walk finds files recursively" {
+    let root = scratchPath("walkroot")
+    fs.removeAll(root)
+    fs.mkdirAll(path.join([root, "sub"]))
+    fs.writeString(path.join([root, "top.txt"]), "x")
+    fs.writeString(path.join([root, "sub", "deep.txt"]), "y")
+    let files = fs.walk(root)
+    assert len(files) == 2
+    fs.removeAll(root)
+}
+
+test "removeAll cleans tree" {
+    let root = scratchPath("rmall")
+    fs.removeAll(root)
+    fs.mkdirAll(path.join([root, "a", "b"]))
+    fs.writeString(path.join([root, "top.txt"]), "x")
+    assert fs.exists(root)
+    assert fs.removeAll(root)
+    assert !fs.exists(root)
+}
+
+test "copy duplicates content" {
+    let src = scratchPath("copysrc")
+    let dst = scratchPath("copydst")
+    fs.remove(src)
+    fs.remove(dst)
+    fs.writeString(src, "original")
+    assert fs.copy(src, dst)
+    let got = fs.readString(dst) ?? ""
+    assert got == "original"
+    fs.remove(src)
+    fs.remove(dst)
+}
+
+test "size of file" {
+    let p = scratchPath("size")
+    fs.remove(p)
+    fs.writeString(p, "1234567890")
+    assert fs.size(p) == 10
+    fs.remove(p)
+}
+
+test "cwd is non-empty" {
+    let d = fs.cwd()
+    assert d != ""
+}
+
+test "tempDir is non-empty" {
+    let d = fs.tempDir()
+    assert d != ""
+}
