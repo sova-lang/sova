@@ -3991,7 +3991,7 @@ func (p *PassInferTypes) synthesizeFuncCallExprType(pc *PassContext, x *ir.FuncC
 	}
 
 	returnType := funcTyDef.Func.ReturnType
-	if retTy, ok := tt.GetByID(returnType); ok && retTy.Kind == ir.TK_TypeParam {
+	if typeContainsTypeParam(tt, returnType) {
 		if sub := inferTypeParamSubstitution(tt, funcTyDef.Func.Params, argTypes); sub != nil {
 			returnType = substituteType(tt, returnType, sub)
 		}
@@ -3999,6 +3999,43 @@ func (p *PassInferTypes) synthesizeFuncCallExprType(pc *PassContext, x *ir.FuncC
 
 	x.SetType(returnType)
 	return returnType
+}
+
+func typeContainsTypeParam(tt *ir.TypeTable, typID ir.TypID) bool {
+	ty, ok := tt.GetByID(typID)
+	if !ok {
+		return false
+	}
+
+	switch ty.Kind {
+	case ir.TK_TypeParam:
+		return true
+	case ir.TK_Slice, ir.TK_Array, ir.TK_Option, ir.TK_Chan:
+		return typeContainsTypeParam(tt, ty.ElemType)
+	case ir.TK_Map:
+		return typeContainsTypeParam(tt, ty.KeyType) || typeContainsTypeParam(tt, ty.ValueType)
+	case ir.TK_Tuple:
+		for _, fld := range ty.Fields {
+			if typeContainsTypeParam(tt, fld.Type) {
+				return true
+			}
+		}
+
+	case ir.TK_Function:
+		for _, p := range ty.Func.Params {
+			if p == nil || p.Type == nil {
+				continue
+			}
+
+			if typeContainsTypeParam(tt, p.Type.Typ) {
+				return true
+			}
+		}
+
+		return typeContainsTypeParam(tt, ty.Func.ReturnType)
+	}
+
+	return false
 }
 
 func inferTypeParamSubstitution(tt *ir.TypeTable, params []*ir.FuncParam, argTypes []ir.TypID) map[string]ir.TypID {

@@ -41,3 +41,59 @@ test "generic three args same type" {
     let r = max3(10, 20, 30)
     assert r == 10
 }
+
+func pair<T>(a: T, b: T): []T {
+    return [a, b]
+}
+
+test "generic pair of ints" {
+    let p = pair(10, 20)
+    assert p[0] == 10
+    assert p[1] == 20
+    assert len(p) == 2
+}
+
+test "generic pair of strings" {
+    let p = pair("alice", "bob")
+    assert p[0] == "alice"
+    assert p[1] == "bob"
+}
+
+func first<T>(xs: []T): T {
+    return xs[0]
+}
+
+test "generic first int slice" {
+    let xs = [10, 20, 30]
+    assert first(xs) == 10
+}
+
+func triple<T>(a: T, b: T, c: T): []T {
+    return [a, b, c]
+}
+
+test "generic triple ints sum" {
+    let t = triple(1, 2, 3)
+    let sum = 0
+    for x in t {
+        sum = sum + x
+    }
+    assert sum == 6
+}
+
+func singleton<K, V>(k: K, v: V): map<K, V> {
+    let m: map<K, V> = {}
+    m[k] = v
+    return m
+}
+
+test "generic map singleton string int" {
+    let m = singleton("key", 42)
+    assert m["key"] == 42
+    assert len(m) == 1
+}
+
+test "generic map singleton string string" {
+    let m = singleton("k", "v")
+    assert m["k"] == "v"
+}

@@ -1398,29 +1398,116 @@ func (e *CodeEmitter) buildFuncCallExpr(ctx *codegen.EmitContext, pkg *ir.Packag
 	}
 
 	call := callee.Call(args...)
-	if needsGenericReturnAssertion(ctx, funcTypeDef, x.GetType()) {
-		return call.Assert(typeToGoWithContext(ctx, pkg, ctx.Types, x.GetType()))
+	if funcTypeDef != nil && typeContainsTypeParam(ctx.Types, funcTypeDef.Func.ReturnType) {
+		if conv := convertErasedGenericReturn(ctx, pkg, funcTypeDef.Func.ReturnType, x.GetType(), call); conv != nil {
+			return conv
+		}
 	}
 
 	return call
 }
 
-func needsGenericReturnAssertion(ctx *codegen.EmitContext, funcTypeDef *ir.Type, callTy ir.TypID) bool {
-	if funcTypeDef == nil || callTy == 0 {
-		return false
+func convertErasedGenericReturn(ctx *codegen.EmitContext, pkg *ir.PackageContext, erased, concrete ir.TypID, expr *jen.Statement) *jen.Statement {
+	if erased == 0 || concrete == 0 || erased == concrete {
+		return nil
 	}
 
-	retTy, ok := ctx.Types.GetByID(funcTypeDef.Func.ReturnType)
-	if !ok || retTy.Kind != ir.TK_TypeParam {
-		return false
-	}
-
-	callTyDef, ok := ctx.Types.GetByID(callTy)
+	erasedTy, ok := ctx.Types.GetByID(erased)
 	if !ok {
-		return false
+		return nil
 	}
 
-	return callTyDef.Kind != ir.TK_TypeParam && callTyDef.Kind != ir.TK_PrimitiveAny
+	concreteTy, ok := ctx.Types.GetByID(concrete)
+	if !ok {
+		return nil
+	}
+
+	switch erasedTy.Kind {
+	case ir.TK_TypeParam:
+		if concreteTy.Kind == ir.TK_TypeParam || concreteTy.Kind == ir.TK_PrimitiveAny {
+			return nil
+		}
+
+		return expr.Assert(typeToGoWithContext(ctx, pkg, ctx.Types, concrete))
+	case ir.TK_Slice:
+		if concreteTy.Kind != ir.TK_Slice {
+			return nil
+		}
+
+		return buildSliceElementCast(ctx, pkg, erasedTy.ElemType, concreteTy.ElemType, expr)
+	case ir.TK_Array:
+		if concreteTy.Kind != ir.TK_Array {
+			return nil
+		}
+
+		return buildSliceElementCast(ctx, pkg, erasedTy.ElemType, concreteTy.ElemType, expr)
+	case ir.TK_Map:
+		if concreteTy.Kind != ir.TK_Map {
+			return nil
+		}
+
+		return buildMapElementCast(ctx, pkg, erasedTy.KeyType, erasedTy.ValueType, concreteTy.KeyType, concreteTy.ValueType, expr)
+	case ir.TK_Option:
+		if concreteTy.Kind != ir.TK_Option {
+			return nil
+		}
+
+		return buildOptionElementCast(ctx, pkg, erasedTy.ElemType, concreteTy.ElemType, expr)
+	}
+
+	return nil
+}
+
+func buildSliceElementCast(ctx *codegen.EmitContext, pkg *ir.PackageContext, erasedElem, concreteElem ir.TypID, expr *jen.Statement) *jen.Statement {
+	dstElemGo := typeToGoWithContext(ctx, pkg, ctx.Types, concreteElem)
+	return jen.Func().Params().Index().Add(dstElemGo).Block(
+		jen.Id("__raw").Op(":=").Add(expr),
+		jen.Id("__out").Op(":=").Make(jen.Index().Add(dstElemGo), jen.Len(jen.Id("__raw"))),
+		jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Id("__raw")).Block(
+			jen.Id("__out").Index(jen.Id("__i")).Op("=").Add(castErasedElement(ctx, pkg, erasedElem, concreteElem, jen.Id("__v"))),
+		),
+		jen.Return(jen.Id("__out")),
+	).Call()
+}
+
+func buildMapElementCast(ctx *codegen.EmitContext, pkg *ir.PackageContext, erasedK, erasedV, concreteK, concreteV ir.TypID, expr *jen.Statement) *jen.Statement {
+	dstKGo := typeToGoWithContext(ctx, pkg, ctx.Types, concreteK)
+	dstVGo := typeToGoWithContext(ctx, pkg, ctx.Types, concreteV)
+	return jen.Func().Params().Map(dstKGo).Add(dstVGo).Block(
+		jen.Id("__raw").Op(":=").Add(expr),
+		jen.Id("__out").Op(":=").Make(jen.Map(dstKGo).Add(dstVGo), jen.Len(jen.Id("__raw"))),
+		jen.For(jen.List(jen.Id("__k"), jen.Id("__v")).Op(":=").Range().Id("__raw")).Block(
+			jen.Id("__out").Index(castErasedElement(ctx, pkg, erasedK, concreteK, jen.Id("__k"))).Op("=").Add(castErasedElement(ctx, pkg, erasedV, concreteV, jen.Id("__v"))),
+		),
+		jen.Return(jen.Id("__out")),
+	).Call()
+}
+
+func buildOptionElementCast(ctx *codegen.EmitContext, pkg *ir.PackageContext, erasedElem, concreteElem ir.TypID, expr *jen.Statement) *jen.Statement {
+	dstElemGo := typeToGoWithContext(ctx, pkg, ctx.Types, concreteElem)
+	return jen.Func().Params().Op("*").Add(dstElemGo).Block(
+		jen.Id("__raw").Op(":=").Add(expr),
+		jen.If(jen.Id("__raw").Op("==").Nil()).Block(jen.Return(jen.Nil())),
+		jen.Id("__v").Op(":=").Add(castErasedElement(ctx, pkg, erasedElem, concreteElem, jen.Op("*").Id("__raw"))),
+		jen.Return(jen.Op("&").Id("__v")),
+	).Call()
+}
+
+func castErasedElement(ctx *codegen.EmitContext, pkg *ir.PackageContext, erased, concrete ir.TypID, expr *jen.Statement) *jen.Statement {
+	erasedTy, ok := ctx.Types.GetByID(erased)
+	if !ok {
+		return expr
+	}
+
+	if erasedTy.Kind == ir.TK_TypeParam {
+		return expr.Assert(typeToGoWithContext(ctx, pkg, ctx.Types, concrete))
+	}
+
+	if conv := convertErasedGenericReturn(ctx, pkg, erased, concrete, expr); conv != nil {
+		return conv
+	}
+
+	return expr
 }
 
 func (e *CodeEmitter) buildFuncLitExpr(ctx *codegen.EmitContext, pkg *ir.PackageContext, f *ir.File, x *ir.FuncLitExpr) *jen.Statement {

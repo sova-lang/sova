@@ -173,6 +173,11 @@ func (p *PassDetectUnused) trackUsage(pc *PassContext, st ir.Stmt) {
 			}
 		}
 
+	case *ir.IndexAssignmentStmt:
+		p.trackUsageExpr(pc, s.Receiver)
+		p.trackUsageExpr(pc, s.Index)
+		p.trackUsageExpr(pc, s.Value)
+
 	case *ir.IfStmt:
 		p.trackUsageExpr(pc, s.Cond)
 		p.trackUsage(pc, s.Then)
