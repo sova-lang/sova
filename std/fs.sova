@@ -65,14 +65,15 @@ type Stat {
 func stat(p: string): Stat {
     let s = new Stat()
     let info = __statRaw(p)
-    if !__statInfoValid(info) {
+    if info == none {
         return s
     }
+    let raw = info!
     s.exists = true
-    s.isDir = __statInfoIsDir(info)
+    s.isDir = __statInfoIsDir(raw)
     s.isFile = !s.isDir
-    s.size = __statInfoSize(info)
-    s.modTime = __statInfoModTime(info)
+    s.size = __statInfoSize(raw)
+    s.modTime = __statInfoModTime(raw)
     return s
 }
 
@@ -105,21 +106,12 @@ extern {
     }
 
     /// __statRaw calls `os.Stat(p)` once and hands back the raw
-    /// `os.FileInfo` as an opaque `any`. Returns a nil interface
-    /// on any error — missing path, permission denied, broken
-    /// symlink. Callers must gate reads via `__statInfoValid`
-    /// before pulling fields with the getters below. This lets
-    /// `stat()` do a single syscall and read every field from the
-    /// same cached FileInfo.
-    func __statRaw(p: string): any = {
-        backend("os"): "func(p string) any { info, err := os.Stat(p); if err != nil { return nil }; return info }"
-    }
-
-    /// __statInfoValid reports whether `info` is a live FileInfo
-    /// (i.e., the preceding `__statRaw` succeeded). Cheap — an
-    /// interface nil check, no syscall.
-    func __statInfoValid(info: any): bool = {
-        backend("os"): "func(info any) bool { fi, ok := info.(os.FileInfo); return ok && fi != nil }"
+    /// `os.FileInfo` as an opaque `option<any>`. Returns `none` on
+    /// any error — missing path, permission denied, broken symlink.
+    /// The Sova `stat()` wrapper uses this + the info-getters
+    /// below to fill a `Stat` struct with a single syscall.
+    func __statRaw(p: string): option<any> = {
+        backend("os"): "func(p string) *any { info, err := os.Stat(p); if err != nil { return nil }; v := any(info); return &v }"
     }
 
     /// __statInfoIsDir reads `IsDir` from a `FileInfo` handle that

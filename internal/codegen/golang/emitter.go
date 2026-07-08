@@ -1376,6 +1376,12 @@ func (e *CodeEmitter) buildFuncCallExpr(ctx *codegen.EmitContext, pkg *ir.Packag
 						emitted = wrapPrimitiveForAny(ctx, x.Args[i].Expr, emitted)
 					}
 
+					if funcTypeDef.Func.Params[i] != nil && funcTypeDef.Func.Params[i].Type != nil {
+						if unwrapped := wrapOptionWideningToAny(ctx, funcTypeDef.Func.Params[i].Type.Typ, x.Args[i].Expr.GetType(), emitted); unwrapped != nil {
+							emitted = unwrapped
+						}
+					}
+
 					args[i] = emitted
 				}
 			} else if funcTypeDef.Func.Params[i].Default != nil {
@@ -2119,6 +2125,24 @@ func goNumericConversionWrapper(dstTyp, srcTyp ir.TypID, tt *ir.TypeTable, expr 
 	}
 
 	return jen.Id(dstName).Call(expr)
+}
+
+func wrapOptionWideningToAny(ctx *codegen.EmitContext, dst, src ir.TypID, expr jen.Code) jen.Code {
+	if dst == 0 || src == 0 || dst != ctx.Types.PrimAny() {
+		return nil
+	}
+
+	srcTy, ok := ctx.Types.GetByID(src)
+	if !ok || srcTy.Kind != ir.TK_Option {
+		return nil
+	}
+
+	tmp := "__opt"
+	return jen.Func().Params().Any().Block(
+		jen.Id(tmp).Op(":=").Add(expr),
+		jen.If(jen.Id(tmp).Op("==").Nil()).Block(jen.Return(jen.Nil())),
+		jen.Return(jen.Op("*").Id(tmp)),
+	).Call()
 }
 
 func goAnyBoxWrapper(srcTyp ir.TypID, tt *ir.TypeTable, expr jen.Code) jen.Code {
