@@ -117,6 +117,116 @@ func (p *PassInferTypes) preComputeEnumCases(pc *PassContext, stmts []ir.Stmt) {
 	}
 }
 
+func (p *PassInferTypes) preComputeInterfaceTypes(pc *PassContext, stmts []ir.Stmt) {
+	for _, st := range stmts {
+		if ir.IsNilStmt(st) {
+			continue
+		}
+
+		iface, ok := st.(*ir.InterfaceDeclStmt)
+		if !ok || iface.Name.Sym == 0 {
+			continue
+		}
+
+		ifaceTyp := pc.Types.InterfaceOf(pc.Pkg.Path.String(), iface.Name.Name)
+		pc.Pkg.Syms.SetType(iface.Name.Sym, ifaceTyp)
+
+		var sigs []ir.InterfaceSigInfo
+		for _, sig := range iface.Methods {
+			if sig == nil {
+				continue
+			}
+
+			for _, param := range sig.Params {
+				if param.Type != nil && param.Type.Typ != 0 && param.Name.Sym != 0 {
+					pc.Pkg.Syms.SetType(param.Name.Sym, param.Type.Typ)
+				}
+			}
+
+			retType := ir.TypID(0)
+			if sig.ReturnType != nil {
+				retType = sig.ReturnType.Typ
+			}
+
+			if retType == 0 {
+				retType = pc.Types.TypNone()
+			}
+
+			funcTyp := pc.Types.FuncOf(sig.Params, retType)
+			if sig.Name.Sym != 0 {
+				pc.Pkg.Syms.SetType(sig.Name.Sym, funcTyp)
+			}
+
+			isShared := sig.IsShared || interfaceFileSide(pc, iface.Name.Sym) == ir.SideShared
+			sigs = append(sigs, ir.InterfaceSigInfo{Name: sig.Name.Name, FuncTyp: funcTyp, IsShared: isShared})
+		}
+
+		if ifaceTy, ok := pc.Types.GetByID(ifaceTyp); ok {
+			ifaceTy.Interface.Methods = sigs
+			if iface.IsExtern {
+				ifaceTy.Extern.IsExtern = true
+				ifaceTy.Extern.Module = iface.ExternModule
+			}
+		}
+	}
+}
+
+func (p *PassInferTypes) preComputeStructImplements(pc *PassContext, stmts []ir.Stmt) {
+	for _, st := range stmts {
+		if ir.IsNilStmt(st) {
+			continue
+		}
+
+		td, ok := st.(*ir.TypeDeclStmt)
+		if !ok || td.Name.Sym == 0 || len(td.Implements) == 0 {
+			continue
+		}
+
+		sym, ok := pc.Pkg.Syms.GetByID(td.Name.Sym)
+		if !ok || sym.Typ == 0 {
+			continue
+		}
+
+		structTy, ok := pc.Types.GetByID(sym.Typ)
+		if !ok || structTy.Kind != ir.TK_Struct {
+			continue
+		}
+
+		var implementsList []ir.TypID
+		for _, impl := range td.Implements {
+			if impl.Sym == 0 {
+				continue
+			}
+
+			symPkg := pc.Pkg
+			if impl.Qualifier != "" {
+				stScope, _ := pc.Pkg.Scopes.EnclosingScope(td.ID())
+				if qSym, found := pc.Pkg.Scopes.Lookup(stScope, impl.Qualifier); found {
+					if pkgSym, ok2 := pc.Pkg.Syms.GetByID(qSym); ok2 && pkgSym.Kind == ir.SK_Package {
+						if target := findPackageByPath(pc, pkgSym.PackagePath); target != nil {
+							symPkg = target
+						}
+					}
+				}
+			}
+
+			ifaceSym, ok := symPkg.Syms.GetByID(impl.Sym)
+			if !ok {
+				continue
+			}
+
+			ifaceTy, ok := pc.Types.GetByID(ifaceSym.Typ)
+			if !ok || ifaceTy.Kind != ir.TK_Interface {
+				continue
+			}
+
+			implementsList = append(implementsList, ifaceSym.Typ)
+		}
+
+		structTy.Struct.Implements = implementsList
+	}
+}
+
 func (p *PassInferTypes) preComputeStructMethods(pc *PassContext, stmts []ir.Stmt) {
 	for _, st := range stmts {
 		if ir.IsNilStmt(st) {

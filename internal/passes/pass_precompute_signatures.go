@@ -18,6 +18,10 @@ func (p *PassPrecomputeSignatures) Run(pc *PassContext) error {
 	}
 
 	for _, f := range pc.Pkg.Files {
+		p.delegate.preComputeInterfaceTypes(pc, f.Hir.Statements)
+	}
+
+	for _, f := range pc.Pkg.Files {
 		p.delegate.preComputeExternSignatures(pc, f.Hir.Statements)
 	}
 
@@ -39,6 +43,10 @@ func (p *PassPrecomputeSignatures) Run(pc *PassContext) error {
 
 	for _, f := range pc.Pkg.Files {
 		p.delegate.preComputeStructMethods(pc, f.Hir.Statements)
+	}
+
+	for _, f := range pc.Pkg.Files {
+		p.delegate.preComputeStructImplements(pc, f.Hir.Statements)
 	}
 
 	for _, f := range pc.Pkg.Files {
