@@ -129,7 +129,7 @@ enumMethod : 'func' softId '(' funcParamList? ')' typeAnnot? block;
 // Type Statements
 typeDeclStmt : annotation* 'type' ID genericParams? typeClause* LBRACE typeMember* RBRACE;
 typeClause : implementsClause | withClause ;
-implementsClause : 'implements' ID (',' ID)*;
+implementsClause : 'implements' qualifiedRef (',' qualifiedRef)*;
 withClause : 'with' qualifiedRef (',' qualifiedRef)*;
 qualifiedRef : softId ('.' softId)?;
 typeMember : fieldDecl

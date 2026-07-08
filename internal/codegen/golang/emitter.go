@@ -74,7 +74,8 @@ func (e *CodeEmitter) Emit(ctx *codegen.EmitContext) error {
 		}
 
 		_, hasWire := ctx.Cache["wire_state_typ"]
-		if hasWire || testMode {
+		hasHTTPImport := findTypeSymbolAcrossPkgs(ctx, nil, "std/http", "Request") != 0
+		if hasWire || testMode || hasHTTPImport {
 			e.emitWireStateDecl(ctx, block)
 		}
 

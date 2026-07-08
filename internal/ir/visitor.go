@@ -3100,9 +3100,21 @@ func (v *HirVisitor) VisitTypeDeclStmt(ctx *parser.TypeDeclStmtContext) any {
 
 	for _, clauseCtx := range ctx.AllTypeClause() {
 		if impl := clauseCtx.ImplementsClause(); impl != nil {
-			for _, idNode := range impl.AllID() {
-				tok := idNode.GetSymbol()
-				st.Implements = append(st.Implements, NameRef{Name: tok.GetText(), Span: v.spanFromTok(tok)})
+			for _, qr := range impl.AllQualifiedRef() {
+				ids := qr.AllSoftId()
+				if len(ids) == 0 {
+					continue
+				}
+
+				ref := NameRef{Span: v.spanFromCtx(qr.(antlr.ParserRuleContext))}
+				if len(ids) >= 2 {
+					ref.Qualifier = ids[0].GetText()
+					ref.Name = ids[1].GetText()
+				} else {
+					ref.Name = ids[0].GetText()
+				}
+
+				st.Implements = append(st.Implements, ref)
 			}
 		}
 

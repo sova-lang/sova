@@ -961,7 +961,19 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 					continue
 				}
 
-				ifaceSym, ok := pc.Pkg.Syms.GetByID(impl.Sym)
+				symPkg := pc.Pkg
+				if impl.Qualifier != "" {
+					stScope, _ := pc.Pkg.Scopes.EnclosingScope(st.ID())
+					if qSym, ok := pc.Pkg.Scopes.Lookup(stScope, impl.Qualifier); ok {
+						if pkgSym, found := pc.Pkg.Syms.GetByID(qSym); found && pkgSym.Kind == ir.SK_Package {
+							if target := findPackageByPath(pc, pkgSym.PackagePath); target != nil {
+								symPkg = target
+							}
+						}
+					}
+				}
+
+				ifaceSym, ok := symPkg.Syms.GetByID(impl.Sym)
 				if !ok {
 					continue
 				}

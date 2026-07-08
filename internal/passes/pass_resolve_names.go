@@ -295,10 +295,39 @@ func (p *PassResolveNames) resolveStmtNames(pc *PassContext, s ir.Stmt, pkg *ir.
 		scope, _ := pkg.Scopes.EnclosingScope(v.ID())
 		p.resolveAnnotations(pc, v.Annotations, pkg)
 		for i := range v.Implements {
-			if id, ok := pkg.Scopes.Lookup(scope, v.Implements[i].Name); ok {
-				v.Implements[i].Sym = id
+			ref := &v.Implements[i]
+			if ref.Qualifier == "" {
+				if id, ok := pkg.Scopes.Lookup(scope, ref.Name); ok {
+					ref.Sym = id
+				} else {
+					pc.Diag.Report(diag.ErrUndeclaredSymbol, ref.Span, ref.Name)
+				}
+
+				continue
+			}
+
+			qSym, ok := pkg.Scopes.Lookup(scope, ref.Qualifier)
+			if !ok {
+				pc.Diag.Report(diag.ErrUndeclaredSymbol, ref.Span, ref.Qualifier)
+				continue
+			}
+
+			pkgSym, ok := pkg.Syms.GetByID(qSym)
+			if !ok || pkgSym.Kind != ir.SK_Package {
+				pc.Diag.Report(diag.ErrUndeclaredSymbol, ref.Span, ref.Qualifier)
+				continue
+			}
+
+			target := findPackageByPath(pc, pkgSym.PackagePath)
+			if target == nil {
+				pc.Diag.Report(diag.ErrUndeclaredSymbol, ref.Span, ref.Qualifier+"."+ref.Name)
+				continue
+			}
+
+			if memberSym, found := target.Scopes.LookupOnlyCurrent(target.Root, ref.Name); found {
+				ref.Sym = memberSym
 			} else {
-				pc.Diag.Report(diag.ErrUndeclaredSymbol, v.Implements[i].Span, v.Implements[i].Name)
+				pc.Diag.Report(diag.ErrUndeclaredSymbol, ref.Span, ref.Qualifier+"."+ref.Name)
 			}
 		}
 
