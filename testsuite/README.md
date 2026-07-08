@@ -31,7 +31,25 @@ cd testsuite/lang-backend
 sova test --side go
 ```
 
-Categories: stdlib.
+Categories: stdlib (`fs`, `s3`).
+
+### Live-service tests
+
+The `stdlib/s3.test.sova` tests need a live S3-compatible endpoint.
+They early-return when `SOVA_TEST_S3_ENDPOINT` is empty, so the
+suite still runs green without one. To exercise them against a
+local MinIO:
+
+```
+docker run -d --name minio-sova-test -p 19000:9000 \
+    -e MINIO_ROOT_USER=test -e MINIO_ROOT_PASSWORD=testtest \
+    quay.io/minio/minio:latest server /data
+
+SOVA_TEST_S3_ENDPOINT=http://localhost:19000 \
+SOVA_TEST_S3_KEY=test \
+SOVA_TEST_S3_SECRET=testtest \
+sova test --side go
+```
 
 ## Known issues
 

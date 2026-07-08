@@ -1,0 +1,304 @@
+package std/s3 on backend
+
+/// std/s3 talks to any S3-compatible object store — AWS S3, MinIO,
+/// Cloudflare R2, Backblaze B2, DigitalOcean Spaces, or a self-
+/// hosted implementation. There is no hard-coded provider list;
+/// everything is driven by the endpoint URL you pass in.
+///
+/// Backend-only. Browser code that needs to read or write objects
+/// should call a wired backend function that either returns the
+/// bytes directly or hands back a presigned URL (see `presignGet` /
+/// `presignPut`) — never ship real S3 credentials to the browser.
+///
+/// The `Client` value returned from `Standard(...)` wraps a
+/// `*minio.Client` (github.com/minio/minio-go/v7) so path-style vs
+/// virtual-hosted, HTTPS detection, and SigV4 signing are all
+/// handled correctly for every S3-compatible endpoint.
+///
+/// ```sova
+/// import "std/s3"
+///
+/// let cli = s3.Standard(
+///     "https://s3.eu-central-1.amazonaws.com",
+///     env.get("S3_ACCESS_KEY"),
+///     env.get("S3_SECRET_KEY"),
+///     "eu-central-1",
+/// )
+///
+/// cli.putString("my-bucket", "hello.txt", "hello world")
+///
+/// let contents = cli.getString("my-bucket", "hello.txt") ?? ""
+/// let url = cli.presignGet("my-bucket", "hello.txt", 900)  // 15-min presigned URL
+/// ```
+///
+/// Error handling follows the standard-library convention: reads
+/// return `option<T>`, mutations return `bool`, no exceptions
+/// thrown. On any transport, auth, or NotFound error the
+/// operation reports the same "no value" / "false" as it would
+/// for a genuinely missing key — call `exists()` first if you
+/// need to distinguish.
+
+/// Client is a handle to a live S3-compatible endpoint. Construct
+/// via `s3.Standard(...)`. The `raw` field holds the underlying
+/// `*minio.Client`; user code shouldn't touch it directly.
+type Client {
+    raw: any = none
+    endpoint: string = ""
+    region: string = ""
+
+    /// put uploads `data` to `key` inside `bucket`, replacing any
+    /// existing object at the same key. Returns true on success.
+    ///
+    /// @param bucket destination bucket
+    /// @param key destination object key
+    /// @param data raw bytes to upload
+    /// @returns true on success, false on any error
+    func put(bucket: string, key: string, data: []byte): bool {
+        return __s3Put(this.raw, bucket, key, data, "application/octet-stream")
+    }
+
+    /// putString is the text convenience for `put`. Sets the
+    /// Content-Type to `text/plain; charset=utf-8`.
+    ///
+    /// @param bucket destination bucket
+    /// @param key destination object key
+    /// @param data UTF-8 text to upload
+    /// @returns true on success
+    func putString(bucket: string, key: string, data: string): bool {
+        return __s3PutString(this.raw, bucket, key, data)
+    }
+
+    /// putWithType uploads `data` with an explicit MIME type. Use
+    /// this when the object needs a `Content-Type` other than the
+    /// default (e.g., `image/png`, `application/pdf`).
+    ///
+    /// @param bucket destination bucket
+    /// @param key destination object key
+    /// @param data raw bytes to upload
+    /// @param contentType MIME type to store on the object
+    /// @returns true on success
+    func putWithType(bucket: string, key: string, data: []byte, contentType: string): bool {
+        return __s3Put(this.raw, bucket, key, data, contentType)
+    }
+
+    /// get downloads the object at `key` from `bucket`. Returns
+    /// `none` when the object is missing, credentials are invalid,
+    /// or any transport error occurs.
+    ///
+    /// @param bucket source bucket
+    /// @param key object key
+    /// @returns the object bytes, or `none` on failure
+    func get(bucket: string, key: string): option<[]byte> {
+        return __s3Get(this.raw, bucket, key)
+    }
+
+    /// getString downloads the object at `key` and returns it as
+    /// UTF-8 text. Non-UTF-8 bytes are passed through unchanged
+    /// (Go's `string(bytes)` semantics).
+    ///
+    /// @param bucket source bucket
+    /// @param key object key
+    /// @returns the object contents as text, or `none` on failure
+    func getString(bucket: string, key: string): option<string> {
+        return __s3GetString(this.raw, bucket, key)
+    }
+
+    /// delete removes the object at `key` from `bucket`. Returns
+    /// true on success or when the key already didn't exist.
+    ///
+    /// @param bucket source bucket
+    /// @param key object key to remove
+    /// @returns true when the object is gone
+    func delete(bucket: string, key: string): bool {
+        return __s3Delete(this.raw, bucket, key)
+    }
+
+    /// exists reports whether an object lives at `key` inside
+    /// `bucket`. Uses a HEAD request (no body transfer). Distinct
+    /// from `hasBucket` — this checks a single object.
+    ///
+    /// @param bucket bucket to look in
+    /// @param key object key
+    /// @returns true when the object exists
+    func exists(bucket: string, key: string): bool {
+        return __s3Exists(this.raw, bucket, key)
+    }
+
+    /// size returns the object's byte length. Returns 0 for
+    /// missing objects, so pair with `exists()` when you need to
+    /// distinguish "empty" from "gone".
+    ///
+    /// @param bucket source bucket
+    /// @param key object key
+    /// @returns object size in bytes, or 0 on failure
+    func size(bucket: string, key: string): int {
+        return __s3Size(this.raw, bucket, key)
+    }
+
+    /// list enumerates every object key inside `bucket` whose key
+    /// starts with `prefix`. Pass `""` as prefix to list every
+    /// object in the bucket. Order is provider-defined
+    /// (S3 returns lexicographic, MinIO matches).
+    ///
+    /// Returns an empty slice on failure or empty bucket. For very
+    /// large buckets (many thousands of objects) this pulls the
+    /// whole listing into memory in one shot — use provider-native
+    /// pagination for those sizes.
+    ///
+    /// @param bucket bucket to list
+    /// @param prefix key prefix filter, or "" for all
+    /// @returns matching object keys
+    func list(bucket: string, prefix: string): []string {
+        return __s3List(this.raw, bucket, prefix)
+    }
+
+    /// createBucket creates `bucket` in the region the client was
+    /// configured for. Idempotent — returns true if the bucket
+    /// already exists.
+    ///
+    /// @param bucket name to create
+    /// @returns true when the bucket is available for use
+    func createBucket(bucket: string): bool {
+        return __s3CreateBucket(this.raw, bucket, this.region)
+    }
+
+    /// hasBucket reports whether `bucket` exists and the current
+    /// credentials can see it.
+    ///
+    /// @param bucket bucket to test
+    /// @returns true when the bucket exists and is accessible
+    func hasBucket(bucket: string): bool {
+        return __s3HasBucket(this.raw, bucket)
+    }
+
+    /// deleteBucket removes an empty bucket. Fails if the bucket
+    /// still holds objects — use `list` + `delete` to drain first.
+    ///
+    /// @param bucket bucket to remove
+    /// @returns true on success
+    func deleteBucket(bucket: string): bool {
+        return __s3DeleteBucket(this.raw, bucket)
+    }
+
+    /// presignGet returns a signed URL that lets an unauthenticated
+    /// client GET `key` from `bucket` for up to `expiresSeconds`.
+    /// Returns "" on any signing error.
+    ///
+    /// Typical shape: backend wire generates the URL, sends it to
+    /// the browser, browser fetches directly from S3. Avoids
+    /// streaming large objects through the Sova app.
+    ///
+    /// @param bucket source bucket
+    /// @param key object key
+    /// @param expiresSeconds how long the URL is valid (max 7 days)
+    /// @returns a presigned URL, or "" on error
+    func presignGet(bucket: string, key: string, expiresSeconds: int): string {
+        return __s3PresignGet(this.raw, bucket, key, expiresSeconds)
+    }
+
+    /// presignPut returns a signed URL that lets an unauthenticated
+    /// client PUT an object to `bucket/key` for up to
+    /// `expiresSeconds`. Use for browser-direct uploads without
+    /// exposing credentials.
+    ///
+    /// @param bucket destination bucket
+    /// @param key destination object key
+    /// @param expiresSeconds how long the URL is valid (max 7 days)
+    /// @returns a presigned URL, or "" on error
+    func presignPut(bucket: string, key: string, expiresSeconds: int): string {
+        return __s3PresignPut(this.raw, bucket, key, expiresSeconds)
+    }
+}
+
+/// Standard returns a Client for any S3-compatible endpoint using
+/// static access-key + secret-key credentials. Works with AWS S3,
+/// MinIO, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, and
+/// any other provider that speaks the S3 REST API.
+///
+/// - `endpoint`: full URL including scheme (`https://...` or
+///   `http://...`). Scheme selects TLS. Path segments are
+///   ignored — the bucket name goes as a separate argument.
+/// - `accessKey`, `secretKey`: static credentials. For rotating /
+///   temporary credentials, construct a fresh Client on each
+///   rotation.
+/// - `region`: cloud provider region string (e.g. `"us-east-1"`).
+///   Some providers ignore this (MinIO) but AWS S3 and CreateBucket
+///   require it. Safe to pass `""` when unsure.
+///
+/// @param endpoint the S3-compatible endpoint URL
+/// @param accessKey the static access-key
+/// @param secretKey the static secret-key
+/// @param region the region (may be "")
+/// @returns a ready-to-use Client
+func Standard(endpoint: string, accessKey: string, secretKey: string, region: string): Client {
+    let c = new Client()
+    let creds = __s3StaticCreds(accessKey, secretKey)
+    c.raw = __s3New(endpoint, creds, region)
+    c.endpoint = endpoint
+    c.region = region
+    return c
+}
+
+extern "github.com/minio/minio-go/v7/pkg/credentials" {
+    func __s3StaticCreds(accessKey: string, secretKey: string): any = {
+        backend: "func(accessKey, secretKey string) any { return credentials.NewStaticV4(accessKey, secretKey, \"\") }"
+    }
+}
+
+extern "github.com/minio/minio-go/v7@v7.0.66" {
+    func __s3New(endpoint: string, creds: any, region: string): any = {
+        backend: "func(endpoint string, creds any, region string) any { u, err := url.Parse(endpoint); if err != nil { return nil }; host := u.Host; if host == \"\" { host = u.Path }; secure := u.Scheme == \"https\" || u.Scheme == \"\"; c, ok := creds.(*credentials.Credentials); if !ok { return nil }; cli, err := minio.New(host, &minio.Options{Creds: c, Secure: secure, Region: region}); if err != nil { return nil }; return cli }"
+    }
+
+    func __s3Put(cli: any, bucket: string, key: string, data: []byte, contentType: string): bool = {
+        backend: "func(cli any, bucket, key string, data []byte, contentType string) bool { c, ok := cli.(*minio.Client); if !ok || c == nil { return false }; _, err := c.PutObject(context.Background(), bucket, key, bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{ContentType: contentType}); return err == nil }"
+    }
+
+    func __s3PutString(cli: any, bucket: string, key: string, data: string): bool = {
+        backend: "func(cli any, bucket, key, data string) bool { c, ok := cli.(*minio.Client); if !ok || c == nil { return false }; b := []byte(data); _, err := c.PutObject(context.Background(), bucket, key, bytes.NewReader(b), int64(len(b)), minio.PutObjectOptions{ContentType: \"text/plain; charset=utf-8\"}); return err == nil }"
+    }
+
+    func __s3Get(cli: any, bucket: string, key: string): option<[]byte> = {
+        backend: "func(cli any, bucket, key string) *[]byte { c, ok := cli.(*minio.Client); if !ok || c == nil { return nil }; obj, err := c.GetObject(context.Background(), bucket, key, minio.GetObjectOptions{}); if err != nil { return nil }; defer obj.Close(); b, err := io.ReadAll(obj); if err != nil { return nil }; return &b }"
+    }
+
+    func __s3GetString(cli: any, bucket: string, key: string): option<string> = {
+        backend: "func(cli any, bucket, key string) *string { c, ok := cli.(*minio.Client); if !ok || c == nil { return nil }; obj, err := c.GetObject(context.Background(), bucket, key, minio.GetObjectOptions{}); if err != nil { return nil }; defer obj.Close(); b, err := io.ReadAll(obj); if err != nil { return nil }; s := string(b); return &s }"
+    }
+
+    func __s3Delete(cli: any, bucket: string, key: string): bool = {
+        backend: "func(cli any, bucket, key string) bool { c, ok := cli.(*minio.Client); if !ok || c == nil { return false }; return c.RemoveObject(context.Background(), bucket, key, minio.RemoveObjectOptions{}) == nil }"
+    }
+
+    func __s3Exists(cli: any, bucket: string, key: string): bool = {
+        backend: "func(cli any, bucket, key string) bool { c, ok := cli.(*minio.Client); if !ok || c == nil { return false }; _, err := c.StatObject(context.Background(), bucket, key, minio.StatObjectOptions{}); return err == nil }"
+    }
+
+    func __s3Size(cli: any, bucket: string, key: string): int = {
+        backend: "func(cli any, bucket, key string) int64 { c, ok := cli.(*minio.Client); if !ok || c == nil { return 0 }; info, err := c.StatObject(context.Background(), bucket, key, minio.StatObjectOptions{}); if err != nil { return 0 }; return info.Size }"
+    }
+
+    func __s3List(cli: any, bucket: string, prefix: string): []string = {
+        backend: "func(cli any, bucket, prefix string) []string { c, ok := cli.(*minio.Client); if !ok || c == nil { return []string{} }; out := []string{}; ctx, cancel := context.WithCancel(context.Background()); defer cancel(); for obj := range c.ListObjects(ctx, bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) { if obj.Err != nil { continue }; out = append(out, obj.Key) }; return out }"
+    }
+
+    func __s3CreateBucket(cli: any, bucket: string, region: string): bool = {
+        backend: "func(cli any, bucket, region string) bool { c, ok := cli.(*minio.Client); if !ok || c == nil { return false }; if err := c.MakeBucket(context.Background(), bucket, minio.MakeBucketOptions{Region: region}); err != nil { exists, _ := c.BucketExists(context.Background(), bucket); return exists }; return true }"
+    }
+
+    func __s3HasBucket(cli: any, bucket: string): bool = {
+        backend: "func(cli any, bucket string) bool { c, ok := cli.(*minio.Client); if !ok || c == nil { return false }; exists, _ := c.BucketExists(context.Background(), bucket); return exists }"
+    }
+
+    func __s3DeleteBucket(cli: any, bucket: string): bool = {
+        backend: "func(cli any, bucket string) bool { c, ok := cli.(*minio.Client); if !ok || c == nil { return false }; return c.RemoveBucket(context.Background(), bucket) == nil }"
+    }
+
+    func __s3PresignGet(cli: any, bucket: string, key: string, expiresSeconds: int): string = {
+        backend: "func(cli any, bucket, key string, secs int64) string { c, ok := cli.(*minio.Client); if !ok || c == nil { return \"\" }; u, err := c.PresignedGetObject(context.Background(), bucket, key, time.Duration(secs)*time.Second, nil); if err != nil { return \"\" }; return u.String() }"
+    }
+
+    func __s3PresignPut(cli: any, bucket: string, key: string, expiresSeconds: int): string = {
+        backend: "func(cli any, bucket, key string, secs int64) string { c, ok := cli.(*minio.Client); if !ok || c == nil { return \"\" }; u, err := c.PresignedPutObject(context.Background(), bucket, key, time.Duration(secs)*time.Second); if err != nil { return \"\" }; return u.String() }"
+    }
+}

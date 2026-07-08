@@ -1,0 +1,138 @@
+package langbackend/stdlib on test
+
+import "std/s3"
+
+// These tests require a live S3-compatible endpoint. They are
+// skipped unless SOVA_TEST_S3_ENDPOINT is set. The reference
+// configuration is a local MinIO container:
+//
+//   docker run -d --name minio-sova-test -p 19000:9000 \
+//     -e MINIO_ROOT_USER=test -e MINIO_ROOT_PASSWORD=testtest \
+//     quay.io/minio/minio:latest server /data
+//
+// Run with:
+//   SOVA_TEST_S3_ENDPOINT=http://localhost:19000 \
+//   SOVA_TEST_S3_KEY=test \
+//   SOVA_TEST_S3_SECRET=testtest \
+//   sova test --side go --filter s3
+//
+// Each test creates + tears down its own bucket so they can run
+// out of order.
+
+extern {
+    /// __env reads an environment variable, returning "" when
+    /// missing. Used by the s3 tests to pull optional endpoint
+    /// credentials without importing std/env into this test file.
+    func __env(name: string): string = {
+        backend("os"): "os.Getenv"
+    }
+}
+
+func client(): s3.Client {
+    return s3.Standard(
+        __env("SOVA_TEST_S3_ENDPOINT"),
+        __env("SOVA_TEST_S3_KEY"),
+        __env("SOVA_TEST_S3_SECRET"),
+        "us-east-1"
+    )
+}
+
+func haveEndpoint(): bool {
+    return __env("SOVA_TEST_S3_ENDPOINT") != ""
+}
+
+test "createBucket and hasBucket round-trip" {
+    if !haveEndpoint() { return }
+    let cli = client()
+    let b = "sova-suite-createhas"
+    cli.deleteBucket(b)
+    assert !cli.hasBucket(b)
+    assert cli.createBucket(b)
+    assert cli.hasBucket(b)
+    assert cli.deleteBucket(b)
+    assert !cli.hasBucket(b)
+}
+
+test "put and get string" {
+    if !haveEndpoint() { return }
+    let cli = client()
+    let b = "sova-suite-putget"
+    cli.deleteBucket(b)
+    cli.createBucket(b)
+    assert cli.putString(b, "hi.txt", "hello sova")
+    let got = cli.getString(b, "hi.txt") ?? "MISSING"
+    assert got == "hello sova"
+    cli.delete(b, "hi.txt")
+    cli.deleteBucket(b)
+}
+
+test "exists and size" {
+    if !haveEndpoint() { return }
+    let cli = client()
+    let b = "sova-suite-exists"
+    cli.deleteBucket(b)
+    cli.createBucket(b)
+    assert !cli.exists(b, "nothing.txt")
+    cli.putString(b, "sized.txt", "0123456789")
+    assert cli.exists(b, "sized.txt")
+    assert cli.size(b, "sized.txt") == 10
+    cli.delete(b, "sized.txt")
+    cli.deleteBucket(b)
+}
+
+test "list with prefix" {
+    if !haveEndpoint() { return }
+    let cli = client()
+    let b = "sova-suite-list"
+    cli.deleteBucket(b)
+    cli.createBucket(b)
+    cli.putString(b, "logs/2026/a.log", "1")
+    cli.putString(b, "logs/2026/b.log", "2")
+    cli.putString(b, "other/c.txt", "3")
+    let logs = cli.list(b, "logs/")
+    assert len(logs) == 2
+    let all = cli.list(b, "")
+    assert len(all) == 3
+    cli.delete(b, "logs/2026/a.log")
+    cli.delete(b, "logs/2026/b.log")
+    cli.delete(b, "other/c.txt")
+    cli.deleteBucket(b)
+}
+
+test "delete removes object" {
+    if !haveEndpoint() { return }
+    let cli = client()
+    let b = "sova-suite-delete"
+    cli.deleteBucket(b)
+    cli.createBucket(b)
+    cli.putString(b, "temp.txt", "x")
+    assert cli.exists(b, "temp.txt")
+    assert cli.delete(b, "temp.txt")
+    assert !cli.exists(b, "temp.txt")
+    cli.deleteBucket(b)
+}
+
+test "presignGet returns URL" {
+    if !haveEndpoint() { return }
+    let cli = client()
+    let b = "sova-suite-presign"
+    cli.deleteBucket(b)
+    cli.createBucket(b)
+    cli.putString(b, "signed.txt", "signed content")
+    let url = cli.presignGet(b, "signed.txt", 300)
+    assert url != ""
+    assert len(url) > 20
+    cli.delete(b, "signed.txt")
+    cli.deleteBucket(b)
+}
+
+test "get of missing returns none" {
+    if !haveEndpoint() { return }
+    let cli = client()
+    let b = "sova-suite-getnone"
+    cli.deleteBucket(b)
+    cli.createBucket(b)
+    let got = cli.getString(b, "nope.txt")
+    assert got == none
+    cli.deleteBucket(b)
+}
