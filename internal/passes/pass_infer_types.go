@@ -1027,6 +1027,18 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				methodInfos = append(methodInfos, ir.StructMethodInfo{Name: "hashCode", FuncTyp: ft})
 			}
 
+			userMethodSpans := map[string]diag.TextSpan{}
+			for _, m := range st.Methods {
+				if m == nil || m.Func == nil {
+					continue
+				}
+
+				name := m.Func.Name.Name
+				if _, dup := userMethodSpans[name]; !dup {
+					userMethodSpans[name] = m.Func.Name.Span
+				}
+			}
+
 			for _, field := range st.Fields {
 				if !hasAnnotation(field.Annotations, "reactive") {
 					continue
@@ -1039,6 +1051,17 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 				}
 
 				exported := upperFirst(fieldName)
+				setName := "set" + exported
+				obsName := "observe" + exported
+
+				if span, hit := userMethodSpans[setName]; hit {
+					pc.Diag.Report(diag.ErrReactiveMethodCollision, span, setName, "setter", fieldName, exported)
+				}
+
+				if span, hit := userMethodSpans[obsName]; hit {
+					pc.Diag.Report(diag.ErrReactiveMethodCollision, span, obsName, "observer", fieldName, exported)
+				}
+
 				setParam := &ir.FuncParam{
 					Name: ir.NameRef{Name: "v"},
 					Type: &ir.TypeRef{Typ: fieldTyp},
@@ -1046,7 +1069,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 
 				setFt := pc.Types.FuncOf([]*ir.FuncParam{setParam}, pc.Types.TypNone())
 				methodInfos = append(methodInfos, ir.StructMethodInfo{
-					Name:    "set" + exported,
+					Name:    setName,
 					FuncTyp: setFt,
 				})
 				obsFnReturnTyp := pc.Types.FuncOf(nil, pc.Types.TypNone())
@@ -1060,7 +1083,7 @@ func (p *PassInferTypes) resolveStmts(pc *PassContext, stmts []ir.Stmt) {
 
 				obsFt := pc.Types.FuncOf([]*ir.FuncParam{obsParam}, obsFnReturnTyp)
 				methodInfos = append(methodInfos, ir.StructMethodInfo{
-					Name:    "observe" + exported,
+					Name:    obsName,
 					FuncTyp: obsFt,
 				})
 			}

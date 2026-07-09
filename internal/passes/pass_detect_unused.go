@@ -272,6 +272,54 @@ func (p *PassDetectUnused) trackUsage(pc *PassContext, st ir.Stmt) {
 		p.trackUsage(pc, s.Body)
 	case *ir.AssertStmt:
 		p.trackUsageExpr(pc, s.Expr)
+	case *ir.TypeDeclStmt:
+		for _, field := range s.Fields {
+			if field != nil && field.Default != nil {
+				p.trackUsageExpr(pc, field.Default)
+			}
+		}
+
+		for _, ctor := range s.Ctors {
+			if ctor == nil {
+				continue
+			}
+
+			for _, param := range ctor.Params {
+				if param != nil && param.Default != nil {
+					p.trackUsageExpr(pc, param.Default)
+				}
+			}
+
+			if ctor.Body != nil {
+				p.trackUsage(pc, ctor.Body)
+			}
+		}
+
+		for _, method := range s.Methods {
+			if method == nil || method.Func == nil {
+				continue
+			}
+
+			for _, param := range method.Func.Params {
+				if param != nil && param.Default != nil {
+					p.trackUsageExpr(pc, param.Default)
+				}
+			}
+
+			if method.Func.Body != nil {
+				p.trackUsage(pc, method.Func.Body)
+			}
+		}
+
+		for _, cast := range s.Casts {
+			if cast == nil {
+				continue
+			}
+
+			if cast.Body != nil {
+				p.trackUsage(pc, cast.Body)
+			}
+		}
 	}
 }
 

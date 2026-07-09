@@ -81,6 +81,7 @@ var (
 	ErrAssetPathEscapesProject        = templateErr(CategorySemantic, "`@asset` path %s escapes the project root after resolution; assets must reference files inside the project tree (including dependency packages)")
 	ErrAssetBadArg                    = templateErr(CategorySemantic, "`@asset` on '%s': %s")
 	ErrAssetTransformFailed           = templateErr(CategorySemantic, "`@asset` on '%s' failed to transform the image: %s")
+	ErrReactiveMethodCollision        = templateErr(CategorySemantic, "method '%s' collides with the auto-generated %s for `@reactive` field '%[3]s'; each @reactive field reserves `set%[4]s` and `observe%[4]s` — rename your method (e.g. `change%[4]s`, `update%[4]s`, `on%[4]sChanged`) or drop `@reactive` to take full manual control")
 
 	ErrTypeMismatch        = templateErr(CategoryType, "Type mismatch: expected %s, got %s")
 	ErrTypeNotIndexable    = templateErr(CategoryType, "Type %s is not indexable")
